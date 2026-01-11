@@ -2,7 +2,6 @@ import 'dart:io' /* if (dart.library.js) 'dart:html'*/;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:pointer_lock/pointer_lock.dart';
 import 'dart:async';
 
 import 'hardware_simulator_platform_interface.dart';
@@ -14,9 +13,6 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @visibleForTesting
   final methodChannel = const MethodChannel('hardware_simulator');
   bool isinitialized = false;
-
-  // pointer lock on linux.
-  StreamSubscription<PointerLockMoveEvent>? _pointerLockSubscription;
 
   void init() {
     methodChannel.setMethodCallHandler((call) async {
@@ -84,42 +80,13 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   @override
   Future<void> lockCursor() async {
-    // use pointer_lock on linux, native implementation on windows and other platforms.
-    if (defaultTargetPlatform == TargetPlatform.linux) {
-      await _pointerLockSubscription?.cancel();
-
-      _pointerLockSubscription = pointerLock
-          .createSession(
-        windowsMode: PointerLockWindowsMode.clip,
-        cursor: PointerLockCursor.hidden,
-        unlockOnPointerUp: false, // 手动控制解锁
-      )
-          .listen(
-        (event) {
-          for (var callback in cursorMovedCallbacks) {
-            callback(event.delta.dx, event.delta.dy);
-          }
-        },
-        onError: (error) {
-          print('Pointer lock error: $error');
-        },
-        onDone: () {
-          _pointerLockSubscription = null;
-        },
-      );
-    } else {
-      await methodChannel.invokeMethod('lockCursor');
-    }
+    // NOTE: cloudplayplus_nova 版本移除了 pointer_lock 依赖，统一走 native 实现（best-effort）。
+    await methodChannel.invokeMethod('lockCursor');
   }
 
   @override
   Future<void> unlockCursor() async {
-    if (defaultTargetPlatform == TargetPlatform.linux) {
-      await _pointerLockSubscription?.cancel();
-      _pointerLockSubscription = null;
-    } else {
-      await methodChannel.invokeMethod('unlockCursor');
-    }
+    await methodChannel.invokeMethod('unlockCursor');
   }
 
   @override

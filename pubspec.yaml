@@ -15,10 +15,8 @@ dependencies:
   web: ^1.0.0
   flutter_web_plugins:
     sdk: flutter
-  pointer_lock:
-    git:
-      url: https://github.com/zhuhaichao518/pointer_lock.git
-      ref: main
+  # NOTE: pointer_lock is intentionally removed in cloudplayplus_nova to avoid a git dependency.
+  # If you need pointer-lock behavior on Linux, re-add it or implement a local alternative.
 
 dev_dependencies:
   flutter_test:
