@@ -45,12 +45,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   final TextEditingController touchXController = TextEditingController();
   final TextEditingController touchYController = TextEditingController();
   final TextEditingController touchIdController = TextEditingController();
-  
+
   final TextEditingController penXController = TextEditingController();
   final TextEditingController penYController = TextEditingController();
-  final TextEditingController penPressureController = TextEditingController(text: '0.5');
-  final TextEditingController penRotationController = TextEditingController(text: '0');
-  final TextEditingController penTiltController = TextEditingController(text: '0');
+  final TextEditingController penPressureController =
+      TextEditingController(text: '0.5');
+  final TextEditingController penRotationController =
+      TextEditingController(text: '0');
+  final TextEditingController penTiltController =
+      TextEditingController(text: '0');
 
   final HardwareSimulator hardwareSimulator = HardwareSimulator();
 
@@ -153,17 +156,19 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       } else if (message == HardwareSimulator.CURSOR_VISIBLE) {
         // 获取显示器ID和鼠标位置信息
         int screenId = messageInfo;
-        
+
         // 检查是否有位置数据（新版本有8字节，旧版本可能为空）
         if (cursorImage.isNotEmpty && cursorImage.length >= 8) {
           ByteData byteData = ByteData.sublistView(cursorImage);
           double xPercent = byteData.getFloat32(0, Endian.little);
           double yPercent = byteData.getFloat32(4, Endian.little);
-          
-          print('Cursor became visible - Screen ID: $screenId, X: ${(xPercent * 100).toStringAsFixed(1)}%, Y: ${(yPercent * 100).toStringAsFixed(1)}%');
+
+          print(
+              'Cursor became visible - Screen ID: $screenId, X: ${(xPercent * 100).toStringAsFixed(1)}%, Y: ${(yPercent * 100).toStringAsFixed(1)}%');
         } else {
           // 兼容旧版本，没有位置数据
-          print('Cursor became visible - Screen ID: $screenId (no position data)');
+          print(
+              'Cursor became visible - Screen ID: $screenId (no position data)');
         }
       } else if (message == HardwareSimulator.CURSOR_UPDATED_CACHED) {
         setState(() {
@@ -198,20 +203,22 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   void _startPositionMonitoring() async {
     if (_positionMonitoringActive) return;
-    
+
     _positionMonitoringActive = true;
-    HardwareSimulator.addCursorPositionUpdated((message, screenId, xPercent, yPercent) {
+    HardwareSimulator.addCursorPositionUpdated(
+        (message, screenId, xPercent, yPercent) {
       if (message == HardwareSimulator.CURSOR_POSITION_CHANGED) {
-        print('鼠标位置变化 - 屏幕ID: $screenId, X: ${(xPercent * 100).toStringAsFixed(1)}%, Y: ${(yPercent * 100).toStringAsFixed(1)}%');
+        print(
+            '鼠标位置变化 - 屏幕ID: $screenId, X: ${(xPercent * 100).toStringAsFixed(1)}%, Y: ${(yPercent * 100).toStringAsFixed(1)}%');
       }
     }, 2); // 使用回调ID 2
-    
+
     print('鼠标位置监控已启动');
   }
 
   void _stopPositionMonitoring() async {
     if (!_positionMonitoringActive) return;
-    
+
     HardwareSimulator.removeCursorPositionUpdated(2);
     _positionMonitoringActive = false;
     print('鼠标位置监控已停止');
@@ -299,7 +306,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     double pressure = double.tryParse(penPressureController.text) ?? 0.5;
     double rotation = double.tryParse(penRotationController.text) ?? 0;
     double tilt = double.tryParse(penTiltController.text) ?? 0;
-    HardwareSimulator.performPenEvent(x, y, true, false, pressure, rotation, tilt, 0);
+    HardwareSimulator.performPenEvent(
+        x, y, true, false, pressure, rotation, tilt, 0);
   }
 
   void _penMove() {
@@ -317,15 +325,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     double pressure = double.tryParse(penPressureController.text) ?? 0.5;
     double rotation = double.tryParse(penRotationController.text) ?? 0;
     double tilt = double.tryParse(penTiltController.text) ?? 0;
-    HardwareSimulator.performPenEvent(x, y, false, false, pressure, rotation, tilt, 0);
+    HardwareSimulator.performPenEvent(
+        x, y, false, false, pressure, rotation, tilt, 0);
   }
 
   void _setDragWindowContents(bool enabled) {
     HardwareSimulator.setDragWindowContents(enabled);
   }
-
-  
- 
 
   @override
   Widget build(BuildContext context) {
@@ -361,19 +367,19 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           ),
         ),
         if (Platform.isWindows)
-        ElevatedButton(
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => ImmersiveModeExample()),
-            );
-          },
-          child: Text('沉浸模式'),
-          style: ElevatedButton.styleFrom(
-            padding: EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-            textStyle: TextStyle(fontSize: 18),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => ImmersiveModeExample()),
+              );
+            },
+            child: Text('沉浸模式'),
+            style: ElevatedButton.styleFrom(
+              padding: EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              textStyle: TextStyle(fontSize: 18),
+            ),
           ),
-        ),
         SizedBox(height: 20),
         // First Row: Absolute Mouse Move
         Row(
@@ -382,11 +388,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             Expanded(
                 child: TextField(
                     controller: xController,
-                    decoration: InputDecoration(labelText: 'X(0 - 1.0) (% from left)'))),
+                    decoration: InputDecoration(
+                        labelText: 'X(0 - 1.0) (% from left)'))),
             Expanded(
                 child: TextField(
                     controller: yController,
-                    decoration: InputDecoration(labelText: 'Y(0 - 1.0) (% from top)'))),
+                    decoration:
+                        InputDecoration(labelText: 'Y(0 - 1.0) (% from top)'))),
             ElevatedButton(
                 onPressed: _moveMouseAbsolute,
                 child: Text('Move Mouse to X, Y')),
@@ -464,12 +472,14 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             ElevatedButton(
-              onPressed: _positionMonitoringActive ? null : _startPositionMonitoring,
+              onPressed:
+                  _positionMonitoringActive ? null : _startPositionMonitoring,
               child: Text('开始监控鼠标位置'),
             ),
             SizedBox(width: 10),
             ElevatedButton(
-              onPressed: _positionMonitoringActive ? _stopPositionMonitoring : null,
+              onPressed:
+                  _positionMonitoringActive ? _stopPositionMonitoring : null,
               child: Text('停止监控鼠标位置'),
             ),
           ],
@@ -538,7 +548,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             ),
           ],
         ),
-          Row(
+        Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             ElevatedButton(

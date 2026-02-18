@@ -88,18 +88,20 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
 
   Future<void> _toggleImmersiveMode() async {
     try {
-      final success = await HardwareSimulator.putImmersiveModeEnabled(!_immersiveModeEnabled);
+      final success = await HardwareSimulator.putImmersiveModeEnabled(
+          !_immersiveModeEnabled);
       if (success) {
         setState(() {
           _immersiveModeEnabled = !_immersiveModeEnabled;
         });
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(_immersiveModeEnabled 
-              ? '沉浸模式已启用 - 快捷键将被拦截' 
-              : '沉浸模式已禁用 - 快捷键恢复正常'),
-            backgroundColor: _immersiveModeEnabled ? Colors.green : Colors.orange,
+            content: Text(_immersiveModeEnabled
+                ? '沉浸模式已启用 - 快捷键将被拦截'
+                : '沉浸模式已禁用 - 快捷键恢复正常'),
+            backgroundColor:
+                _immersiveModeEnabled ? Colors.green : Colors.orange,
           ),
         );
       } else {
@@ -152,9 +154,12 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
                       children: [
                         Text(
                           '沉浸模式状态: ${_immersiveModeEnabled ? "已启用" : "已禁用"}',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: _immersiveModeEnabled ? Colors.green : Colors.orange,
-                          ),
+                          style:
+                              Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    color: _immersiveModeEnabled
+                                        ? Colors.green
+                                        : Colors.orange,
+                                  ),
                         ),
                         const SizedBox(height: 8),
                         Text(
@@ -170,10 +175,13 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
                         ElevatedButton(
                           onPressed: _toggleImmersiveMode,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: _immersiveModeEnabled ? Colors.red : Colors.green,
+                            backgroundColor: _immersiveModeEnabled
+                                ? Colors.red
+                                : Colors.green,
                             foregroundColor: Colors.white,
                           ),
-                          child: Text(_immersiveModeEnabled ? '禁用沉浸模式' : '启用沉浸模式'),
+                          child:
+                              Text(_immersiveModeEnabled ? '禁用沉浸模式' : '启用沉浸模式'),
                         ),
                       ],
                     ),
@@ -198,16 +206,20 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
                               if (_blockedKeys.isEmpty)
                                 const Text(
                                   '暂无被拦截的按键',
-                                  style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+                                  style: TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      color: Colors.grey),
                                 )
                               else
                                 ...(_blockedKeys.reversed.map((key) => Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 2.0),
-                                  child: Text(
-                                    '🔒 $key',
-                                    style: const TextStyle(fontFamily: 'monospace'),
-                                  ),
-                                ))),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 2.0),
+                                      child: Text(
+                                        '🔒 $key',
+                                        style: const TextStyle(
+                                            fontFamily: 'monospace'),
+                                      ),
+                                    ))),
                               if (_blockedKeys.isNotEmpty) ...[
                                 const SizedBox(height: 8),
                                 TextButton(
@@ -240,16 +252,20 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
                               if (_pressedKeys.isEmpty)
                                 const Text(
                                   '暂无按键事件',
-                                  style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+                                  style: TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      color: Colors.grey),
                                 )
                               else
                                 ...(_pressedKeys.reversed.map((key) => Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 2.0),
-                                  child: Text(
-                                    '⌨️ $key',
-                                    style: const TextStyle(fontFamily: 'monospace'),
-                                  ),
-                                ))),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 2.0),
+                                      child: Text(
+                                        '⌨️ $key',
+                                        style: const TextStyle(
+                                            fontFamily: 'monospace'),
+                                      ),
+                                    ))),
                               if (_pressedKeys.isNotEmpty) ...[
                                 const SizedBox(height: 8),
                                 TextButton(
@@ -287,7 +303,8 @@ class _ImmersiveModeExampleState extends State<ImmersiveModeExample> {
                         const SizedBox(height: 8),
                         const Text(
                           '注意：沉浸模式只在当前应用有焦点时生效，不会影响其他应用的正常使用。',
-                          style: TextStyle(fontStyle: FontStyle.italic, color: Colors.blue),
+                          style: TextStyle(
+                              fontStyle: FontStyle.italic, color: Colors.blue),
                         ),
                       ],
                     ),

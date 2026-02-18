@@ -77,7 +77,9 @@ class _FPSGameExampleState extends State<FPSGameExample> {
         children: [
           // 游戏场景
           MouseRegion(
-            cursor: _isCursorLocked ? SystemMouseCursors.none : SystemMouseCursors.basic,
+            cursor: _isCursorLocked
+                ? SystemMouseCursors.none
+                : SystemMouseCursors.basic,
             child: Listener(
               onPointerMove: _handlePointerMove,
               child: Container(
@@ -97,7 +99,7 @@ class _FPSGameExampleState extends State<FPSGameExample> {
               ),
             ),
           ),
-          
+
           // 控制按钮
           Positioned(
             bottom: 20,
@@ -107,7 +109,7 @@ class _FPSGameExampleState extends State<FPSGameExample> {
               child: Text(_isCursorLocked ? '解锁光标' : '锁定光标'),
             ),
           ),
-          
+
           // 状态显示
           Positioned(
             top: 20,
@@ -121,4 +123,4 @@ class _FPSGameExampleState extends State<FPSGameExample> {
       ),
     );
   }
-} 
+}
