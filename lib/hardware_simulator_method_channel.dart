@@ -46,7 +46,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
           // Directly get double values from arguments
           double xPercent = call.arguments['xPercent'];
           double yPercent = call.arguments['yPercent'];
-          
+
           cursorPositionCallbacks[callbackID]!(call.arguments['message'],
               call.arguments['screenId'], xPercent, yPercent);
         }
@@ -172,7 +172,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   void removeKeyboardPressed(KeyboardPressedCallback callback) {
     keyBoardPressedCallbacks.remove(callback);
   }
-  
+
   final List<KeyBlockedCallback> keyBlockedCallbacks = [];
 
   @override
@@ -355,8 +355,8 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> performPenEvent(
-      double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenEvent(double x, double y, bool isDown, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) async {
     await methodChannel.invokeMethod('penEvent', {
       'x': x,
       'y': y,
@@ -370,8 +370,8 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> performPenMove(
-      double x, double y, bool hasButton, double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenMove(double x, double y, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) async {
     await methodChannel.invokeMethod('penMove', {
       'x': x,
       'y': y,
@@ -432,28 +432,30 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<List<DisplayData>> getDisplayList() async {
     final result = await methodChannel.invokeMethod('getDisplayList');
     if (result == null) return [];
-    
+
     final List<dynamic> dynamicList = List<dynamic>.from(result);
     final List<Map<String, dynamic>> mapList = dynamicList.map((item) {
       return Map<String, dynamic>.from(item as Map);
     }).toList();
-    
+
     return mapList.map((map) => DisplayData.fromMap(map)).toList();
   }
 
   @override
-  Future<bool> changeDisplaySettings(int displayUid, int width, int height, int refreshRate, {int? bitDepth}) async {
+  Future<bool> changeDisplaySettings(
+      int displayUid, int width, int height, int refreshRate,
+      {int? bitDepth}) async {
     final Map<String, dynamic> arguments = {
       'displayUid': displayUid,
       'width': width,
       'height': height,
       'refreshRate': refreshRate,
     };
-    
+
     if (bitDepth != null) {
       arguments['bitDepth'] = bitDepth;
     }
-    
+
     return await methodChannel.invokeMethod('changeDisplaySettings', arguments);
   }
 
@@ -462,19 +464,22 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     final result = await methodChannel.invokeMethod('getDisplayConfigs', {
       'displayUid': displayUid,
     });
-    
-    return List<Map<String, dynamic>>.from(result.map((item) => Map<String, dynamic>.from(item)));
+
+    return List<Map<String, dynamic>>.from(
+        result.map((item) => Map<String, dynamic>.from(item)));
   }
 
   @override
   Future<List<Map<String, dynamic>>> getCustomDisplayConfigs() async {
     final result = await methodChannel.invokeMethod('getCustomDisplayConfigs');
-    
-    return List<Map<String, dynamic>>.from(result.map((item) => Map<String, dynamic>.from(item)));
+
+    return List<Map<String, dynamic>>.from(
+        result.map((item) => Map<String, dynamic>.from(item)));
   }
 
   @override
-  Future<bool> setCustomDisplayConfigs(List<Map<String, dynamic>> configs) async {
+  Future<bool> setCustomDisplayConfigs(
+      List<Map<String, dynamic>> configs) async {
     return await methodChannel.invokeMethod('setCustomDisplayConfigs', {
       'configs': configs,
     });

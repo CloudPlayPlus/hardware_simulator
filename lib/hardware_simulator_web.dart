@@ -67,9 +67,7 @@ class HardwareSimulatorPluginWeb extends HardwareSimulatorPlatform {
       }
     });
 
-    web.EventStreamProviders.wheelEvent
-        .forTarget(web.document)
-        .listen((event) {
+    web.EventStreamProviders.wheelEvent.forTarget(web.document).listen((event) {
       double dx = event.deltaX.toDouble();
       double dy = event.deltaY.toDouble();
       for (var callback in cursorWheelCallbacks) {

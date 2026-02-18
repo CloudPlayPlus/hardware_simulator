@@ -102,7 +102,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<bool> putImmersiveModeEnabled(bool enabled) {
-    throw UnimplementedError('putImmersiveModeEnabled() has not been implemented.');
+    throw UnimplementedError(
+        'putImmersiveModeEnabled() has not been implemented.');
   }
 
   /// When Immersive Mode is enabled, the callback will be called when a key is blocked(e.g. Alt+Tab, the Tab key is blocked).
@@ -201,13 +202,13 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   // Pen event simulation
-  Future<void> performPenEvent(
-      double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenEvent(double x, double y, bool isDown, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) async {
     throw UnimplementedError('performPenEvent() has not been implemented.');
   }
 
-  Future<void> performPenMove(
-      double x, double y, bool hasButton, double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenMove(double x, double y, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) async {
     throw UnimplementedError('performPenMove() has not been implemented.');
   }
 
@@ -225,7 +226,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError(
         'removeGameController() has not been implemented.');
   }
-  
+
   Future<bool> initParsecVdd() {
     throw UnimplementedError('initParsecVdd() has not been implemented.');
   }
@@ -246,8 +247,11 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('getDisplayList() has not been implemented.');
   }
 
-  Future<bool> changeDisplaySettings(int displayUid, int width, int height, int refreshRate, {int? bitDepth}) {
-    throw UnimplementedError('changeDisplaySettings() has not been implemented.');
+  Future<bool> changeDisplaySettings(
+      int displayUid, int width, int height, int refreshRate,
+      {int? bitDepth}) {
+    throw UnimplementedError(
+        'changeDisplaySettings() has not been implemented.');
   }
 
   Future<List<Map<String, dynamic>>> getDisplayConfigs(int displayUid) {
@@ -255,19 +259,23 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<List<Map<String, dynamic>>> getCustomDisplayConfigs() {
-    throw UnimplementedError('getCustomDisplayConfigs() has not been implemented.');
+    throw UnimplementedError(
+        'getCustomDisplayConfigs() has not been implemented.');
   }
 
   Future<bool> setCustomDisplayConfigs(List<Map<String, dynamic>> configs) {
-    throw UnimplementedError('setCustomDisplayConfigs() has not been implemented.');
+    throw UnimplementedError(
+        'setCustomDisplayConfigs() has not been implemented.');
   }
 
   Future<bool> setDisplayOrientation(int displayUid, int orientation) {
-    throw UnimplementedError('setDisplayOrientation() has not been implemented.');
+    throw UnimplementedError(
+        'setDisplayOrientation() has not been implemented.');
   }
 
   Future<int> getDisplayOrientation(int displayUid) {
-    throw UnimplementedError('getDisplayOrientation() has not been implemented.');
+    throw UnimplementedError(
+        'getDisplayOrientation() has not been implemented.');
   }
 
   // Multi-display mode management
@@ -276,20 +284,24 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<int> getCurrentMultiDisplayMode() {
-    throw UnimplementedError('getCurrentMultiDisplayMode() has not been implemented.');
+    throw UnimplementedError(
+        'getCurrentMultiDisplayMode() has not been implemented.');
   }
 
   // Display control APIs for setting primary display and disabling others
   Future<bool> setPrimaryDisplayOnly(int displayUid) {
-    throw UnimplementedError('setPrimaryDisplayOnly() has not been implemented.');
+    throw UnimplementedError(
+        'setPrimaryDisplayOnly() has not been implemented.');
   }
 
   Future<bool> restoreDisplayConfiguration() {
-    throw UnimplementedError('restoreDisplayConfiguration() has not been implemented.');
+    throw UnimplementedError(
+        'restoreDisplayConfiguration() has not been implemented.');
   }
 
   Future<bool> hasPendingConfiguration() {
-    throw UnimplementedError('hasPendingConfiguration() has not been implemented.');
+    throw UnimplementedError(
+        'hasPendingConfiguration() has not been implemented.');
   }
 
   Future<void> setDragWindowContents(bool enabled) async {
@@ -298,7 +310,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<void> clearAllPressedEvents() async {
-    throw UnimplementedError('clearAllPressedEvents() has not been implemented.');
+    throw UnimplementedError(
+        'clearAllPressedEvents() has not been implemented.');
   }
 
   Future<bool> setPrimaryDisplay(int displayIndex) async {
@@ -306,6 +319,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<void> updateStaticMonitors() async {
-    throw UnimplementedError('updateStaticMonitors() has not been implemented.');
+    throw UnimplementedError(
+        'updateStaticMonitors() has not been implemented.');
   }
 }

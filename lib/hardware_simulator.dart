@@ -161,7 +161,7 @@ class HardwareSimulator {
   static const int CURSOR_UPDATED_CACHED = 5;
   // ignore: constant_identifier_names
   static const int CURSOR_POSITION_CHANGED = 6;
-  
+
   // hook_all means we stream cursor image including standard system cursor.
   static void addCursorImageUpdated(
       CursorImageUpdatedCallback callback, int callbackId, bool hookAll) {
@@ -192,7 +192,8 @@ class HardwareSimulator {
   }
 
   static void removeDisplayCountChangedCallback(int callbackId) {
-    HardwareSimulatorPlatform.instance.removeDisplayCountChangedCallback(callbackId);
+    HardwareSimulatorPlatform.instance
+        .removeDisplayCountChangedCallback(callbackId);
   }
 
   HWKeyboard getKeyboard() {
@@ -214,14 +215,14 @@ class HardwareSimulator {
         .performTouchMove(x, y, touchId, screenId);
   }
 
-  static void performPenEvent(
-      double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt, int screenId) {
-    HardwareSimulatorPlatform.instance
-        .performPenEvent(x, y, isDown, hasButton, pressure, rotation, tilt, screenId);
+  static void performPenEvent(double x, double y, bool isDown, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) {
+    HardwareSimulatorPlatform.instance.performPenEvent(
+        x, y, isDown, hasButton, pressure, rotation, tilt, screenId);
   }
 
-  static void performPenMove(
-      double x, double y, bool hasButton, double pressure, double rotation, double tilt, int screenId) {
+  static void performPenMove(double x, double y, bool hasButton,
+      double pressure, double rotation, double tilt, int screenId) {
     HardwareSimulatorPlatform.instance
         .performPenMove(x, y, hasButton, pressure, rotation, tilt, screenId);
   }
@@ -235,7 +236,8 @@ class HardwareSimulator {
   }
 
   static Future<bool> setPrimaryDisplay(int displayIndex) async {
-    return await HardwareSimulatorPlatform.instance.setPrimaryDisplay(displayIndex);
+    return await HardwareSimulatorPlatform.instance
+        .setPrimaryDisplay(displayIndex);
   }
 
   static Future<bool> initParsecVdd() {
@@ -258,8 +260,12 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.getDisplayList();
   }
 
-  static Future<bool> changeDisplaySettings(int displayUid, int width, int height, int refreshRate, {int? bitDepth}) {
-    return HardwareSimulatorPlatform.instance.changeDisplaySettings(displayUid, width, height, refreshRate, bitDepth: bitDepth);
+  static Future<bool> changeDisplaySettings(
+      int displayUid, int width, int height, int refreshRate,
+      {int? bitDepth}) {
+    return HardwareSimulatorPlatform.instance.changeDisplaySettings(
+        displayUid, width, height, refreshRate,
+        bitDepth: bitDepth);
   }
 
   static Future<List<Map<String, dynamic>>> getDisplayConfigs(int displayUid) {
@@ -270,27 +276,35 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.getCustomDisplayConfigs();
   }
 
-  static Future<bool> setCustomDisplayConfigs(List<Map<String, dynamic>> configs) {
+  static Future<bool> setCustomDisplayConfigs(
+      List<Map<String, dynamic>> configs) {
     return HardwareSimulatorPlatform.instance.setCustomDisplayConfigs(configs);
   }
 
   // Display orientation management
-  static Future<bool> setDisplayOrientation(int displayUid, DisplayOrientation orientation) {
-    return HardwareSimulatorPlatform.instance.setDisplayOrientation(displayUid, orientation.index);
+  static Future<bool> setDisplayOrientation(
+      int displayUid, DisplayOrientation orientation) {
+    return HardwareSimulatorPlatform.instance
+        .setDisplayOrientation(displayUid, orientation.index);
   }
 
-  static Future<DisplayOrientation> getDisplayOrientation(int displayUid) async {
-    int orientationIndex = await HardwareSimulatorPlatform.instance.getDisplayOrientation(displayUid);
+  static Future<DisplayOrientation> getDisplayOrientation(
+      int displayUid) async {
+    int orientationIndex = await HardwareSimulatorPlatform.instance
+        .getDisplayOrientation(displayUid);
     return DisplayOrientation.values[orientationIndex];
   }
 
   // Multi-display mode management
-  static Future<bool> setMultiDisplayMode(MultiDisplayMode mode, {int primaryDisplayId = 0}) {
-    return HardwareSimulatorPlatform.instance.setMultiDisplayMode(mode.index, primaryDisplayId);
+  static Future<bool> setMultiDisplayMode(MultiDisplayMode mode,
+      {int primaryDisplayId = 0}) {
+    return HardwareSimulatorPlatform.instance
+        .setMultiDisplayMode(mode.index, primaryDisplayId);
   }
 
   static Future<MultiDisplayMode> getCurrentMultiDisplayMode() async {
-    int modeIndex = await HardwareSimulatorPlatform.instance.getCurrentMultiDisplayMode();
+    int modeIndex =
+        await HardwareSimulatorPlatform.instance.getCurrentMultiDisplayMode();
     if (modeIndex >= 0 && modeIndex < MultiDisplayMode.values.length) {
       return MultiDisplayMode.values[modeIndex];
     }
@@ -321,16 +335,16 @@ class HardwareSimulator {
 
 // Enums for display management
 enum DisplayOrientation {
-  landscape,        // Angle0
-  portrait,         // Angle90
+  landscape, // Angle0
+  portrait, // Angle90
   landscapeFlipped, // Angle180
-  portraitFlipped   // Angle270
+  portraitFlipped // Angle270
 }
 
 enum DisplayTopologyMode {
-  extend,    // Extend desktop
+  extend, // Extend desktop
   duplicate, // Mirror/Duplicate displays
-  internal,  // Internal display only
-  external,  // External display only
-  clone      // Clone mode
+  internal, // Internal display only
+  external, // External display only
+  clone // Clone mode
 }
