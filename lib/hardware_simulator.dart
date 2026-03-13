@@ -1,4 +1,6 @@
 import 'hardware_simulator_platform_interface.dart';
+export 'hardware_simulator_platform_interface.dart'
+    show DisplayCountChangedCallback;
 import 'display_data.dart';
 
 class HWKeyboard {
