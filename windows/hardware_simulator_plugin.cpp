@@ -755,6 +755,60 @@ bool RunBatchAsAdmin(
     return true;
 }
 
+bool RunExeAsAdmin(
+    LPCWSTR lpExeFileName,
+    LPCWSTR lpArguments,
+    DWORD* pErrorCode = nullptr,
+    bool bWait = false
+) {
+    WCHAR exePath[MAX_PATH] = {0};
+    if (0 == GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+        if (pErrorCode) *pErrorCode = GetLastError();
+        return false;
+    }
+
+    WCHAR exeDir[MAX_PATH] = {0};
+    wcscpy_s(exeDir, exePath);
+    if (!PathRemoveFileSpecW(exeDir)) {
+        if (pErrorCode) *pErrorCode = ERROR_PATH_NOT_FOUND;
+        return false;
+    }
+
+    WCHAR targetPath[MAX_PATH] = {0};
+    if (!PathCombineW(targetPath, exeDir, lpExeFileName)) {
+        if (pErrorCode) *pErrorCode = ERROR_INVALID_NAME;
+        return false;
+    }
+
+    if (INVALID_FILE_ATTRIBUTES == GetFileAttributesW(targetPath)) {
+        if (pErrorCode) *pErrorCode = GetLastError();
+        return false;
+    }
+
+    SHELLEXECUTEINFOW sei = { sizeof(sei) };
+    sei.lpVerb = L"runas";
+    sei.lpFile = targetPath;
+    sei.lpParameters = lpArguments;
+    sei.nShow = SW_HIDE;
+
+    if (bWait) {
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    }
+
+    if (!ShellExecuteExW(&sei)) {
+        const DWORD err = GetLastError();
+        if (pErrorCode) *pErrorCode = err;
+        return false;
+    }
+
+    if (bWait && sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+    }
+
+    return true;
+}
+
 // https://sunlogin.oray.com/news/16158.html
 void setDragWindowContents(bool enable) {
   HKEY hKey;
@@ -1278,11 +1332,11 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     }
   } else if (method_call.method_name().compare("registerService") == 0) {
         DWORD dword;
-        bool allowed_to_run = RunBatchAsAdmin(L"service.bat", &dword, true);
+        bool allowed_to_run = RunExeAsAdmin(L"cloudplayplus_service.exe", L"--install", &dword, true);
         result->Success(flutter::EncodableValue(allowed_to_run));
   } else if (method_call.method_name().compare("unregisterService") == 0) {
         DWORD dword;
-        RunBatchAsAdmin(L"unregisterservice.bat", &dword, false);
+        RunExeAsAdmin(L"cloudplayplus_service.exe", L"--uninstall", &dword, true);
         result->Success(flutter::EncodableValue());
   } else if (method_call.method_name().compare("isRunningAsSystem") == 0) {
         if (IsRunningAsSystem()) {
