@@ -1332,11 +1332,11 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     }
   } else if (method_call.method_name().compare("registerService") == 0) {
         DWORD dword;
-        bool allowed_to_run = RunExeAsAdmin(L"cloudplayplus_service.exe", L"--install", &dword, true);
+        bool allowed_to_run = RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--install", &dword, true);
         result->Success(flutter::EncodableValue(allowed_to_run));
   } else if (method_call.method_name().compare("unregisterService") == 0) {
         DWORD dword;
-        RunExeAsAdmin(L"cloudplayplus_service.exe", L"--uninstall", &dword, true);
+        RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--uninstall", &dword, true);
         result->Success(flutter::EncodableValue());
   } else if (method_call.method_name().compare("isRunningAsSystem") == 0) {
         if (IsRunningAsSystem()) {
