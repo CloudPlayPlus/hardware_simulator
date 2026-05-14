@@ -20,6 +20,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var lastMouseClickCount: Int64 = 0
   private var activeMouseButtonId: Int?
   private var activeMouseClickCount: Int64 = 1
+  private let mouseEventSource = CGEventSource(stateID: .hidSystemState)
+  private var injectedMouseButtonIds = Set<Int>()
   private let maxDoubleClickDistance: CGFloat = 6
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -209,6 +211,97 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
   }
 
+  private func mouseButton(for buttonId: Int) -> CGMouseButton? {
+      switch buttonId {
+      case 1:
+          return .left
+      case 2:
+          return .center
+      case 3:
+          return .right
+      default:
+          return nil
+      }
+  }
+
+  private func mouseButtonEventType(buttonId: Int, isDown: Bool) -> CGEventType? {
+      switch buttonId {
+      case 1:
+          return isDown ? .leftMouseDown : .leftMouseUp
+      case 2:
+          return isDown ? .otherMouseDown : .otherMouseUp
+      case 3:
+          return isDown ? .rightMouseDown : .rightMouseUp
+      default:
+          return nil
+      }
+  }
+
+  private func injectedMouseMoveEvent() -> (type: CGEventType, button: CGMouseButton) {
+      if injectedMouseButtonIds.contains(1) {
+          return (.leftMouseDragged, .left)
+      }
+      if injectedMouseButtonIds.contains(2) {
+          return (.otherMouseDragged, .center)
+      }
+      if injectedMouseButtonIds.contains(3) {
+          return (.rightMouseDragged, .right)
+      }
+      return (.mouseMoved, .left)
+  }
+
+  private func updateInjectedMouseButtonState(buttonId: Int, isDown: Bool) {
+      if isDown {
+          injectedMouseButtonIds.insert(buttonId)
+      } else {
+          injectedMouseButtonIds.remove(buttonId)
+      }
+  }
+
+  private func currentMouseLocation() -> CGPoint? {
+      return CGEvent(source: mouseEventSource)?.location ?? CGEvent(source: nil)?.location
+  }
+
+  private func clampMouseLocation(_ location: CGPoint, screenId: Int? = nil) -> CGPoint {
+      let screens = NSScreen.screens
+      let id = screenId ?? currentScreenId
+      guard screens.indices.contains(id) else {
+          return location
+      }
+      let frame = screens[id].frame
+      return CGPoint(
+          x: min(max(location.x, frame.minX), frame.maxX - 1),
+          y: min(max(location.y, frame.minY), frame.maxY - 1)
+      )
+  }
+
+  private func postMouse(
+      button: CGMouseButton,
+      type: CGEventType,
+      location rawLocation: CGPoint,
+      previousLocation: CGPoint,
+      clickCount: Int64,
+      screenId: Int? = nil
+  ) {
+      let location = clampMouseLocation(rawLocation, screenId: screenId)
+      let event = CGEvent(
+          mouseEventSource: mouseEventSource,
+          mouseType: type,
+          mouseCursorPosition: location,
+          mouseButton: button
+      )
+
+      event?.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+      event?.setIntegerValueField(.mouseEventClickState, value: clickCount)
+      event?.setDoubleValueField(.mouseEventDeltaX, value: Double(rawLocation.x - previousLocation.x))
+      event?.setDoubleValueField(.mouseEventDeltaY, value: Double(rawLocation.y - previousLocation.y))
+      event?.post(tap: .cghidEventTap)
+
+      // Mirrors Sunshine: some macOS apps only observe the cursor position
+      // correctly when the hardware cursor is warped after a synthetic event.
+      CGWarpMouseCursorPosition(location)
+  }
+
   func performMouseMoveAbsl(x: Double, y: Double, screenId: Int) {
       let screens = NSScreen.screens
       guard screens.indices.contains(screenId) else {
@@ -228,16 +321,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       // Haichao: It seems this is how macos works for Y. I don't know why it is so strange.
       let absoluteY = heightFactor - (yOffset + screenDiff)
 
-      var eventType: CGEventType = .mouseMoved
-      let pressedButtons = NSEvent.pressedMouseButtons
-      if pressedButtons & (1 << 0) != 0 {
-          eventType = .leftMouseDragged
-      } else if pressedButtons & (1 << 1) != 0 {
-          eventType = .rightMouseDragged
-      }
-      let moveEvent = CGEvent(mouseEventSource: nil, mouseType: eventType, mouseCursorPosition: CGPoint(x: absoluteX, y: absoluteY), mouseButton: .left)
-
-      moveEvent?.post(tap: .cghidEventTap)
+      let injectedMove = injectedMouseMoveEvent()
+      let location = CGPoint(x: absoluteX, y: absoluteY)
+      let previousLocation = currentMouseLocation() ?? location
+      postMouse(
+          button: injectedMove.button,
+          type: injectedMove.type,
+          location: location,
+          previousLocation: previousLocation,
+          clickCount: 0,
+          screenId: screenId
+      )
   }
 
   func performMouseMoveRelative(dx: Double, dy: Double, screenId: Int) {
@@ -247,65 +341,45 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           return
       }
 
-      let targetScreen = screens[screenId]
-      let screenFrame = targetScreen.frame
-      
-      var eventType: CGEventType = .mouseMoved
-      let pressedButtons = NSEvent.pressedMouseButtons
-      if pressedButtons & (1 << 0) != 0 {
-          eventType = .leftMouseDragged
-      } else if pressedButtons & (1 << 1) != 0 {
-          eventType = .rightMouseDragged
-      }
-
-      // Get the current mouse location
-      if let currentMouseLocation = CGEvent(source: nil)?.location {
+      if let currentMouseLocation = currentMouseLocation() {
           // Calculate new position based on dx and dy
           let newX = currentMouseLocation.x + CGFloat(dx)
           let newY = currentMouseLocation.y + CGFloat(dy)
-
-          // Ensure the new coordinates are within the screen's bounds
-          let clampedX = min(max(newX, screenFrame.minX), screenFrame.maxX)
-          let clampedY = min(max(newY, screenFrame.minY), screenFrame.maxY)
-
-          // Create and post the event to move the mouse
-          let moveEvent = CGEvent(mouseEventSource: nil, mouseType: eventType, mouseCursorPosition: CGPoint(x: clampedX, y: clampedY), mouseButton: .left)
-          moveEvent?.post(tap: .cghidEventTap)
+          let injectedMove = injectedMouseMoveEvent()
+          postMouse(
+              button: injectedMove.button,
+              type: injectedMove.type,
+              location: CGPoint(x: newX, y: newY),
+              previousLocation: currentMouseLocation,
+              clickCount: 0,
+              screenId: screenId
+          )
       }
   }
 
   func performMouseButton(buttonId: Int, isDown: Bool) {
-      let eventSource = CGEventSource(stateID: .hidSystemState)
-
-      var mouseEventType: CGEventType
-      var mouseButton: CGMouseButton
-      
-      // 根据 buttonId 确定是左键还是右键
-      if buttonId == 1 {
-          mouseButton = .left
-          mouseEventType = isDown ? .leftMouseDown : .leftMouseUp
-      } else if buttonId == 3 {
-          mouseButton = .right
-          mouseEventType = isDown ? .rightMouseDown : .rightMouseUp
-      } else {
+      guard let mouseButton = mouseButton(for: buttonId),
+            let mouseEventType = mouseButtonEventType(buttonId: buttonId, isDown: isDown) else {
           print("Unsupported buttonId")
           return
       }
       
       // 获取当前鼠标位置
-      if let currentLocation = CGEvent(source: nil)?.location {
+      if let currentLocation = currentMouseLocation() {
           let clickCount = mouseClickCount(buttonId: buttonId, isDown: isDown, location: currentLocation)
-          // 创建鼠标事件
-          let mouseEvent = CGEvent(mouseEventSource: eventSource, 
-                                  mouseType: mouseEventType, 
-                                  mouseCursorPosition: currentLocation, 
-                                  mouseButton: mouseButton)
-          mouseEvent?.setIntegerValueField(.mouseEventClickState, value: clickCount)
-          
-          // 发送事件
-          mouseEvent?.post(tap: .cghidEventTap)
+          updateInjectedMouseButtonState(buttonId: buttonId, isDown: isDown)
+          postMouse(
+              button: mouseButton,
+              type: mouseEventType,
+              location: currentLocation,
+              previousLocation: currentLocation,
+              clickCount: clickCount
+          )
           updateMouseClickStateAfterPost(buttonId: buttonId, isDown: isDown, location: currentLocation, clickCount: clickCount)
       } else {
+          if !isDown {
+              updateInjectedMouseButtonState(buttonId: buttonId, isDown: false)
+          }
           print("Failed to get current mouse location")
       }
   }
