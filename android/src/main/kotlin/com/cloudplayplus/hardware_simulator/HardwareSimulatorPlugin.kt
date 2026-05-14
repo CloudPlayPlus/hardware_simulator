@@ -3,6 +3,7 @@ package com.cloudplayplus.hardware_simulator
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -15,7 +16,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
-import org.flame_engine.gamepads_android.GamepadsCompatibleActivity
 
 /** HardwareSimulatorPlugin */
 class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
@@ -28,6 +28,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private var isCursorLocked = false
   private var isAndroidTV = false
   private var flutterView: View? = null
+  private var lockedKeyEventHandler: ((KeyEvent) -> Boolean)? = null
 
   override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "hardware_simulator")
@@ -172,17 +173,16 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     activity = binding.activity
     isAndroidTV = activity!!.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
 
-    val compatibleActivity = activity as GamepadsCompatibleActivity
-    compatibleActivity.registerLockedKeyEventHandler { event ->
+    lockedKeyEventHandler = handler@ { event: KeyEvent ->
       if (!isCursorLocked) {
-        return@registerLockedKeyEventHandler false
+        return@handler false
       }
       val device = InputDevice.getDevice(event.deviceId)
       if (isAndroidTV && event.source and InputDevice.SOURCE_KEYBOARD != InputDevice.SOURCE_KEYBOARD) {
         // mouse right button
         if (event.keyCode == 4) {
           // block quitting app
-          return@registerLockedKeyEventHandler true
+          return@handler true
         }
       }
       if (event.source and InputDevice.SOURCE_KEYBOARD == InputDevice.SOURCE_KEYBOARD) {
@@ -198,7 +198,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1082,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP){
             val isDown = when (event.action) {
@@ -210,7 +210,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1024,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN){
             val isDown = when (event.action) {
@@ -222,7 +222,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1025,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP){
             val isDown = when (event.action) {
@@ -234,7 +234,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1019,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN){
             val isDown = when (event.action) {
@@ -246,7 +246,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1020,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT){
             val isDown = when (event.action) {
@@ -258,7 +258,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1021,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
           if (event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT){
             val isDown = when (event.action) {
@@ -270,7 +270,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               "buttonId" to 1022,
               "isDown" to isDown
             ))
-            return@registerLockedKeyEventHandler true
+            return@handler true
           }
         }
         if (isDpadKey(event.keyCode) ) {
@@ -298,7 +298,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
               }
             }
           }
-          return@registerLockedKeyEventHandler true
+          return@handler true
         }
         val isDown = when (event.action) {
           KeyEvent.ACTION_DOWN -> true
@@ -309,10 +309,16 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
           "buttonId" to event.keyCode,
           "isDown" to isDown
         ))
-        return@registerLockedKeyEventHandler true
+        return@handler true
       } else {
-        return@registerLockedKeyEventHandler false
+        return@handler false
       }
+    }
+    val bridge = activity as? HardwareSimulatorActivityBridge
+    if (bridge != null) {
+      bridge.registerLockedKeyEventHandler(lockedKeyEventHandler!!)
+    } else {
+      Log.w("HardwareSimulator", "Activity does not implement HardwareSimulatorActivityBridge")
     }
     // 获取Flutter的根视图
     flutterView = binding.activity.window.decorView.findViewById<View>(android.R.id.content)
@@ -333,17 +339,20 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   }
 
   override fun onDetachedFromActivityForConfigChanges() {
+    (activity as? HardwareSimulatorActivityBridge)?.registerLockedKeyEventHandler(null)
     activity = null
     flutterView = null
+    lockedKeyEventHandler = null
   }
 
   override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-    activity = binding.activity
-    flutterView = binding.activity.window.decorView.findViewById<View>(android.R.id.content)
+    onAttachedToActivity(binding)
   }
 
   override fun onDetachedFromActivity() {
+    (activity as? HardwareSimulatorActivityBridge)?.registerLockedKeyEventHandler(null)
     activity = null
     flutterView = null
+    lockedKeyEventHandler = null
   }
 }
