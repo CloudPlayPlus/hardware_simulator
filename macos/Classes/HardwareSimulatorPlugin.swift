@@ -567,7 +567,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     //cache iamge
     if jsHashWithImageHash.keys.contains(cursorImageHashes) {
       //print("cache: \(jsHashWithImageHash[cursorImageHashes])");
-      let messageHash = jsHashWithImageHash[cursorImageHashes]
+      guard let messageHash = jsHashWithImageHash[cursorImageHashes] else {
+        return
+      }
       var fullImageMessage: [String: Any]? = nil
       if cursorChangedCallbacks.contains(where: { !callbackHasCursorHash($0, messageHash) }) {
         let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
