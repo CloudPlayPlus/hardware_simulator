@@ -14,6 +14,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var methodChannel: FlutterMethodChannel?
   private var defaultCursorHasher: CursorHasher?
   private var currentScreenId: Int = 0
+  private var lastMouseClickButtonId: Int?
+  private var lastMouseClickTime: TimeInterval = 0
+  private var lastMouseClickLocation: CGPoint?
+  private var lastMouseClickCount: Int64 = 0
+  private var activeMouseButtonId: Int?
+  private var activeMouseClickCount: Int64 = 1
+  private let maxDoubleClickDistance: CGFloat = 6
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
@@ -287,16 +294,58 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       
       // 获取当前鼠标位置
       if let currentLocation = CGEvent(source: nil)?.location {
+          let clickCount = mouseClickCount(buttonId: buttonId, isDown: isDown, location: currentLocation)
           // 创建鼠标事件
           let mouseEvent = CGEvent(mouseEventSource: eventSource, 
                                   mouseType: mouseEventType, 
                                   mouseCursorPosition: currentLocation, 
                                   mouseButton: mouseButton)
+          mouseEvent?.setIntegerValueField(.mouseEventClickState, value: clickCount)
           
           // 发送事件
           mouseEvent?.post(tap: .cghidEventTap)
+          updateMouseClickStateAfterPost(buttonId: buttonId, isDown: isDown, location: currentLocation, clickCount: clickCount)
       } else {
           print("Failed to get current mouse location")
+      }
+  }
+
+  private func mouseClickCount(buttonId: Int, isDown: Bool, location: CGPoint) -> Int64 {
+      if !isDown {
+          if activeMouseButtonId == buttonId {
+              return activeMouseClickCount
+          }
+          return 1
+      }
+
+      let now = Date().timeIntervalSince1970
+      let interval = NSEvent.doubleClickInterval
+      let sameButton = lastMouseClickButtonId == buttonId
+      let closeEnough = lastMouseClickLocation.map {
+          hypot(location.x - $0.x, location.y - $0.y) <= maxDoubleClickDistance
+      } ?? false
+      let withinInterval = now - lastMouseClickTime <= interval
+
+      let nextClickCount: Int64
+      if sameButton && closeEnough && withinInterval {
+          nextClickCount = min(lastMouseClickCount + 1, 3)
+      } else {
+          nextClickCount = 1
+      }
+      activeMouseButtonId = buttonId
+      activeMouseClickCount = nextClickCount
+      return nextClickCount
+  }
+
+  private func updateMouseClickStateAfterPost(buttonId: Int, isDown: Bool, location: CGPoint, clickCount: Int64) {
+      guard !isDown else { return }
+      lastMouseClickButtonId = buttonId
+      lastMouseClickTime = Date().timeIntervalSince1970
+      lastMouseClickLocation = location
+      lastMouseClickCount = clickCount
+      if activeMouseButtonId == buttonId {
+          activeMouseButtonId = nil
+          activeMouseClickCount = 1
       }
   }
 
