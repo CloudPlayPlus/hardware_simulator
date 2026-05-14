@@ -556,7 +556,38 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if jsHashWithImageHash.keys.contains(cursorImageHashes) {
       //print("cache: \(jsHashWithImageHash[cursorImageHashes])");
       let messageHash = jsHashWithImageHash[cursorImageHashes]
+      let hookAllCallbacks = cursorChangedCallbacks.filter { hookAllCursorImage[$0] ?? false }
+      var fullImageMessage: [String: Any]? = nil
+      if !hookAllCallbacks.isEmpty {
+        let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
+        var int8Image:[UInt8] = [9];
+        int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsWide)])
+        int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsHigh)])
+        let currentScreen = NSScreen.screens[currentScreenId]
+        var scaleFactor = currentScreen.backingScaleFactor
+        if cursorImage!.representations[0].pixelsWide <= 32 && cursorImage!.representations[0].pixelsHigh <= 32 {
+          scaleFactor = 1.0
+        }
+        int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.x * scaleFactor))])
+        int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.y * scaleFactor))])
+        int8Image.append(UInt8((messageHash >> 24) & 0xFF))
+        int8Image.append(UInt8((messageHash >> 16) & 0xFF)) 
+        int8Image.append(UInt8((messageHash >> 8) & 0xFF))
+        int8Image.append(UInt8(messageHash & 0xFF))
+        int8Image.append(contentsOf: imagedataInt8!)
+        fullImageMessage = [
+          "message": CursorConstants.cursorUpdatedImage,
+          "msg_info": messageHash,
+          "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
+        ]
+      }
       for callbackID in cursorChangedCallbacks {
+        if hookAllCursorImage[callbackID] ?? false,
+           var message = fullImageMessage {
+          message["callbackID"] = callbackID
+          methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+          continue
+        }
         let message: [String: Any] = [
             "callbackID": callbackID,
             "message": CursorConstants.cursorUpdatedCached,
