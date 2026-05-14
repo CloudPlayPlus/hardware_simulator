@@ -394,6 +394,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
   var jsHashWithImageHash = Dictionary<String, UInt32>()
+  var cursorHashesByCallback = Dictionary<Int, Set<UInt32>>()
   var hookAllCursorImage = Dictionary<Int, Bool>()
   let cursorMonitorMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
 
@@ -492,6 +493,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
   }
 
+  private func callbackHasCursorHash(_ callbackID: Int, _ hash: UInt32) -> Bool {
+    return cursorHashesByCallback[callbackID]?.contains(hash) ?? false
+  }
+
+  private func markCursorHashSeen(_ callbackID: Int, _ hash: UInt32) {
+    var hashes = cursorHashesByCallback[callbackID] ?? Set<UInt32>()
+    hashes.insert(hash)
+    cursorHashesByCallback[callbackID] = hashes
+  }
+
   private func checkMouseCursor() {
    
     let currentCursor = NSCursor.currentSystem 
@@ -547,6 +558,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                     "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
                 ]
                 methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+                markCursorHashSeen(callbackID, messageHash)
             }
         }
         return ;
@@ -556,9 +568,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if jsHashWithImageHash.keys.contains(cursorImageHashes) {
       //print("cache: \(jsHashWithImageHash[cursorImageHashes])");
       let messageHash = jsHashWithImageHash[cursorImageHashes]
-      let hookAllCallbacks = cursorChangedCallbacks.filter { hookAllCursorImage[$0] ?? false }
       var fullImageMessage: [String: Any]? = nil
-      if !hookAllCallbacks.isEmpty {
+      if cursorChangedCallbacks.contains(where: { !callbackHasCursorHash($0, messageHash) }) {
         let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
         var int8Image:[UInt8] = [9];
         int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsWide)])
@@ -582,19 +593,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         ]
       }
       for callbackID in cursorChangedCallbacks {
-        if hookAllCursorImage[callbackID] ?? false,
-           var message = fullImageMessage {
+        if callbackHasCursorHash(callbackID, messageHash) {
+          let message: [String: Any] = [
+              "callbackID": callbackID,
+              "message": CursorConstants.cursorUpdatedCached,
+              "msg_info": messageHash,
+              "cursorImage": FlutterStandardTypedData.init(bytes: Data([]))
+          ]
+          methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+        } else if var message = fullImageMessage {
           message["callbackID"] = callbackID
           methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
-          continue
+          markCursorHashSeen(callbackID, messageHash)
         }
-        let message: [String: Any] = [
-            "callbackID": callbackID,
-            "message": CursorConstants.cursorUpdatedCached,
-            "msg_info": messageHash,
-            "cursorImage": FlutterStandardTypedData.init(bytes: Data([]))
-        ]
-        methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
       }
       return ;
     }
@@ -630,6 +641,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
       ]
       methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+      markCursorHashSeen(callbackID, messageHash)
     }
   }
   
@@ -777,6 +789,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                       "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
                   ]
                   methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+                  markCursorHashSeen(callbackID, messageHash)
                   sendCursorImagePosition(callbackID: callbackID)
               }
           }
@@ -789,6 +802,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         let callbackID = args["callbackID"] as? Int{
           cursorChangedCallbacks.remove(callbackID)
           hookAllCursorImage.removeValue(forKey: callbackID)
+          cursorHashesByCallback.removeValue(forKey: callbackID)
           if cursorChangedCallbacks.count == 0{
               if let monitor = mouseMovedMonitor {
                NSEvent.removeMonitor(monitor)
