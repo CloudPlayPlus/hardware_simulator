@@ -132,11 +132,26 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       guard let window = UIApplication.shared.keyWindow else { print("no window"); return nil }
       guard let rvc = window.rootViewController else { print("no rvc"); return nil }
       if let rvc = rvc as? HomeIndicatorAwareFlutterViewController { return rvc }
-      guard let fvc = rvc as? FlutterViewController else { return nil }
+      guard let fvc = findFlutterViewController(from: rvc) else { return nil }
       object_setClass(fvc, HomeIndicatorAwareFlutterViewController.self)
       let newController = fvc as! HomeIndicatorAwareFlutterViewController
-      window.rootViewController = newController as UIViewController?
       return newController
+    }
+
+    private func findFlutterViewController(from controller: UIViewController) -> FlutterViewController? {
+      if let fvc = controller as? FlutterViewController {
+        return fvc
+      }
+      for child in controller.children {
+        if let fvc = findFlutterViewController(from: child) {
+          return fvc
+        }
+      }
+      if let presented = controller.presentedViewController,
+         let fvc = findFlutterViewController(from: presented) {
+        return fvc
+      }
+      return nil
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
