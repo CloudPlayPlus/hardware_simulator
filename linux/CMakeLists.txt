@@ -41,7 +41,7 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
-pkg_check_modules(LIBEVDEV QUIET libevdev)
+pkg_check_modules(LIBEVDEV QUIET IMPORTED_TARGET libevdev)
 if(LIBEVDEV_FOUND)
   set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${LIBEVDEV_INCLUDE_DIRS}")
   set(LIBEVDEV_CUSTOM_LIBRARY PkgConfig::LIBEVDEV)

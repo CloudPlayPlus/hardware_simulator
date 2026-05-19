@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -39,12 +40,22 @@ struct MonitorBounds {
   int height;
 };
 
+enum class MouseMode {
+  kRelative,
+  kAbsolute,
+};
+
 std::mutex g_input_mutex;
 std::mutex g_mouse_mutex;
 std::set<KeyCode> g_pressed_keys;
-std::set<inputtino::Mouse::MOUSE_BUTTON> g_pressed_mouse_buttons;
+std::map<inputtino::Mouse::MOUSE_BUTTON, MouseMode> g_pressed_mouse_buttons;
 std::unique_ptr<inputtino::Mouse> g_mouse;
 std::string g_mouse_error;
+MouseMode g_current_mouse_mode = MouseMode::kRelative;
+int g_last_abs_x = 0;
+int g_last_abs_y = 0;
+int g_last_abs_width = 1;
+int g_last_abs_height = 1;
 
 FlMethodResponse* success_null() {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
@@ -230,6 +241,16 @@ inputtino::Mouse* get_mouse() {
   return g_mouse.get();
 }
 
+void set_mouse_mode(inputtino::Mouse* mouse, MouseMode mode) {
+  if (mode == MouseMode::kAbsolute) {
+    mouse->move_abs(g_last_abs_x, g_last_abs_y, g_last_abs_width,
+                    g_last_abs_height);
+  } else {
+    mouse->move(0, 0);
+  }
+  g_current_mouse_mode = mode;
+}
+
 KeySym windows_vk_to_keysym(int vk) {
   if (vk >= 0x41 && vk <= 0x5A) {
     return XK_a + (vk - 0x41);
@@ -361,7 +382,12 @@ FlMethodResponse* perform_mouse_move_relative(FlValue* args) {
   if (mouse == nullptr) {
     return linux_mouse_error();
   }
-  mouse->move(static_cast<int>(std::round(x)), static_cast<int>(std::round(y)));
+  {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    mouse->move(static_cast<int>(std::round(x)),
+                static_cast<int>(std::round(y)));
+    g_current_mouse_mode = MouseMode::kRelative;
+  }
   return success_null();
 }
 
@@ -395,7 +421,15 @@ FlMethodResponse* perform_mouse_move_absolute(FlValue* args) {
       monitor.x - root.x + static_cast<int>(std::round(x * (monitor.width - 1)));
   int target_y =
       monitor.y - root.y + static_cast<int>(std::round(y * (monitor.height - 1)));
-  mouse->move_abs(target_x, target_y, root.width, root.height);
+  {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    mouse->move_abs(target_x, target_y, root.width, root.height);
+    g_current_mouse_mode = MouseMode::kAbsolute;
+    g_last_abs_x = target_x;
+    g_last_abs_y = target_y;
+    g_last_abs_width = root.width;
+    g_last_abs_height = root.height;
+  }
   return success_null();
 }
 
@@ -418,15 +452,16 @@ FlMethodResponse* perform_mouse_button(FlValue* args) {
   {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     if (is_down) {
-      g_pressed_mouse_buttons.insert(button);
+      g_pressed_mouse_buttons[button] = g_current_mouse_mode;
+      mouse->press(button);
     } else {
-      g_pressed_mouse_buttons.erase(button);
+      auto pressed_button = g_pressed_mouse_buttons.find(button);
+      if (pressed_button != g_pressed_mouse_buttons.end()) {
+        set_mouse_mode(mouse, pressed_button->second);
+        g_pressed_mouse_buttons.erase(pressed_button);
+      }
+      mouse->release(button);
     }
-  }
-  if (is_down) {
-    mouse->press(button);
-  } else {
-    mouse->release(button);
   }
   return success_null();
 }
@@ -447,9 +482,11 @@ FlMethodResponse* perform_mouse_scroll(FlValue* args) {
   int vertical_distance = static_cast<int>(std::round(dy));
   int horizontal_distance = static_cast<int>(std::round(dx));
   if (vertical_distance != 0) {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
     mouse->vertical_scroll(vertical_distance);
   }
   if (horizontal_distance != 0) {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
     mouse->horizontal_scroll(horizontal_distance);
   }
   return success_null();
@@ -463,27 +500,55 @@ FlMethodResponse* get_monitor_count() {
   return success_int(static_cast<int>(get_monitors(display.get()).size()));
 }
 
+FlMethodResponse* clear_all_pressed_mouse_buttons() {
+  std::map<inputtino::Mouse::MOUSE_BUTTON, MouseMode> buttons;
+  {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    buttons.swap(g_pressed_mouse_buttons);
+  }
+  if (buttons.empty()) {
+    return nullptr;
+  }
+  auto* mouse = get_mouse();
+  if (mouse == nullptr) {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    g_pressed_mouse_buttons.insert(buttons.begin(), buttons.end());
+    return linux_mouse_error();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    for (const auto& button : buttons) {
+      set_mouse_mode(mouse, button.second);
+      mouse->release(button.first);
+    }
+  }
+  return nullptr;
+}
+
 FlMethodResponse* clear_all_pressed_events() {
+  if (auto* mouse_error = clear_all_pressed_mouse_buttons()) {
+    return mouse_error;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    if (g_pressed_keys.empty()) {
+      return success_null();
+    }
+  }
+
   XDisplay display;
   if (!display.supports_xtest()) {
     return linux_display_error();
   }
 
   std::set<KeyCode> keys;
-  std::set<inputtino::Mouse::MOUSE_BUTTON> buttons;
   {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     keys.swap(g_pressed_keys);
-    buttons.swap(g_pressed_mouse_buttons);
   }
   for (KeyCode key : keys) {
     XTestFakeKeyEvent(display.get(), key, False, CurrentTime);
-  }
-  auto* mouse = get_mouse();
-  if (mouse != nullptr) {
-    for (auto button : buttons) {
-      mouse->release(button);
-    }
   }
   XFlush(display.get());
   return success_null();
