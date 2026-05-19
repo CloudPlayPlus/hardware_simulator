@@ -7,12 +7,7 @@ Current it supports to simulate: mouse & keyboard for Windows/macOS/Linux (Linux
 Linux uinput permission setup:
 
 ```bash
-sudo install -m 0644 linux/udev/rules.d/60-cloudplayplus-hardware-simulator.rules /etc/udev/rules.d/
-sudo groupadd -f input
-sudo usermod -aG input "$USER"
-sudo modprobe uinput
-sudo udevadm control --reload-rules
-sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
+./scripts/setup_linux_input_permissions.sh
 ```
 
 Log out and back in after adding your user to the `input` group.
