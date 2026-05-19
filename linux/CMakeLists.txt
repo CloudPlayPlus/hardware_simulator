@@ -41,6 +41,42 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
+pkg_check_modules(LIBEVDEV QUIET libevdev)
+if(LIBEVDEV_FOUND)
+  set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${LIBEVDEV_INCLUDE_DIRS}")
+  set(LIBEVDEV_CUSTOM_LIBRARY PkgConfig::LIBEVDEV)
+else()
+  include(ExternalProject)
+  set(LIBEVDEV_VERSION 1.13.2)
+  ExternalProject_Add(libevdev
+    URL https://www.freedesktop.org/software/libevdev/libevdev-${LIBEVDEV_VERSION}.tar.xz
+    PREFIX libevdev-${LIBEVDEV_VERSION}
+    BUILD_IN_SOURCE 1
+    BUILD_BYPRODUCTS <SOURCE_DIR>/libevdev/.libs/libevdev.a
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env CFLAGS=-fPIC <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
+    BUILD_COMMAND make
+    INSTALL_COMMAND "")
+  ExternalProject_Get_Property(libevdev SOURCE_DIR)
+  set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${SOURCE_DIR}")
+  set(LIBEVDEV_CUSTOM_LIBRARY "${SOURCE_DIR}/libevdev/.libs/libevdev.a")
+endif()
+
+set(BUILD_SHARED_LIBS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(USE_UHID OFF)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../third_party/inputtino"
+  "${CMAKE_CURRENT_BINARY_DIR}/inputtino")
+set_target_properties(libinputtino PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(NOT LIBEVDEV_FOUND)
+  add_dependencies(libinputtino libevdev)
+  add_dependencies(${PLUGIN_NAME} libevdev)
+endif()
+target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_17)
+target_link_libraries(${PLUGIN_NAME} PRIVATE inputtino::libinputtino)
+
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xtst xrandr)
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::X11)
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
@@ -84,6 +120,8 @@ apply_standard_settings(${TEST_RUNNER})
 target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(${TEST_RUNNER} PRIVATE flutter)
 target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::GTK)
+target_link_libraries(${TEST_RUNNER} PRIVATE inputtino::libinputtino)
+target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::X11)
 target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
 
 # Enable automatic test discovery.
