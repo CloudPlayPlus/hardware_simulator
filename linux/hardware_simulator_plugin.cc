@@ -78,12 +78,16 @@ FlMethodResponse* linux_display_error() {
 }
 
 FlMethodResponse* linux_mouse_error() {
+  std::string message =
+      "Linux mouse simulation requires permission to create uinput devices. "
+      "Install linux/udev/rules.d/60-cloudplayplus-hardware-simulator.rules "
+      "or grant the current user access to /dev/uinput.";
+  if (!g_mouse_error.empty()) {
+    message += " inputtino error: ";
+    message += g_mouse_error;
+  }
   return FL_METHOD_RESPONSE(fl_method_error_response_new(
-      "UINPUT_UNAVAILABLE",
-      g_mouse_error.empty()
-          ? "Linux mouse simulation requires permission to create uinput devices."
-          : g_mouse_error.c_str(),
-      nullptr));
+      "UINPUT_UNAVAILABLE", message.c_str(), nullptr));
 }
 
 class XDisplay {
