@@ -3,6 +3,36 @@ export 'hardware_simulator_platform_interface.dart'
     show DisplayCountChangedCallback;
 import 'display_data.dart';
 
+/// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
+class MacOSPermissionStatus {
+  /// Screen Recording — required to capture/stream the screen.
+  final bool screenCapture;
+
+  /// Post Event / Accessibility — required to inject synthetic mouse clicks
+  /// and key events. (Mouse *movement* via CGWarpMouseCursorPosition needs no
+  /// permission, so it is intentionally not tracked here.)
+  final bool inputInjection;
+
+  /// Legacy Accessibility (AXIsProcessTrusted), exposed for diagnostics.
+  final bool accessibility;
+
+  const MacOSPermissionStatus({
+    required this.screenCapture,
+    required this.inputInjection,
+    required this.accessibility,
+  });
+
+  /// True when every permission needed to host a session is granted.
+  bool get allGranted => screenCapture && inputInjection;
+
+  factory MacOSPermissionStatus.fromMap(Map<String, bool> m) =>
+      MacOSPermissionStatus(
+        screenCapture: m['screenCapture'] ?? false,
+        inputInjection: m['inputInjection'] ?? false,
+        accessibility: m['accessibility'] ?? false,
+      );
+}
+
 class HWKeyboard {
   HWKeyboard();
   void performKeyEvent(int keyCode, bool isDown) {
@@ -69,6 +99,26 @@ class HardwareSimulator {
 
   Future<String?> getPlatformVersion() {
     return HardwareSimulatorPlatform.instance.getPlatformVersion();
+  }
+
+  /// macOS only. Reads the current process's live TCC permission status.
+  /// Does not prompt — safe to poll for UI display.
+  static Future<MacOSPermissionStatus> checkMacOSPermissions() async {
+    final m = await HardwareSimulatorPlatform.instance.checkMacOSPermissions();
+    return MacOSPermissionStatus.fromMap(m);
+  }
+
+  /// macOS only. Triggers the consent prompt (or opens System Settings) for
+  /// [type]: `screenCapture` or `inputInjection`. Returns the granted state
+  /// after the request.
+  static Future<bool> requestMacOSPermission(String type) {
+    return HardwareSimulatorPlatform.instance.requestMacOSPermission(type);
+  }
+
+  /// macOS only. Opens a Privacy & Security pane in System Settings.
+  /// [section]: `screenCapture`, `accessibility`, or `inputMonitoring`.
+  static Future<void> openMacOSPrivacySettings(String section) {
+    return HardwareSimulatorPlatform.instance.openMacOSPrivacySettings(section);
   }
 
   //Only used for ios and android.

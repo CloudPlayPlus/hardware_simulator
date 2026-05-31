@@ -42,6 +42,24 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
 
+  /// macOS only. Returns the current process's live TCC permission status as a
+  /// map with keys `screenCapture`, `inputInjection`, `accessibility`. Does not
+  /// prompt. On non-macOS platforms returns an empty map.
+  Future<Map<String, bool>> checkMacOSPermissions() async {
+    return const <String, bool>{};
+  }
+
+  /// macOS only. Asks macOS to show the consent prompt for [type]
+  /// (`screenCapture` or `inputInjection`), opening System Settings if no
+  /// auto-prompt is available. Returns the granted state after the request.
+  Future<bool> requestMacOSPermission(String type) async {
+    return false;
+  }
+
+  /// macOS only. Opens the given Privacy & Security pane in System Settings.
+  /// [section] is one of `screenCapture`, `accessibility`, `inputMonitoring`.
+  Future<void> openMacOSPrivacySettings(String section) async {}
+
   Future<bool?> getIsMouseConnected() {
     throw UnimplementedError('getIsMouseConnected() has not been implemented.');
   }

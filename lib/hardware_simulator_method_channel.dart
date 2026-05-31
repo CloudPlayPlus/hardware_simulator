@@ -74,6 +74,28 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     return version;
   }
 
+  @override
+  Future<Map<String, bool>> checkMacOSPermissions() async {
+    final res = await methodChannel.invokeMethod('checkMacOSPermissions');
+    if (res is Map) {
+      return res.map((k, v) => MapEntry(k.toString(), v == true));
+    }
+    return const <String, bool>{};
+  }
+
+  @override
+  Future<bool> requestMacOSPermission(String type) async {
+    final res = await methodChannel
+        .invokeMethod('requestMacOSPermission', {'type': type});
+    return res == true;
+  }
+
+  @override
+  Future<void> openMacOSPrivacySettings(String section) async {
+    await methodChannel
+        .invokeMethod('openMacOSPrivacySettings', {'section': section});
+  }
+
   Future<bool?> getIsMouseConnected() {
     return methodChannel.invokeMethod<bool>('isMouseConnected');
   }
