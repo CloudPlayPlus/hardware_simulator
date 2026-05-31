@@ -1,6 +1,8 @@
 import Cocoa
-import FlutterMacOS 
+import FlutterMacOS
 import CommonCrypto
+import CoreGraphics
+import ApplicationServices
 
 class CursorConstants {    
   static let cursorVisible = 2
@@ -772,10 +774,100 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   
   var activities: [String: NSObjectProtocol] = [:]
 
+  // MARK: - macOS permission self-check
+
+  /// Whether this process can capture the screen. Uses the official preflight
+  /// API on macOS 11+; falls back to a window-name heuristic on 10.15 (where
+  /// no preflight API exists — if we can read another app's window title, the
+  /// Screen Recording grant is in effect).
+  ///
+  /// NOTE: `CGPreflightScreenCaptureAccess()` caches its result for the whole
+  /// process lifetime, so a freshly-granted permission only shows up after the
+  /// app is relaunched. The UI tells the user this after they request access.
+  private func macScreenCaptureGranted() -> Bool {
+    if #available(macOS 11.0, *) {
+      return CGPreflightScreenCaptureAccess()
+    }
+    let myPid = NSRunningApplication.current.processIdentifier
+    let info = CGWindowListCopyWindowInfo(
+      [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+    ) as? [[String: Any]] ?? []
+    for w in info {
+      guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != myPid else { continue }
+      if let name = w[kCGWindowName as String] as? String, !name.isEmpty {
+        return true
+      }
+    }
+    return false
+  }
+
+  /// Whether this process may inject synthetic input (mouse clicks, key events)
+  /// via CGEventPost. macOS exposes a dedicated "Post Event" privilege; being
+  /// AX-trusted also satisfies it, so accept either.
+  ///
+  /// NOTE: both calls cache in-process, so a freshly-granted permission only
+  /// shows up after relaunch. The UI tells the user this after they request it.
+  private func macInputInjectionGranted() -> Bool {
+    return CGPreflightPostEventAccess() || AXIsProcessTrusted()
+  }
+
+  /// Opens the relevant pane of System Settings → Privacy & Security.
+  private func openMacOSPrivacySettings(section: String) {
+    let anchor: String
+    switch section {
+    case "screenCapture": anchor = "Privacy_ScreenCapture"
+    case "accessibility": anchor = "Privacy_Accessibility"
+    case "inputMonitoring": anchor = "Privacy_ListenEvent"
+    default: anchor = "Privacy"
+    }
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+      NSWorkspace.shared.open(url)
+    }
+  }
+
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "getPlatformVersion":
       result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
+    case "checkMacOSPermissions":
+      // Reports the *current process's* live TCC status. Does NOT prompt.
+      // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)
+      // - inputInjection: needed to post synthetic mouse clicks / key events (CGEventPost)
+      // - accessibility: legacy AX trust, kept for diagnostics
+      result([
+        "screenCapture": macScreenCaptureGranted(),
+        "inputInjection": macInputInjectionGranted(),
+        "accessibility": AXIsProcessTrusted(),
+      ])
+    case "requestMacOSPermission":
+      // Actively asks macOS to show the consent prompt for the given permission.
+      // For permissions that have no auto-prompt API on this OS, opens the
+      // relevant System Settings pane instead. Returns the (possibly updated)
+      // granted state after the request.
+      let type = (call.arguments as? [String: Any])?["type"] as? String ?? ""
+      switch type {
+      case "screenCapture":
+        if #available(macOS 11.0, *) {
+          // Triggers the system prompt the first time; afterwards a no-op.
+          let granted = CGRequestScreenCaptureAccess()
+          if !granted { openMacOSPrivacySettings(section: "screenCapture") }
+          result(granted)
+        } else {
+          openMacOSPrivacySettings(section: "screenCapture")
+          result(macScreenCaptureGranted())
+        }
+      case "inputInjection":
+        // CGRequestPostEventAccess shows the prompt the first time (macOS 10.15+).
+        let granted = CGRequestPostEventAccess()
+        if !granted { openMacOSPrivacySettings(section: "accessibility") }
+        result(granted)
+      default:
+        result(FlutterError(code: "BAD_ARGS", message: "Unknown permission type: \(type)", details: nil))
+      }
+    case "openMacOSPrivacySettings":
+      let section = (call.arguments as? [String: Any])?["section"] as? String ?? ""
+      openMacOSPrivacySettings(section: section)
+      result(nil)
     case "beginActivity":
       let key = UUID().uuidString
       let reason = call.arguments as? String ?? "Prevent nap to do an important task."
