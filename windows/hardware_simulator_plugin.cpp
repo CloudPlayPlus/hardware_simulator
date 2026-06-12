@@ -1,6 +1,7 @@
 #include "hardware_simulator_plugin.h"
 
 #include "cursor_monitor.h"
+#include "desktop_service_input_client.h"
 #include "gamecontroller_manager.h"
 #include "notification_window.h"
 #include "virtual_display_control.h"
@@ -902,6 +903,10 @@ void async_send_input_retry(INPUT& i) {
 }
 
 void send_input(INPUT& i) {
+    if (DesktopServiceInputClient::Instance().SendInputMessage(i)) {
+        return;
+    }
+
     auto send = SendInput(1, &i, sizeof(INPUT));
     if (send != 1) {
         // put resend into new thread.
