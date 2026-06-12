@@ -3,7 +3,6 @@
 
 #include <windows.h>
 
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -15,7 +14,7 @@ class DesktopServiceInputClient {
  public:
   static DesktopServiceInputClient& Instance();
 
-  void Prime();
+  void SetServiceAvailable(bool available);
   bool SendInputMessage(const INPUT& input);
   void Close();
 
@@ -49,7 +48,7 @@ class DesktopServiceInputClient {
   bool stop_requested_ = false;
   bool probe_requested_ = false;
   bool probe_in_flight_ = false;
-  std::chrono::steady_clock::time_point next_probe_time_{};
+  bool service_available_ = false;
 };
 
 }  // namespace hardware_simulator

@@ -130,6 +130,16 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<void> setDesktopServiceAvailable(bool available) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    await methodChannel.invokeMethod('setDesktopServiceAvailable', {
+      'available': available,
+    });
+  }
+
+  @override
   Future<void> unregisterService() async {
     if (!Platform.isWindows) {
       return;

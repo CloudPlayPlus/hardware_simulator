@@ -11,7 +11,6 @@ constexpr uint32_t kMsgKeyInput = 0x02;
 constexpr uint32_t kMsgMouseInput = 0x03;
 constexpr DWORD kConnectBusyWaitMs = 2;
 constexpr DWORD kWriteTimeoutMs = 20;
-constexpr auto kProbeCooldown = std::chrono::milliseconds(500);
 
 #pragma pack(push, 1)
 struct MsgHeader {
@@ -51,15 +50,20 @@ DesktopServiceInputClient::~DesktopServiceInputClient() {
   Close();
 }
 
-void DesktopServiceInputClient::Prime() {
+void DesktopServiceInputClient::SetServiceAvailable(bool available) {
   std::lock_guard<std::mutex> lock(mutex_);
+  service_available_ = available;
+  if (!service_available_) {
+    ClosePipeLocked();
+    probe_requested_ = false;
+    return;
+  }
   RequestProbeLocked();
 }
 
 bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (pipe_ == INVALID_HANDLE_VALUE) {
-    RequestProbeLocked();
     return false;
   }
 
@@ -107,14 +111,10 @@ bool DesktopServiceInputClient::EnsureProbeThreadLocked() {
 
 void DesktopServiceInputClient::RequestProbeLocked() {
   if (pipe_ != INVALID_HANDLE_VALUE ||
+      !service_available_ ||
       probe_requested_ ||
       probe_in_flight_ ||
       !EnsureProbeThreadLocked()) {
-    return;
-  }
-
-  const auto now = std::chrono::steady_clock::now();
-  if (now < next_probe_time_) {
     return;
   }
 
@@ -126,16 +126,9 @@ void DesktopServiceInputClient::RequestProbeLocked() {
 void DesktopServiceInputClient::ProbeLoop() {
   for (;;) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!probe_requested_ && pipe_ == INVALID_HANDLE_VALUE &&
-        next_probe_time_ != std::chrono::steady_clock::time_point{}) {
-      probe_cv_.wait_until(lock, next_probe_time_, [this] {
-        return stop_requested_ || probe_requested_;
-      });
-    } else {
-      probe_cv_.wait(lock, [this] {
-        return stop_requested_ || probe_requested_;
-      });
-    }
+    probe_cv_.wait(lock, [this] {
+      return stop_requested_ || probe_requested_;
+    });
 
     if (stop_requested_) {
       break;
@@ -163,17 +156,20 @@ void DesktopServiceInputClient::ProbeLoop() {
       break;
     }
 
-    if (pipe != INVALID_HANDLE_VALUE) {
+    if (!service_available_) {
+      if (pipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe);
+      }
+      state_ = ServiceState::kDisconnected;
+    } else if (pipe != INVALID_HANDLE_VALUE) {
       if (pipe_ == INVALID_HANDLE_VALUE) {
         pipe_ = pipe;
         state_ = ServiceState::kConnected;
-        next_probe_time_ = {};
       } else {
         CloseHandle(pipe);
       }
     } else {
       state_ = ServiceState::kDisconnected;
-      next_probe_time_ = std::chrono::steady_clock::now() + kProbeCooldown;
     }
   }
 }
@@ -210,7 +206,6 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!overlapped.hEvent) {
     ClosePipeLocked();
-    RequestProbeLocked();
     return false;
   }
 
@@ -225,13 +220,11 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
         CancelIo(pipe_);
         CloseHandle(overlapped.hEvent);
         ClosePipeLocked();
-        RequestProbeLocked();
         return false;
       }
     } else {
       CloseHandle(overlapped.hEvent);
       ClosePipeLocked();
-      RequestProbeLocked();
       return false;
     }
   }
@@ -239,7 +232,6 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   CloseHandle(overlapped.hEvent);
   if (written != size) {
     ClosePipeLocked();
-    RequestProbeLocked();
     return false;
   }
   return true;

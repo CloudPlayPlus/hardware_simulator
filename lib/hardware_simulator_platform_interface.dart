@@ -73,6 +73,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     return false;
   }
 
+  Future<void> setDesktopServiceAvailable(bool available) async {
+    return;
+  }
+
   Future<void> unregisterService() async {
     return;
   }

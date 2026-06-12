@@ -851,8 +851,6 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
       plugin_pointer->StartMonitorThread();
   }
 
-  DesktopServiceInputClient::Instance().Prime();
-
   registrar->AddPlugin(std::move(plugin));
 
   // start to monitor display resolution and DPI.
@@ -1215,6 +1213,17 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       version_stream << "7";
     }
     result->Success(flutter::EncodableValue(version_stream.str()));
+  } else if (method_call.method_name().compare("setDesktopServiceAvailable") == 0) {
+    bool available = false;
+    if (args) {
+      auto available_iter = args->find(flutter::EncodableValue("available"));
+      if (available_iter != args->end() &&
+          std::holds_alternative<bool>(available_iter->second)) {
+        available = std::get<bool>(available_iter->second);
+      }
+    }
+    DesktopServiceInputClient::Instance().SetServiceAvailable(available);
+    result->Success(nullptr);
   } else if (method_call.method_name().compare("getMonitorCount") == 0) {
     int monitorCount = GetSystemMetrics(SM_CMONITORS);
     //update_monitors();
