@@ -51,9 +51,15 @@ DesktopServiceInputClient::~DesktopServiceInputClient() {
   Close();
 }
 
+void DesktopServiceInputClient::Prime() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  RequestProbeLocked();
+}
+
 bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!EnsureConnectedLocked()) {
+  if (pipe_ == INVALID_HANDLE_VALUE) {
+    RequestProbeLocked();
     return false;
   }
 
@@ -68,57 +74,143 @@ bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
 }
 
 void DesktopServiceInputClient::Close() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  CloseLocked();
+  std::thread probe_thread;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ClosePipeLocked();
+    stop_requested_ = true;
+    probe_requested_ = false;
+    probe_cv_.notify_all();
+    if (probe_thread_.joinable()) {
+      probe_thread = std::move(probe_thread_);
+    }
+  }
+
+  if (probe_thread.joinable()) {
+    probe_thread.join();
+  }
 }
 
-bool DesktopServiceInputClient::EnsureConnectedLocked() {
-  if (pipe_ != INVALID_HANDLE_VALUE) {
+bool DesktopServiceInputClient::EnsureProbeThreadLocked() {
+  if (probe_thread_.joinable()) {
     return true;
+  }
+
+  stop_requested_ = false;
+  try {
+    probe_thread_ = std::thread(&DesktopServiceInputClient::ProbeLoop, this);
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+void DesktopServiceInputClient::RequestProbeLocked() {
+  if (pipe_ != INVALID_HANDLE_VALUE ||
+      probe_requested_ ||
+      probe_in_flight_ ||
+      !EnsureProbeThreadLocked()) {
+    return;
   }
 
   const auto now = std::chrono::steady_clock::now();
   if (now < next_probe_time_) {
-    return false;
+    return;
   }
-  next_probe_time_ = now + kProbeCooldown;
 
-  pipe_ = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-  if (pipe_ == INVALID_HANDLE_VALUE) {
+  state_ = ServiceState::kProbing;
+  probe_requested_ = true;
+  probe_cv_.notify_one();
+}
+
+void DesktopServiceInputClient::ProbeLoop() {
+  for (;;) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!probe_requested_ && pipe_ == INVALID_HANDLE_VALUE &&
+        next_probe_time_ != std::chrono::steady_clock::time_point{}) {
+      probe_cv_.wait_until(lock, next_probe_time_, [this] {
+        return stop_requested_ || probe_requested_;
+      });
+    } else {
+      probe_cv_.wait(lock, [this] {
+        return stop_requested_ || probe_requested_;
+      });
+    }
+
+    if (stop_requested_) {
+      break;
+    }
+
+    probe_requested_ = false;
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+      state_ = ServiceState::kConnected;
+      continue;
+    }
+
+    state_ = ServiceState::kProbing;
+    probe_in_flight_ = true;
+    lock.unlock();
+
+    HANDLE pipe = TryConnect();
+
+    lock.lock();
+    probe_in_flight_ = false;
+
+    if (stop_requested_) {
+      if (pipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe);
+      }
+      break;
+    }
+
+    if (pipe != INVALID_HANDLE_VALUE) {
+      if (pipe_ == INVALID_HANDLE_VALUE) {
+        pipe_ = pipe;
+        state_ = ServiceState::kConnected;
+        next_probe_time_ = {};
+      } else {
+        CloseHandle(pipe);
+      }
+    } else {
+      state_ = ServiceState::kDisconnected;
+      next_probe_time_ = std::chrono::steady_clock::now() + kProbeCooldown;
+    }
+  }
+}
+
+HANDLE DesktopServiceInputClient::TryConnect() {
+  HANDLE pipe = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0,
+                            nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
+                            nullptr);
+  if (pipe == INVALID_HANDLE_VALUE) {
     const DWORD err = GetLastError();
     if (err == ERROR_PIPE_BUSY &&
         WaitNamedPipeW(kInputPipeName, kConnectBusyWaitMs)) {
-      pipe_ = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0,
-                          nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
-                          nullptr);
+      pipe = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0,
+                         nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
+                         nullptr);
     }
   }
 
-  if (pipe_ == INVALID_HANDLE_VALUE) {
-    return false;
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return INVALID_HANDLE_VALUE;
   }
 
   DWORD mode = PIPE_READMODE_MESSAGE;
-  if (!SetNamedPipeHandleState(pipe_, &mode, nullptr, nullptr)) {
-    CloseLocked();
-    return false;
+  if (!SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) {
+    CloseHandle(pipe);
+    return INVALID_HANDLE_VALUE;
   }
 
-  stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!stop_event_) {
-    CloseLocked();
-    return false;
-  }
-
-  return true;
+  return pipe;
 }
 
 bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   OVERLAPPED overlapped = {};
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!overlapped.hEvent) {
-    CloseLocked();
+    ClosePipeLocked();
+    RequestProbeLocked();
     return false;
   }
 
@@ -127,26 +219,27 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   if (!ok) {
     const DWORD err = GetLastError();
     if (err == ERROR_IO_PENDING) {
-      HANDLE wait_handles[] = {overlapped.hEvent, stop_event_};
-      DWORD wait = WaitForMultipleObjects(2, wait_handles, FALSE,
-                                          kWriteTimeoutMs);
+      DWORD wait = WaitForSingleObject(overlapped.hEvent, kWriteTimeoutMs);
       if (wait != WAIT_OBJECT_0 ||
           !GetOverlappedResult(pipe_, &overlapped, &written, FALSE)) {
         CancelIo(pipe_);
         CloseHandle(overlapped.hEvent);
-        CloseLocked();
+        ClosePipeLocked();
+        RequestProbeLocked();
         return false;
       }
     } else {
       CloseHandle(overlapped.hEvent);
-      CloseLocked();
+      ClosePipeLocked();
+      RequestProbeLocked();
       return false;
     }
   }
 
   CloseHandle(overlapped.hEvent);
   if (written != size) {
-    CloseLocked();
+    ClosePipeLocked();
+    RequestProbeLocked();
     return false;
   }
   return true;
@@ -189,15 +282,13 @@ bool DesktopServiceInputClient::SendMouseLocked(const MOUSEINPUT& input) {
   return SendRawLocked(buffer, sizeof(buffer));
 }
 
-void DesktopServiceInputClient::CloseLocked() {
-  if (stop_event_) {
-    SetEvent(stop_event_);
-    CloseHandle(stop_event_);
-    stop_event_ = nullptr;
-  }
+void DesktopServiceInputClient::ClosePipeLocked() {
   if (pipe_ != INVALID_HANDLE_VALUE) {
     CloseHandle(pipe_);
     pipe_ = INVALID_HANDLE_VALUE;
+  }
+  if (state_ == ServiceState::kConnected) {
+    state_ = ServiceState::kDisconnected;
   }
 }
 

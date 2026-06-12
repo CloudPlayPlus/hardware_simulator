@@ -851,6 +851,8 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
       plugin_pointer->StartMonitorThread();
   }
 
+  DesktopServiceInputClient::Instance().Prime();
+
   registrar->AddPlugin(std::move(plugin));
 
   // start to monitor display resolution and DPI.
@@ -875,6 +877,7 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 }
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
+    DesktopServiceInputClient::Instance().Close();
     StopMonitorThread();
     destroyTouchDevice();
     destroyPenDevice();

@@ -4,8 +4,10 @@
 #include <windows.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 namespace hardware_simulator {
 
@@ -13,25 +15,40 @@ class DesktopServiceInputClient {
  public:
   static DesktopServiceInputClient& Instance();
 
+  void Prime();
   bool SendInputMessage(const INPUT& input);
   void Close();
 
  private:
+  enum class ServiceState {
+    kDisconnected,
+    kProbing,
+    kConnected,
+  };
+
   DesktopServiceInputClient() = default;
   ~DesktopServiceInputClient();
 
   DesktopServiceInputClient(const DesktopServiceInputClient&) = delete;
   DesktopServiceInputClient& operator=(const DesktopServiceInputClient&) = delete;
 
-  bool EnsureConnectedLocked();
+  bool EnsureProbeThreadLocked();
+  void RequestProbeLocked();
+  void ProbeLoop();
+  HANDLE TryConnect();
   bool SendRawLocked(const void* data, uint32_t size);
   bool SendKeyboardLocked(const KEYBDINPUT& input);
   bool SendMouseLocked(const MOUSEINPUT& input);
-  void CloseLocked();
+  void ClosePipeLocked();
 
   std::mutex mutex_;
+  std::condition_variable probe_cv_;
+  std::thread probe_thread_;
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
-  HANDLE stop_event_ = nullptr;
+  ServiceState state_ = ServiceState::kDisconnected;
+  bool stop_requested_ = false;
+  bool probe_requested_ = false;
+  bool probe_in_flight_ = false;
   std::chrono::steady_clock::time_point next_probe_time_{};
 };
 
