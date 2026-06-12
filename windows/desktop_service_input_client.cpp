@@ -206,6 +206,7 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!overlapped.hEvent) {
     ClosePipeLocked();
+    RequestProbeLocked();
     return false;
   }
 
@@ -220,11 +221,13 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
         CancelIo(pipe_);
         CloseHandle(overlapped.hEvent);
         ClosePipeLocked();
+        RequestProbeLocked();
         return false;
       }
     } else {
       CloseHandle(overlapped.hEvent);
       ClosePipeLocked();
+      RequestProbeLocked();
       return false;
     }
   }
@@ -232,6 +235,7 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   CloseHandle(overlapped.hEvent);
   if (written != size) {
     ClosePipeLocked();
+    RequestProbeLocked();
     return false;
   }
   return true;
