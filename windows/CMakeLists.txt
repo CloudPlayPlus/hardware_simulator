@@ -18,6 +18,8 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
+  "desktop_service_input_client.cpp"
+  "desktop_service_input_client.h"
   "hardware_simulator_plugin.cpp"
   "hardware_simulator_plugin.h"
   "cursor_monitor.cc"
@@ -94,4 +96,3 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   # Link necessary libraries for the example
   target_link_libraries(virtual_display_example PRIVATE)
 endif()
-

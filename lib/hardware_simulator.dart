@@ -134,6 +134,11 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.registerService();
   }
 
+  static Future<void> setDesktopServiceAvailable(bool available) {
+    return HardwareSimulatorPlatform.instance
+        .setDesktopServiceAvailable(available);
+  }
+
   static Future<void> unregisterService() {
     return HardwareSimulatorPlatform.instance.unregisterService();
   }

@@ -1,6 +1,7 @@
 #include "hardware_simulator_plugin.h"
 
 #include "cursor_monitor.h"
+#include "desktop_service_input_client.h"
 #include "gamecontroller_manager.h"
 #include "notification_window.h"
 #include "virtual_display_control.h"
@@ -874,6 +875,7 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 }
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
+    DesktopServiceInputClient::Instance().Close();
     StopMonitorThread();
     destroyTouchDevice();
     destroyPenDevice();
@@ -902,6 +904,10 @@ void async_send_input_retry(INPUT& i) {
 }
 
 void send_input(INPUT& i) {
+    if (DesktopServiceInputClient::Instance().SendInputMessage(i)) {
+        return;
+    }
+
     auto send = SendInput(1, &i, sizeof(INPUT));
     if (send != 1) {
         // put resend into new thread.
@@ -1207,6 +1213,17 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       version_stream << "7";
     }
     result->Success(flutter::EncodableValue(version_stream.str()));
+  } else if (method_call.method_name().compare("setDesktopServiceAvailable") == 0) {
+    bool available = false;
+    if (args) {
+      auto available_iter = args->find(flutter::EncodableValue("available"));
+      if (available_iter != args->end() &&
+          std::holds_alternative<bool>(available_iter->second)) {
+        available = std::get<bool>(available_iter->second);
+      }
+    }
+    DesktopServiceInputClient::Instance().SetServiceAvailable(available);
+    result->Success(nullptr);
   } else if (method_call.method_name().compare("getMonitorCount") == 0) {
     int monitorCount = GetSystemMetrics(SM_CMONITORS);
     //update_monitors();
