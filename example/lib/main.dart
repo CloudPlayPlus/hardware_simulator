@@ -157,16 +157,16 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         // 获取显示器ID和鼠标位置信息
         int screenId = messageInfo;
 
-        // 检查是否有位置数据（新版本有8字节，旧版本可能为空）
-        if (cursorImage.isNotEmpty && cursorImage.length >= 8) {
+        // 位置数据为 4 字节：x/y 各一个 u16 normalized little-endian。
+        if (cursorImage.isNotEmpty && cursorImage.length >= 4) {
           ByteData byteData = ByteData.sublistView(cursorImage);
-          double xPercent = byteData.getFloat32(0, Endian.little);
-          double yPercent = byteData.getFloat32(4, Endian.little);
+          double xPercent = byteData.getUint16(0, Endian.little) / 65535.0;
+          double yPercent = byteData.getUint16(2, Endian.little) / 65535.0;
 
           print(
               'Cursor became visible - Screen ID: $screenId, X: ${(xPercent * 100).toStringAsFixed(1)}%, Y: ${(yPercent * 100).toStringAsFixed(1)}%');
         } else {
-          // 兼容旧版本，没有位置数据
+          // 没有位置数据
           print(
               'Cursor became visible - Screen ID: $screenId (no position data)');
         }

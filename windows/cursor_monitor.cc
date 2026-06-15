@@ -515,40 +515,26 @@ LRESULT CALLBACK MousePositionHookProc(int nCode, WPARAM wParam, LPARAM lParam) 
     return CallNextHookEx(positionHook, nCode, wParam, lParam);
 }
 
-std::vector<uint8_t> FloatToBytes(float x, float y) {
+uint16_t EncodeUnitU16(float value) {
+    if (value != value || value <= 0.0f) {
+        return 0;
+    }
+    if (value >= 1.0f) {
+        return 0xFFFF;
+    }
+    return static_cast<uint16_t>(value * 65535.0f + 0.5f);
+}
+
+void PushUint16Le(std::vector<uint8_t>& outputArray, uint16_t value) {
+    outputArray.push_back(static_cast<uint8_t>(value & 0xFF));
+    outputArray.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+}
+
+std::vector<uint8_t> CursorPositionPayload(float x, float y) {
     std::vector<uint8_t> outputArray;
-    outputArray.reserve(sizeof(float) * 2);
-
-    // Add x coordinate
-    uint8_t* xBytes = reinterpret_cast<uint8_t*>(&x);
-    if (test_endian()) {
-        // Little endian system
-        for (size_t i = 0; i < sizeof(x); ++i) {
-            outputArray.push_back(xBytes[i]);
-        }
-    }
-    else {
-        // Big endian system
-        for (size_t i = sizeof(x); i > 0; --i) {
-            outputArray.push_back(xBytes[i - 1]);
-        }
-    }
-
-    // Add y coordinate
-    uint8_t* yBytes = reinterpret_cast<uint8_t*>(&y);
-    if (test_endian()) {
-        // Little endian system
-        for (size_t i = 0; i < sizeof(y); ++i) {
-            outputArray.push_back(yBytes[i]);
-        }
-    }
-    else {
-        // Big endian system
-        for (size_t i = sizeof(y); i > 0; --i) {
-            outputArray.push_back(yBytes[i - 1]);
-        }
-    }
-
+    outputArray.reserve(sizeof(uint16_t) * 2);
+    PushUint16Le(outputArray, EncodeUnitU16(x));
+    PushUint16Le(outputArray, EncodeUnitU16(y));
     return outputArray;
 }
 
@@ -575,14 +561,14 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
         case EVENT_OBJECT_HIDE:
             for (auto callback : callbacks) {
                 MousePosition mousePos = GetMousePositionAndScreenId();
-                std::vector<uint8_t> positionBytes = FloatToBytes(mousePos.xPercent, mousePos.yPercent);
+                std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
                 callback.second(CPP_CURSOR_INVISIBLE, mousePos.screenId, positionBytes);
             }
             break;
         case EVENT_OBJECT_SHOW:
             for (auto callback : callbacks) {
                 MousePosition mousePos = GetMousePositionAndScreenId();
-                std::vector<uint8_t> positionBytes = FloatToBytes(mousePos.xPercent, mousePos.yPercent);
+                std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
                 callback.second(CPP_CURSOR_VISIBLE, mousePos.screenId, positionBytes);
             }
             SyncCursorImage();
@@ -649,7 +635,7 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
 
     if (!IsCursorVisible()) {
         MousePosition mousePos = GetMousePositionAndScreenId();
-        std::vector<uint8_t> positionBytes = FloatToBytes(mousePos.xPercent, mousePos.yPercent);
+        std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
         callback(CPP_CURSOR_INVISIBLE, mousePos.screenId, positionBytes);
     }
 }
