@@ -598,11 +598,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard let position = currentMousePosition() else {
       return
     }
-    var positionBytes = Data()
-    var x = Float(position.xPercent)
-    var y = Float(position.yPercent)
-    withUnsafeBytes(of: &x) { positionBytes.append(contentsOf: $0) }
-    withUnsafeBytes(of: &y) { positionBytes.append(contentsOf: $0) }
+    let positionBytes = cursorPositionPayload(position.xPercent, position.yPercent)
 
     methodChannel?.invokeMethod("onCursorImageMessage", arguments: [
       "callbackID": callbackID,
@@ -610,6 +606,28 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       "msg_info": position.screenId,
       "cursorImage": FlutterStandardTypedData.init(bytes: positionBytes)
     ])
+  }
+
+  private func cursorPositionPayload(_ xPercent: Double, _ yPercent: Double) -> Data {
+    var bytes = Data()
+    appendUInt16LE(encodeUnitU16(xPercent), to: &bytes)
+    appendUInt16LE(encodeUnitU16(yPercent), to: &bytes)
+    return bytes
+  }
+
+  private func encodeUnitU16(_ value: Double) -> UInt16 {
+    if !value.isFinite || value <= 0.0 {
+      return 0
+    }
+    if value >= 1.0 {
+      return UInt16.max
+    }
+    return UInt16((value * 65535.0).rounded())
+  }
+
+  private func appendUInt16LE(_ value: UInt16, to data: inout Data) {
+    var littleEndian = value.littleEndian
+    withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
   }
 
   private func sendCursorPositionToAll(message: Int = CursorConstants.cursorPositionChanged) {
