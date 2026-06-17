@@ -205,8 +205,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       if let macKeyCode = windowsToMacKeyMap[code] {
           let keyCode = CGKeyCode(macKeyCode)
 
-          // Create and post the keyboard event
+          // Create and post the keyboard event.
+          //
+          // Strip the Fn (secondaryFn) and NumericPad flags before posting.
+          // Arrow / navigation keys (kVK 0x7B–0x7E) are macOS function + numpad
+          // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
+          // such an event latches Fn into the shared session modifier state — and
+          // because the key-up event carries Fn too, it is never released. Every
+          // subsequent injected key is built with `keyboardEventSource: nil`,
+          // which inherits that polluted session state, so the stray Fn leaks onto
+          // ordinary keys: e.g. "E" becomes 🌐+E and opens the Emoji & Symbols
+          // picker. We never intend to inject Fn, so clear it (and NumericPad)
+          // from every event; the virtual key code alone still drives arrows.
           let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown)
+          event?.flags.remove([.maskSecondaryFn, .maskNumericPad])
           event?.post(tap: .cghidEventTap)
       } else {
           print("Key code \(code) not found in mapping.")
