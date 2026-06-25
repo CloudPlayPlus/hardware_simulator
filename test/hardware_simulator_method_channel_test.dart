@@ -26,4 +26,31 @@ void main() {
   test('getPlatformVersion', () async {
     expect(await platform.getPlatformVersion(), '42');
   });
+
+  test('performPenMove forwards contact state', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performPenMove(
+      0.2,
+      0.8,
+      true,
+      0.0,
+      45.0,
+      20.0,
+      3,
+      isInContact: false,
+    );
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'penMove');
+    expect(calls.single.arguments, containsPair('isInContact', false));
+  });
 }

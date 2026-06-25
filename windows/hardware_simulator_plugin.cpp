@@ -44,7 +44,7 @@ namespace hardware_simulator {
 void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat);
 void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool isDown, bool isRepeat);
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt);
-void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt);
+void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt);
 void clearAllPressedEvents();
 bool setPrimaryDisplay(int displayIndex);
 
@@ -592,9 +592,11 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
     penInfo.pointerInfo.pointerFlags &= ~EDGE_TRIGGERED_POINTER_FLAGS;
 }
 
-void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt) {
+void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt) {
     if (!g_penDevice) {
-        return;
+        if (!createPenDevice()) {
+            return;
+        }
     }
 
     auto& penInfo = g_penInfo.penInfo;
@@ -604,7 +606,10 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
     penInfo.pointerInfo.ptPixelLocation.x = out_x;
     penInfo.pointerInfo.ptPixelLocation.y = out_y;
 
-    penInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE;
+    penInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE;
+    if (isInContact) {
+        penInfo.pointerInfo.pointerFlags |= POINTER_FLAG_INCONTACT;
+    }
 
     // Windows only supports a single pen button, so send all buttons as the barrel button
     if (hasButton) {
@@ -616,7 +621,7 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
     penInfo.penMask = PEN_MASK_NONE;
 
     // Windows doesn't support hover distance, so only pass pressure when the pointer is in contact
-    if (pressure > 0.0) {
+    if (isInContact && pressure > 0.0) {
         penInfo.penMask |= PEN_MASK_PRESSURE;
         // Convert the 0.0..1.0 double to the 0..1024 range that Windows uses
         penInfo.pressure = static_cast<UINT32>(pressure * 1024.0);
@@ -1416,14 +1421,20 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto x = (args->find(flutter::EncodableValue("x")))->second;
         auto y = (args->find(flutter::EncodableValue("y")))->second;
         auto hasButton = (args->find(flutter::EncodableValue("hasButton")))->second;
+        auto isInContactIt = args->find(flutter::EncodableValue("isInContact"));
         auto pressure = (args->find(flutter::EncodableValue("pressure")))->second;
         auto rotation = (args->find(flutter::EncodableValue("rotation")))->second;
         auto tilt = (args->find(flutter::EncodableValue("tilt")))->second;
+        bool isInContact = true;
+        if (isInContactIt != args->end()) {
+            isInContact = static_cast<bool>(std::get<bool>(isInContactIt->second));
+        }
         performPenMove(
             static_cast<int>(std::get<int>((screenId))),
             static_cast<double>(std::get<double>((x))),
             static_cast<double>(std::get<double>((y))),
             static_cast<bool>(std::get<bool>((hasButton))),
+            isInContact,
             static_cast<double>(std::get<double>((pressure))),
             static_cast<double>(std::get<double>((rotation))),
             static_cast<double>(std::get<double>((tilt)))

@@ -279,9 +279,11 @@ class HardwareSimulator {
   }
 
   static void performPenMove(double x, double y, bool hasButton,
-      double pressure, double rotation, double tilt, int screenId) {
-    HardwareSimulatorPlatform.instance
-        .performPenMove(x, y, hasButton, pressure, rotation, tilt, screenId);
+      double pressure, double rotation, double tilt, int screenId,
+      {bool isInContact = true}) {
+    HardwareSimulatorPlatform.instance.performPenMove(
+        x, y, hasButton, pressure, rotation, tilt, screenId,
+        isInContact: isInContact);
   }
 
   static Future<GameController?> createGameController() {
