@@ -45,6 +45,7 @@ void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat);
 void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool isDown, bool isRepeat);
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt);
 void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt);
+void send_pen_input();
 void clearAllPressedEvents();
 bool setPrimaryDisplay(int displayIndex);
 
@@ -80,6 +81,19 @@ static std::recursive_mutex g_event_mutex;
 static std::unordered_map<uint16_t, KeyState> g_key_states;
 static uint16_t g_last_known_key_down = 0;
 static std::unordered_map<uint32_t, TouchState> g_touch_states;
+static std::chrono::steady_clock::time_point g_last_pen_event_time;
+constexpr auto PEN_REPEAT_INTERVAL = std::chrono::milliseconds(50);
+constexpr auto EDGE_TRIGGERED_POINTER_FLAGS =
+    POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED | POINTER_FLAG_UPDATE;
+
+static void clearPenEdgeTriggeredFlags() {
+    g_penInfo.penInfo.pointerInfo.pointerFlags &= ~EDGE_TRIGGERED_POINTER_FLAGS;
+}
+
+static bool hasActivePenPointer() {
+    return g_penDevice &&
+        g_penInfo.penInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE;
+}
 
 static void EventMonitorThread() {
     while (g_thread_running) {
@@ -110,6 +124,14 @@ static void EventMonitorThread() {
                             state.lastEventTime = now;
                         }
                     }
+                }
+
+                // Keep synthetic pen hover/contact alive. Windows cancels a
+                // synthetic pointer interaction if it is not refreshed.
+                if (hasActivePenPointer() &&
+                    now - g_last_pen_event_time >= PEN_REPEAT_INTERVAL) {
+                    send_pen_input();
+                    g_last_pen_event_time = now;
                 }
             }
         }
@@ -328,6 +350,8 @@ void destroyPenDevice() {
         fnDestroySyntheticPointerDevice(g_penDevice);
         g_penDevice = nullptr;
     }
+    g_penInfo = {};
+    g_last_pen_event_time = {};
 }
 
 bool sendTouchInput() {
@@ -587,9 +611,10 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
 
     send_pen_input();
 
-    // Clear edge-triggered flags after sending
-    constexpr auto EDGE_TRIGGERED_POINTER_FLAGS = POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED | POINTER_FLAG_UPDATE;
-    penInfo.pointerInfo.pointerFlags &= ~EDGE_TRIGGERED_POINTER_FLAGS;
+    // Clear edge-triggered flags after sending, leaving IN_RANGE/IN_CONTACT
+    // for the monitor thread to refresh while the pen remains active.
+    clearPenEdgeTriggeredFlags();
+    g_last_pen_event_time = std::chrono::steady_clock::now();
 }
 
 void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt) {
@@ -599,7 +624,10 @@ void performPenMove(int screenId, double x, double y, bool hasButton, bool isInC
         }
     }
 
+    g_penInfo.type = PT_PEN;
     auto& penInfo = g_penInfo.penInfo;
+    penInfo.pointerInfo.pointerType = PT_PEN;
+    penInfo.pointerInfo.pointerId = 0;
 
     LONG out_x, out_y;
     if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
@@ -655,9 +683,10 @@ void performPenMove(int screenId, double x, double y, bool hasButton, bool isInC
 
     send_pen_input();
 
-    // Clear edge-triggered flags after sending
-    constexpr auto EDGE_TRIGGERED_POINTER_FLAGS = POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED | POINTER_FLAG_UPDATE;
-    penInfo.pointerInfo.pointerFlags &= ~EDGE_TRIGGERED_POINTER_FLAGS;
+    // Clear edge-triggered flags after sending, leaving IN_RANGE/IN_CONTACT
+    // for the monitor thread to refresh while hover/contact remains active.
+    clearPenEdgeTriggeredFlags();
+    g_last_pen_event_time = std::chrono::steady_clock::now();
 }
 
 BOOL IsRunningAsSystem() {
@@ -1038,15 +1067,15 @@ void clearAllPressedEvents() {
     }
     g_touch_states.clear();
     
-    // Clear pen device if it exists and is in contact
-    if (g_penDevice && (g_penInfo.penInfo.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT)) {
-        // Send pen up event to clear the state
-        g_penInfo.penInfo.pointerInfo.pointerFlags &= ~(POINTER_FLAG_INCONTACT | POINTER_FLAG_INRANGE);
-        g_penInfo.penInfo.pointerInfo.pointerFlags |= POINTER_FLAG_UP;
+    // Clear pen device if it has an active hover or contact state.
+    if (hasActivePenPointer()) {
+        auto& penFlags = g_penInfo.penInfo.pointerInfo.pointerFlags;
+        const bool wasInContact = (penFlags & POINTER_FLAG_INCONTACT) != 0;
+        penFlags &= ~(POINTER_FLAG_INCONTACT | POINTER_FLAG_INRANGE);
+        penFlags |= wasInContact ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE;
         send_pen_input();
-        // Clear edge-triggered flags
-        constexpr auto EDGE_TRIGGERED_POINTER_FLAGS = POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED | POINTER_FLAG_UPDATE;
-        g_penInfo.penInfo.pointerInfo.pointerFlags &= ~EDGE_TRIGGERED_POINTER_FLAGS;
+        clearPenEdgeTriggeredFlags();
+        g_last_pen_event_time = {};
     }
     
     // Clear mouse buttons (left and right)
