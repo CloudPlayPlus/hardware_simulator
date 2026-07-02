@@ -25,6 +25,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let mouseEventSource = CGEventSource(stateID: .hidSystemState)
   private var injectedMouseButtonIds = Set<Int>()
   private let maxDoubleClickDistance: CGFloat = 6
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
+  private let macVirtualDisplayQueue = DispatchQueue(
+    label: "com.cloudplayplus.hardware-simulator.virtual-display"
+  )
+  private var macVirtualDisplayProcesses: [Int: Process] = [:]
+  private let macCustomDisplayConfigsKey =
+    "com.cloudplayplus.hardware_simulator.macos.custom_display_configs"
+  private let macHelperName = "cloudplayplus_vd_helper"
+#endif
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
@@ -33,6 +43,392 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     instance.defaultCursorHasher = CursorHasher()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  deinit {
+    terminateAllMacVirtualDisplays()
+  }
+
+  override init() {
+    super.init()
+    macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
+  }
+
+  private struct MacVirtualDisplayConfig {
+    let width: Int
+    let height: Int
+    let refreshRate: Int
+  }
+
+  private func macHelperURL() -> URL? {
+    return Bundle.main.bundleURL
+      .appendingPathComponent("Contents")
+      .appendingPathComponent("MacOS")
+      .appendingPathComponent(macHelperName)
+  }
+
+  private func macVirtualDisplayAvailable() -> Bool {
+    guard #available(macOS 14.0, *) else {
+      return false
+    }
+    guard NSClassFromString("CGVirtualDisplay") != nil else {
+      return false
+    }
+    guard let helper = macHelperURL() else {
+      return false
+    }
+    return FileManager.default.isExecutableFile(atPath: helper.path)
+  }
+
+  private func macDefaultDisplayConfig() -> MacVirtualDisplayConfig {
+    return MacVirtualDisplayConfig(width: 1920, height: 1080, refreshRate: 60)
+  }
+
+  private func readMacHelperDisplayId(from output: Pipe, timeout: DispatchTime) -> String? {
+    let handle = output.fileHandleForReading
+    let semaphore = DispatchSemaphore(value: 0)
+    let lock = NSLock()
+    var data = Data()
+    var finished = false
+
+    handle.readabilityHandler = { readableHandle in
+      let chunk = readableHandle.availableData
+      lock.lock()
+      defer { lock.unlock() }
+      guard !finished else {
+        return
+      }
+      if chunk.isEmpty {
+        finished = true
+        semaphore.signal()
+        return
+      }
+      data.append(chunk)
+      if data.contains(0x0A) {
+        finished = true
+        semaphore.signal()
+      }
+    }
+
+    let status = semaphore.wait(timeout: timeout)
+    handle.readabilityHandler = nil
+    if status == .timedOut {
+      return nil
+    }
+
+    lock.lock()
+    let captured = data
+    lock.unlock()
+    return String(data: captured, encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func macCustomDisplayConfigs() -> [[String: Int]] {
+    guard
+      let raw = UserDefaults.standard.array(forKey: macCustomDisplayConfigsKey)
+        as? [[String: Any]]
+    else {
+      return []
+    }
+    return raw.compactMap { item in
+      guard
+        let width = item["width"] as? Int,
+        let height = item["height"] as? Int,
+        let refreshRate = item["refreshRate"] as? Int,
+        width > 0,
+        height > 0,
+        refreshRate > 0
+      else {
+        return nil
+      }
+      return [
+        "width": width,
+        "height": height,
+        "refreshRate": refreshRate,
+      ]
+    }
+  }
+
+  private func setMacCustomDisplayConfigs(_ configs: [[String: Any]]) -> Bool {
+    let sanitized = configs.compactMap { item -> [String: Int]? in
+      let width = item["width"] as? Int
+      let height = item["height"] as? Int
+      let refreshRate = item["refreshRate"] as? Int
+      guard
+        let width = width,
+        let height = height,
+        let refreshRate = refreshRate,
+        width > 0,
+        height > 0,
+        refreshRate > 0
+      else {
+        return nil
+      }
+      return [
+        "width": width,
+        "height": height,
+        "refreshRate": refreshRate,
+      ]
+    }
+    UserDefaults.standard.set(sanitized, forKey: macCustomDisplayConfigsKey)
+    return sanitized.count == configs.count
+  }
+
+  private func spawnMacVirtualDisplay(
+    width: Int,
+    height: Int,
+    refreshRate: Int
+  ) -> Int {
+    guard macVirtualDisplayAvailable(), let helper = macHelperURL() else {
+      return -1
+    }
+
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = helper
+    process.arguments = [
+      "\(width)",
+      "\(height)",
+      "\(refreshRate)",
+      "\(ProcessInfo.processInfo.processIdentifier)",
+    ]
+    process.standardOutput = output
+    process.standardError = FileHandle.standardError
+
+    do {
+      try process.run()
+    } catch {
+      return -1
+    }
+
+    guard
+      let text = readMacHelperDisplayId(
+        from: output,
+        timeout: .now() + .seconds(10)
+      )
+    else {
+      process.terminate()
+      return -1
+    }
+    guard let displayId = Int(text), displayId > 0 else {
+      process.terminate()
+      return -1
+    }
+
+    process.terminationHandler = { [weak self] _ in
+      self?.macVirtualDisplayQueue.async {
+        self?.macVirtualDisplayProcesses.removeValue(forKey: displayId)
+      }
+    }
+    macVirtualDisplayQueue.sync {
+      macVirtualDisplayProcesses[displayId] = process
+    }
+    Thread.sleep(forTimeInterval: 1.0)
+    return displayId
+  }
+
+  private func terminateMacVirtualDisplay(_ displayId: Int) -> Bool {
+    let process: Process? = macVirtualDisplayQueue.sync {
+      macVirtualDisplayProcesses.removeValue(forKey: displayId)
+    }
+    guard let process else {
+      return false
+    }
+    if process.isRunning {
+      process.terminate()
+    }
+    return true
+  }
+
+  private func terminateAllMacVirtualDisplays() {
+    macVirtualDisplayQueue.sync {
+      for process in macVirtualDisplayProcesses.values where process.isRunning {
+        process.terminate()
+      }
+      macVirtualDisplayProcesses.removeAll()
+    }
+  }
+
+  private func macVirtualDisplayIdsSnapshot() -> Set<Int> {
+    if DispatchQueue.getSpecific(key: macVirtualDisplayQueueKey) != nil {
+      return Set(macVirtualDisplayProcesses.keys)
+    }
+    return macVirtualDisplayQueue.sync {
+      Set(macVirtualDisplayProcesses.keys)
+    }
+  }
+
+  private func screenNameByDisplayId() -> [Int: String] {
+    var names: [Int: String] = [:]
+    for screen in NSScreen.screens {
+      guard
+        let number = screen.deviceDescription[
+          NSDeviceDescriptionKey("NSScreenNumber")
+        ] as? NSNumber
+      else {
+        continue
+      }
+      if #available(macOS 10.15, *) {
+        names[number.intValue] = screen.localizedName
+      } else {
+        names[number.intValue] = "Display \(number.intValue)"
+      }
+    }
+    return names
+  }
+
+  private func displayRefreshRate(_ mode: CGDisplayMode?) -> Int {
+    guard let mode else {
+      return 60
+    }
+    let refresh = mode.refreshRate
+    if refresh.isFinite && refresh > 0 {
+      return Int(refresh.rounded())
+    }
+    return 60
+  }
+
+  private func macDisplayList() -> [[String: Any]] {
+    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: 32)
+    var displayCount: UInt32 = 0
+    let err = CGGetActiveDisplayList(
+      UInt32(displayIds.count),
+      &displayIds,
+      &displayCount
+    )
+    guard err == .success else {
+      return []
+    }
+
+    let names = screenNameByDisplayId()
+    let mainId = Int(CGMainDisplayID())
+    let virtualDisplayIds = macVirtualDisplayIdsSnapshot()
+    return displayIds.prefix(Int(displayCount)).enumerated().map { index, id in
+      let displayId = Int(id)
+      let mode = CGDisplayCopyDisplayMode(id)
+      let bounds = CGDisplayBounds(id)
+      let isVirtual = virtualDisplayIds.contains(displayId)
+      let name = isVirtual
+        ? "CloudPlayPlus Virtual Display"
+        : (names[displayId] ?? "Display \(displayId)")
+      return [
+        "index": index,
+        "width": CGDisplayPixelsWide(id),
+        "height": CGDisplayPixelsHigh(id),
+        "refreshRate": displayRefreshRate(mode),
+        "isVirtual": isVirtual,
+        "displayName": name,
+        "deviceName": "\(displayId)",
+        "active": CGDisplayIsActive(id) != 0,
+        "displayUid": displayId,
+        "orientation": 0,
+        "left": Int(bounds.minX.rounded()),
+        "top": Int(bounds.minY.rounded()),
+        "right": Int(bounds.maxX.rounded()),
+        "bottom": Int(bounds.maxY.rounded()),
+        "isPrimary": displayId == mainId,
+      ]
+    }
+  }
+
+  private func macDisplayConfigs(_ displayId: CGDirectDisplayID) -> [[String: Int]] {
+    var configs: [[String: Int]] = []
+    let options = [
+      kCGDisplayShowDuplicateLowResolutionModes as String: true,
+    ] as CFDictionary
+    if let modes = CGDisplayCopyAllDisplayModes(displayId, options) as? [CGDisplayMode] {
+      for mode in modes {
+        let width = mode.pixelWidth > 0 ? mode.pixelWidth : mode.width
+        let height = mode.pixelHeight > 0 ? mode.pixelHeight : mode.height
+        let refreshRate = displayRefreshRate(mode)
+        if width > 0 && height > 0 && refreshRate > 0 {
+          configs.append([
+            "width": width,
+            "height": height,
+            "refreshRate": refreshRate,
+          ])
+        }
+      }
+    }
+    configs.append(contentsOf: macCustomDisplayConfigs())
+    var seen = Set<String>()
+    return configs.filter { item in
+      let key = "\(item["width"] ?? 0)x\(item["height"] ?? 0)@\(item["refreshRate"] ?? 0)"
+      if seen.contains(key) {
+        return false
+      }
+      seen.insert(key)
+      return true
+    }.sorted { lhs, rhs in
+      let lw = lhs["width"] ?? 0
+      let rw = rhs["width"] ?? 0
+      if lw != rw { return lw < rw }
+      let lh = lhs["height"] ?? 0
+      let rh = rhs["height"] ?? 0
+      if lh != rh { return lh < rh }
+      return (lhs["refreshRate"] ?? 0) < (rhs["refreshRate"] ?? 0)
+    }
+  }
+
+  private func setMacDisplayMode(
+    displayId: Int,
+    width: Int,
+    height: Int,
+    refreshRate: Int
+  ) -> Bool {
+    let cgDisplayId = CGDirectDisplayID(displayId)
+    let options = [
+      kCGDisplayShowDuplicateLowResolutionModes as String: true,
+    ] as CFDictionary
+    if let modes = CGDisplayCopyAllDisplayModes(cgDisplayId, options) as? [CGDisplayMode] {
+      for mode in modes {
+        let modeWidth = mode.pixelWidth > 0 ? mode.pixelWidth : mode.width
+        let modeHeight = mode.pixelHeight > 0 ? mode.pixelHeight : mode.height
+        let modeRefresh = displayRefreshRate(mode)
+        if modeWidth == width && modeHeight == height && modeRefresh == refreshRate {
+          return CGDisplaySetDisplayMode(cgDisplayId, mode, nil) == .success
+        }
+      }
+    }
+
+    guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
+      return false
+    }
+    _ = terminateMacVirtualDisplay(displayId)
+    return spawnMacVirtualDisplay(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    ) > 0
+  }
+
+  private func setMacMirroring(_ enabled: Bool) -> Bool {
+    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: 32)
+    var displayCount: UInt32 = 0
+    guard
+      CGGetActiveDisplayList(UInt32(displayIds.count), &displayIds, &displayCount)
+        == .success,
+      displayCount >= 2
+    else {
+      return false
+    }
+
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+      return false
+    }
+
+    let primary = displayIds[0]
+    for id in displayIds.prefix(Int(displayCount)).dropFirst() {
+      CGConfigureDisplayMirrorOfDisplay(
+        config,
+        id,
+        enabled ? primary : kCGNullDirectDisplay
+      )
+    }
+    return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
+  }
+#endif
 
   // Reverse mapping: Windows code to macOS code
   let windowsToMacKeyMap: [Int: Int] = [
@@ -919,6 +1315,130 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       let activity = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .userInitiated], reason: reason)
       activities[key] = activity
       result(NSScreen.screens.count)
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    case "initParsecVdd":
+      result(macVirtualDisplayAvailable())
+    case "createDisplay":
+      macVirtualDisplayQueue.async {
+        let config = self.macDefaultDisplayConfig()
+        let id = self.spawnMacVirtualDisplay(
+          width: config.width,
+          height: config.height,
+          refreshRate: config.refreshRate
+        )
+        DispatchQueue.main.async { result(id) }
+      }
+    case "removeDisplay":
+      let args = call.arguments as? [String: Any]
+      let displayUid = args?["displayUid"] as? Int ?? -1
+      macVirtualDisplayQueue.async {
+        let ok = self.terminateMacVirtualDisplay(displayUid)
+        DispatchQueue.main.async { result(ok) }
+      }
+    case "getAllDisplays":
+      result(macDisplayList().count)
+    case "getDisplayList":
+      result(macDisplayList())
+    case "changeDisplaySettings":
+      guard
+        let args = call.arguments as? [String: Any],
+        let displayUid = args["displayUid"] as? Int,
+        let width = args["width"] as? Int,
+        let height = args["height"] as? Int,
+        let refreshRate = args["refreshRate"] as? Int
+      else {
+        result(false)
+        return
+      }
+      macVirtualDisplayQueue.async {
+        let ok = self.setMacDisplayMode(
+          displayId: displayUid,
+          width: width,
+          height: height,
+          refreshRate: refreshRate
+        )
+        DispatchQueue.main.async { result(ok) }
+      }
+    case "getDisplayConfigs":
+      let args = call.arguments as? [String: Any]
+      let displayUid = args?["displayUid"] as? Int ?? Int(CGMainDisplayID())
+      result(macDisplayConfigs(CGDirectDisplayID(displayUid)))
+    case "getCustomDisplayConfigs":
+      result(macCustomDisplayConfigs())
+    case "setCustomDisplayConfigs":
+      let args = call.arguments as? [String: Any]
+      let configs = args?["configs"] as? [[String: Any]] ?? []
+      result(setMacCustomDisplayConfigs(configs))
+    case "setDisplayOrientation":
+      result(false)
+    case "getDisplayOrientation":
+      result(0)
+    case "setMultiDisplayMode":
+      let args = call.arguments as? [String: Any]
+      let mode = args?["mode"] as? Int ?? 4
+      switch mode {
+      case 0:
+        result(setMacMirroring(false))
+      case 3:
+        result(setMacMirroring(true))
+      default:
+        result(false)
+      }
+    case "getCurrentMultiDisplayMode":
+      let displays = macDisplayList()
+      if displays.count <= 1 {
+        result(1)
+      } else {
+        let anyMirrored = displays.contains { item in
+          guard let uid = item["displayUid"] as? Int else { return false }
+          return CGDisplayMirrorsDisplay(CGDirectDisplayID(uid)) != 0
+        }
+        result(anyMirrored ? 3 : 0)
+      }
+    case "setPrimaryDisplayOnly":
+      result(false)
+    case "restoreDisplayConfiguration":
+      result(false)
+    case "hasPendingConfiguration":
+      result(false)
+    case "updateStaticMonitors":
+      result(nil)
+#else
+    case "initParsecVdd":
+      result(false)
+    case "createDisplay":
+      result(-1)
+    case "removeDisplay":
+      result(false)
+    case "getAllDisplays":
+      result(NSScreen.screens.count)
+    case "getDisplayList":
+      result([])
+    case "changeDisplaySettings":
+      result(false)
+    case "getDisplayConfigs":
+      result([])
+    case "getCustomDisplayConfigs":
+      result([])
+    case "setCustomDisplayConfigs":
+      result(false)
+    case "setDisplayOrientation":
+      result(false)
+    case "getDisplayOrientation":
+      result(0)
+    case "setMultiDisplayMode":
+      result(false)
+    case "getCurrentMultiDisplayMode":
+      result(4)
+    case "setPrimaryDisplayOnly":
+      result(false)
+    case "restoreDisplayConfiguration":
+      result(false)
+    case "hasPendingConfiguration":
+      result(false)
+    case "updateStaticMonitors":
+      result(nil)
+#endif
     case "mouseMoveA":
       if let args = call.arguments as? [String: Any],
         let percentX = args["x"] as? Double,
