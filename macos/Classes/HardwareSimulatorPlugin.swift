@@ -250,13 +250,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func macVirtualDisplayIdsSnapshot() -> Set<Int> {
-    let snapshot = {
-      Set(self.macVirtualDisplayProcesses.keys)
-    }
     if DispatchQueue.getSpecific(key: macVirtualDisplayQueueKey) != nil {
-      return snapshot()
+      return Set(macVirtualDisplayProcesses.keys)
     }
-    return macVirtualDisplayQueue.sync(execute: snapshot)
+    return macVirtualDisplayQueue.sync {
+      Set(macVirtualDisplayProcesses.keys)
+    }
   }
 
   private func screenNameByDisplayId() -> [Int: String] {
