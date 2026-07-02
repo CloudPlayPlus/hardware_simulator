@@ -174,6 +174,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return sanitized.count == configs.count
   }
 
+  private func withMacVirtualDisplayProcesses<T>(_ body: () -> T) -> T {
+    if DispatchQueue.getSpecific(key: macVirtualDisplayQueueKey) != nil {
+      return body()
+    }
+    return macVirtualDisplayQueue.sync(execute: body)
+  }
+
   private func spawnMacVirtualDisplay(
     width: Int,
     height: Int,
@@ -220,7 +227,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         self?.macVirtualDisplayProcesses.removeValue(forKey: displayId)
       }
     }
-    macVirtualDisplayQueue.sync {
+    withMacVirtualDisplayProcesses {
       macVirtualDisplayProcesses[displayId] = process
     }
     Thread.sleep(forTimeInterval: 1.0)
@@ -228,7 +235,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func terminateMacVirtualDisplay(_ displayId: Int) -> Bool {
-    let process: Process? = macVirtualDisplayQueue.sync {
+    let process: Process? = withMacVirtualDisplayProcesses {
       macVirtualDisplayProcesses.removeValue(forKey: displayId)
     }
     guard let process else {
@@ -241,7 +248,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func terminateAllMacVirtualDisplays() {
-    macVirtualDisplayQueue.sync {
+    withMacVirtualDisplayProcesses {
       for process in macVirtualDisplayProcesses.values where process.isRunning {
         process.terminate()
       }
@@ -250,10 +257,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func macVirtualDisplayIdsSnapshot() -> Set<Int> {
-    if DispatchQueue.getSpecific(key: macVirtualDisplayQueueKey) != nil {
-      return Set(macVirtualDisplayProcesses.keys)
-    }
-    return macVirtualDisplayQueue.sync {
+    return withMacVirtualDisplayProcesses {
       Set(macVirtualDisplayProcesses.keys)
     }
   }
