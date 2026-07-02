@@ -592,6 +592,7 @@ static void hardware_simulator_plugin_handle_method_call(
              strcmp(method, "touchMove") == 0 ||
              strcmp(method, "penEvent") == 0 ||
              strcmp(method, "penMove") == 0 ||
+             strcmp(method, "penHover") == 0 ||
              strcmp(method, "hookCursorImage") == 0 ||
              strcmp(method, "unhookCursorImage") == 0 ||
              strcmp(method, "hookCursorPosition") == 0 ||

@@ -26,4 +26,26 @@ void main() {
   test('getPlatformVersion', () async {
     expect(await platform.getPlatformVersion(), '42');
   });
+
+  test('performPenHover sends penHover method call', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performPenHover(0.25, 0.75, 2);
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'penHover');
+    expect(calls.single.arguments, {
+      'x': 0.25,
+      'y': 0.75,
+      'screenId': 2,
+    });
+  });
 }
