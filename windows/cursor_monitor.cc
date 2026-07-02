@@ -15,6 +15,8 @@ const int kBytesPerPixel = 4;
 static std::map<long long, std::unordered_set<uint32_t>> cachedcursors;
 static std::map<long long, CursorChangedCallback> callbacks;
 static std::map<long long, bool> hookAllCursorImage;
+static bool lastCursorVisible = true;
+static bool hasLastCursorVisible = false;
 
 // Position monitoring callbacks and state
 static std::map<long long, CursorPositionCallback> positionCallbacks;
@@ -548,6 +550,35 @@ bool IsCursorVisible() {
     return true;
 }
 
+void SyncCursorVisibility() {
+    bool visible = IsCursorVisible();
+    if (hasLastCursorVisible && visible == lastCursorVisible) {
+        return;
+    }
+
+    hasLastCursorVisible = true;
+    lastCursorVisible = visible;
+    MousePosition mousePos = GetMousePositionAndScreenId();
+    std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
+    for (auto callback : callbacks) {
+        callback.second(
+            visible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
+            mousePos.screenId,
+            positionBytes);
+    }
+}
+
+void CursorMonitor::syncNow() {
+    if (callbacks.empty()) {
+        return;
+    }
+
+    SyncCursorVisibility();
+    if (lastCursorVisible) {
+        SyncCursorImage();
+    }
+}
+
 void CursorChangedEventProc(HWINEVENTHOOK hook,
     DWORD event,
     HWND hwnd,
@@ -559,6 +590,8 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
         std::string str;
         switch (event) {
         case EVENT_OBJECT_HIDE:
+            hasLastCursorVisible = true;
+            lastCursorVisible = false;
             for (auto callback : callbacks) {
                 MousePosition mousePos = GetMousePositionAndScreenId();
                 std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
@@ -566,6 +599,8 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
             }
             break;
         case EVENT_OBJECT_SHOW:
+            hasLastCursorVisible = true;
+            lastCursorVisible = true;
             for (auto callback : callbacks) {
                 MousePosition mousePos = GetMousePositionAndScreenId();
                 std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);

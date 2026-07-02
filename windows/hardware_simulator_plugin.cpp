@@ -24,6 +24,7 @@
 #include <cmath>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <sstream>
 
 // Used to run win32 service.
@@ -581,7 +582,7 @@ void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
 }
 
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt) {
-    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
 
     if (!g_penDevice) {
         if (!createPenDevice()) {
@@ -658,10 +659,12 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
     // for the monitor thread to refresh while the pen remains active.
     clearPenEdgeTriggeredFlags();
     recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
 }
 
 void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt) {
-    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
 
     if (!g_penDevice) {
         return;
@@ -727,10 +730,12 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
     // for the monitor thread to refresh while the pen remains active.
     clearPenEdgeTriggeredFlags();
     recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
 }
 
 void performPenHover(int screenId, double x, double y) {
-    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
 
     if (!g_penDevice) {
         if (!createPenDevice()) {
@@ -761,6 +766,8 @@ void performPenHover(int screenId, double x, double y) {
     // Keep IN_RANGE after the update edge is sent so hover can be refreshed.
     clearPenEdgeTriggeredFlags();
     recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
 }
 
 BOOL IsRunningAsSystem() {
@@ -1122,7 +1129,8 @@ void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat = false) {
 }
 
 void clearAllPressedEvents() {
-    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
+    bool shouldSyncCursor = false;
     
     // Clear all pressed keyboard keys
     for (auto& [keyCode, state] : g_key_states) {
@@ -1144,6 +1152,7 @@ void clearAllPressedEvents() {
     // Clear pen device if it has an active hover or contact state.
     if (hasActivePenPointer()) {
         clearActivePenPointer();
+        shouldSyncCursor = true;
     }
     
     // Clear mouse buttons (left and right)
@@ -1162,6 +1171,11 @@ void clearAllPressedEvents() {
     }
     if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) {
         performMouseButton(5, true); // XButton2 up
+    }
+
+    lock.unlock();
+    if (shouldSyncCursor) {
+        CursorMonitor::syncNow();
     }
 }
 

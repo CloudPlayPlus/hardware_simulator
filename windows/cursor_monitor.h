@@ -23,7 +23,8 @@ public:
     static HWINEVENTHOOK Global_HOOK;
     static void startHook(CursorChangedCallback callback, long long callback_id, bool hookAll);
     static void endHook(long long callback_id);
-    
+    static void syncNow();
+
     // Position monitoring functions
     static void startPositionHook(CursorPositionCallback callback, long long callback_id);
     static void endPositionHook(long long callback_id);
