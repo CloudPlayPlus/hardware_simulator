@@ -284,6 +284,10 @@ class HardwareSimulator {
         .performPenMove(x, y, hasButton, pressure, rotation, tilt, screenId);
   }
 
+  static void performPenHover(double x, double y, int screenId) {
+    HardwareSimulatorPlatform.instance.performPenHover(x, y, screenId);
+  }
+
   static Future<GameController?> createGameController() {
     return GameController.createGameController();
   }

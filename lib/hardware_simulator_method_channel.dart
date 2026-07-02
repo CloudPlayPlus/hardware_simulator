@@ -96,6 +96,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         .invokeMethod('openMacOSPrivacySettings', {'section': section});
   }
 
+  @override
   Future<bool?> getIsMouseConnected() {
     return methodChannel.invokeMethod<bool>('isMouseConnected');
   }
@@ -411,6 +412,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       'pressure': pressure,
       'rotation': rotation,
       'tilt': tilt,
+      'screenId': screenId,
+    });
+  }
+
+  @override
+  Future<void> performPenHover(double x, double y, int screenId) async {
+    await methodChannel.invokeMethod('penHover', {
+      'x': x,
+      'y': y,
       'screenId': screenId,
     });
   }
