@@ -26,6 +26,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var injectedMouseButtonIds = Set<Int>()
   private let maxDoubleClickDistance: CGFloat = 6
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
   private let macVirtualDisplayQueue = DispatchQueue(
     label: "com.cloudplayplus.hardware-simulator.virtual-display"
   )
@@ -46,6 +47,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   deinit {
     terminateAllMacVirtualDisplays()
+  }
+
+  override init() {
+    super.init()
+    macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
   }
 
   private struct MacVirtualDisplayConfig {
@@ -214,13 +220,18 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         self?.macVirtualDisplayProcesses.removeValue(forKey: displayId)
       }
     }
-    macVirtualDisplayProcesses[displayId] = process
+    macVirtualDisplayQueue.sync {
+      macVirtualDisplayProcesses[displayId] = process
+    }
     Thread.sleep(forTimeInterval: 1.0)
     return displayId
   }
 
   private func terminateMacVirtualDisplay(_ displayId: Int) -> Bool {
-    guard let process = macVirtualDisplayProcesses.removeValue(forKey: displayId) else {
+    let process: Process? = macVirtualDisplayQueue.sync {
+      macVirtualDisplayProcesses.removeValue(forKey: displayId)
+    }
+    guard let process else {
       return false
     }
     if process.isRunning {
@@ -236,6 +247,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
       macVirtualDisplayProcesses.removeAll()
     }
+  }
+
+  private func macVirtualDisplayIdsSnapshot() -> Set<Int> {
+    let snapshot = {
+      Set(self.macVirtualDisplayProcesses.keys)
+    }
+    if DispatchQueue.getSpecific(key: macVirtualDisplayQueueKey) != nil {
+      return snapshot()
+    }
+    return macVirtualDisplayQueue.sync(execute: snapshot)
   }
 
   private func screenNameByDisplayId() -> [Int: String] {
@@ -282,11 +303,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     let names = screenNameByDisplayId()
     let mainId = Int(CGMainDisplayID())
+    let virtualDisplayIds = macVirtualDisplayIdsSnapshot()
     return displayIds.prefix(Int(displayCount)).enumerated().map { index, id in
       let displayId = Int(id)
       let mode = CGDisplayCopyDisplayMode(id)
       let bounds = CGDisplayBounds(id)
-      let isVirtual = macVirtualDisplayProcesses[displayId] != nil
+      let isVirtual = virtualDisplayIds.contains(displayId)
       let name = isVirtual
         ? "CloudPlayPlus Virtual Display"
         : (names[displayId] ?? "Display \(displayId)")
@@ -370,7 +392,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    guard macVirtualDisplayProcesses[displayId] != nil else {
+    guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
       return false
     }
     _ = terminateMacVirtualDisplay(displayId)
