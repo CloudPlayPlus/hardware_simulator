@@ -541,6 +541,8 @@ void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
 }
 
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt) {
+    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+
     if (!g_penDevice) {
         if (!createPenDevice()) {
             return;
@@ -619,6 +621,8 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
 }
 
 void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt) {
+    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+
     if (!g_penDevice) {
         return;
     }
@@ -686,6 +690,8 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
 }
 
 void performPenHover(int screenId, double x, double y) {
+    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+
     if (!g_penDevice) {
         if (!createPenDevice()) {
             return;
