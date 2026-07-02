@@ -18,6 +18,9 @@ A new Flutter plugin project.
   s.dependency 'FlutterMacOS'
 
   s.platform = :osx, '10.11'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'OTHER_SWIFT_FLAGS' => '$(inherited) $(CLOUDPLAYPLUS_DMG_SWIFT_FLAGS)',
+  }
   s.swift_version = '5.0'
 end
