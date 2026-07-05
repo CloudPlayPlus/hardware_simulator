@@ -16,6 +16,77 @@ typedef CursorImageUpdatedCallback = void Function(
 typedef CursorPositionUpdatedCallback = void Function(
     int message, int screenId, double xPercent, double yPercent);
 typedef DisplayCountChangedCallback = void Function(int displayCount);
+typedef TextInputFocusChangedCallback = void Function(FocusedTextInput info);
+
+class FocusedTextInput {
+  final String name;
+  final String localizedControlType;
+  final String className;
+  final String automationId;
+  final String processName;
+  final int controlTypeId;
+  final int processId;
+  final int nativeWindowHandle;
+  final bool isPassword;
+
+  /// Raw UIA `ValuePattern.IsReadOnly`.
+  ///
+  /// Some rich editors, notably Microsoft Word's document surface, report this
+  /// as true even while the user can type into the active document.
+  final bool isReadOnly;
+  final bool supportsTextPattern;
+  final bool supportsValuePattern;
+  final bool supportsTextEditPattern;
+  final bool hasActiveTextCaret;
+  final int timestampMs;
+
+  const FocusedTextInput({
+    required this.name,
+    required this.localizedControlType,
+    required this.className,
+    required this.automationId,
+    required this.processName,
+    required this.controlTypeId,
+    required this.processId,
+    required this.nativeWindowHandle,
+    required this.isPassword,
+    required this.isReadOnly,
+    required this.supportsTextPattern,
+    required this.supportsValuePattern,
+    required this.supportsTextEditPattern,
+    required this.hasActiveTextCaret,
+    required this.timestampMs,
+  });
+
+  factory FocusedTextInput.fromMap(Map<dynamic, dynamic> map) {
+    return FocusedTextInput(
+      name: map['name']?.toString() ?? '',
+      localizedControlType: map['localizedControlType']?.toString() ?? '',
+      className: map['className']?.toString() ?? '',
+      automationId: map['automationId']?.toString() ?? '',
+      processName: map['processName']?.toString() ?? '',
+      controlTypeId: (map['controlTypeId'] as num?)?.toInt() ?? 0,
+      processId: (map['processId'] as num?)?.toInt() ?? 0,
+      nativeWindowHandle: (map['nativeWindowHandle'] as num?)?.toInt() ?? 0,
+      isPassword: map['isPassword'] == true,
+      isReadOnly: map['isReadOnly'] == true,
+      supportsTextPattern: map['supportsTextPattern'] == true,
+      supportsValuePattern: map['supportsValuePattern'] == true,
+      supportsTextEditPattern: map['supportsTextEditPattern'] == true,
+      hasActiveTextCaret: map['hasActiveTextCaret'] == true,
+      timestampMs: (map['timestampMs'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  String get displayName {
+    if (name.trim().isNotEmpty) return name.trim();
+    if (automationId.trim().isNotEmpty) return '#${automationId.trim()}';
+    if (className.trim().isNotEmpty) return className.trim();
+    return localizedControlType.trim().isNotEmpty
+        ? localizedControlType.trim()
+        : 'Text input';
+  }
+}
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Constructs a HardwareSimulatorPlatform.
@@ -177,6 +248,17 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   void removeDisplayCountChangedCallback(int callbackId) {
     throw UnimplementedError(
         'removeDisplayCountChangedCallback() has not been implemented.');
+  }
+
+  void addTextInputFocusChanged(
+      TextInputFocusChangedCallback callback, int callbackId) {
+    throw UnimplementedError(
+        'addTextInputFocusChanged() has not been implemented.');
+  }
+
+  void removeTextInputFocusChanged(int callbackId) {
+    throw UnimplementedError(
+        'removeTextInputFocusChanged() has not been implemented.');
   }
 
   Future<void> performKeyEvent(int keyCode, bool isDown) async {

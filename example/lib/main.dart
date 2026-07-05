@@ -37,6 +37,8 @@ class SimulatorScreen extends StatefulWidget {
 }
 
 class _SimulatorScreenState extends State<SimulatorScreen> {
+  static const int _textFocusCallbackId = 3;
+
   final TextEditingController xController = TextEditingController();
   final TextEditingController yController = TextEditingController();
   final TextEditingController relXController = TextEditingController();
@@ -200,6 +202,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   // 鼠标位置监控相关变量
   bool _positionMonitoringActive = false;
+  bool _textFocusMonitoringActive = false;
+  final List<FocusedTextInput> _recentTextFocuses = [];
 
   void _startPositionMonitoring() async {
     if (_positionMonitoringActive) return;
@@ -224,6 +228,28 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     print('鼠标位置监控已停止');
   }
 
+  void _startTextFocusMonitoring({bool notify = true}) {
+    if (!Platform.isWindows || _textFocusMonitoringActive) return;
+    _textFocusMonitoringActive = true;
+    HardwareSimulator.addTextInputFocusChanged((FocusedTextInput info) {
+      if (!mounted) return;
+      setState(() {
+        _recentTextFocuses.insert(0, info);
+        if (_recentTextFocuses.length > 3) {
+          _recentTextFocuses.removeRange(3, _recentTextFocuses.length);
+        }
+      });
+    }, _textFocusCallbackId);
+    if (notify) setState(() {});
+  }
+
+  void _stopTextFocusMonitoring({bool notify = true}) {
+    if (!Platform.isWindows || !_textFocusMonitoringActive) return;
+    HardwareSimulator.removeTextInputFocusChanged(_textFocusCallbackId);
+    _textFocusMonitoringActive = false;
+    if (notify) setState(() {});
+  }
+
   FocusNode? _textFieldFocusNode;
 
   @override
@@ -233,6 +259,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     //HardwareKeyboard.instance.addHandler(_handleKeyEvent);
     _textFieldFocusNode = FocusNode();
     _registerTrackCursor(); // 注册trackCursor回调
+    _startTextFocusMonitoring(notify: false);
   }
 
   @override
@@ -242,6 +269,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     _unregisterCursorChanged();
     _unregisterTrackCursor(); // 注销trackCursor回调
     _stopPositionMonitoring(); // 停止鼠标位置监控
+    _stopTextFocusMonitoring(notify: false);
     super.dispose();
   }
 
@@ -381,6 +409,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             ),
           ),
         SizedBox(height: 20),
+        if (Platform.isWindows) _buildTextFocusPanel(),
+        if (Platform.isWindows) SizedBox(height: 20),
         // First Row: Absolute Mouse Move
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -640,6 +670,79 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           ],
         ),
       ],
+    );
+  }
+
+  Widget _buildTextFocusPanel() {
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.symmetric(horizontal: 16),
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.blueGrey.shade200),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Windows 文本焦点监听（最近 3 条）',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+              ElevatedButton(
+                onPressed: _textFocusMonitoringActive
+                    ? null
+                    : _startTextFocusMonitoring,
+                child: Text('开始监听'),
+              ),
+              SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _textFocusMonitoringActive
+                    ? _stopTextFocusMonitoring
+                    : null,
+                child: Text('停止监听'),
+              ),
+            ],
+          ),
+          SizedBox(height: 8),
+          if (_recentTextFocuses.isEmpty)
+            Text('还没有捕获到文本框焦点。请切到任意应用并 focus 文本输入框。')
+          else
+            ..._recentTextFocuses.map(_buildTextFocusRow),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextFocusRow(FocusedTextInput info) {
+    final time = DateTime.fromMillisecondsSinceEpoch(info.timestampMs);
+    final hh = time.hour.toString().padLeft(2, '0');
+    final mm = time.minute.toString().padLeft(2, '0');
+    final ss = time.second.toString().padLeft(2, '0');
+    final flags = [
+      if (info.isPassword) 'password',
+      if (info.isReadOnly) 'UIA-readOnly',
+      if (info.supportsTextPattern) 'TextPattern',
+      if (info.supportsValuePattern) 'ValuePattern',
+      if (info.supportsTextEditPattern) 'TextEditPattern',
+      if (info.hasActiveTextCaret) 'activeCaret',
+    ].join(', ');
+
+    return Padding(
+      padding: EdgeInsets.only(top: 6),
+      child: Text(
+        '[$hh:$mm:$ss] ${info.displayName} | '
+        'type=${info.localizedControlType.isEmpty ? info.controlTypeId : info.localizedControlType} '
+        'class=${info.className.isEmpty ? "-" : info.className} '
+        'proc=${info.processName.isEmpty ? info.processId : info.processName}'
+        '${flags.isEmpty ? "" : " | $flags"}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
     );
   }
 }

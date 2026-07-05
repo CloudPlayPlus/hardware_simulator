@@ -61,6 +61,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         if (displayCountCallbacks.containsKey(callbackID)) {
           displayCountCallbacks[callbackID]!(call.arguments['displayCount']);
         }
+      } else if (call.method == "onTextInputFocusChanged") {
+        int callbackID = call.arguments['callbackID'];
+        if (textInputFocusCallbacks.containsKey(callbackID)) {
+          textInputFocusCallbacks[callbackID]!(
+              FocusedTextInput.fromMap(call.arguments));
+        }
       }
       return null;
     });
@@ -235,6 +241,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   final Map<int, CursorImageUpdatedCallback> cursorImageCallbacks = {};
   final Map<int, CursorPositionUpdatedCallback> cursorPositionCallbacks = {};
   final Map<int, DisplayCountChangedCallback> displayCountCallbacks = {};
+  final Map<int, TextInputFocusChangedCallback> textInputFocusCallbacks = {};
 
   @override
   void addCursorImageUpdated(
@@ -305,6 +312,32 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       displayCountCallbacks.remove(callbackId);
     }
     methodChannel.invokeMethod('removeDisplayCountChangedCallback', {
+      'callbackID': callbackId,
+    });
+  }
+
+  @override
+  void addTextInputFocusChanged(
+      TextInputFocusChangedCallback callback, int callbackId) {
+    if (kIsWeb || !Platform.isWindows) {
+      return;
+    }
+    if (!isinitialized) init();
+    textInputFocusCallbacks[callbackId] = callback;
+    methodChannel.invokeMethod('hookTextInputFocusChanged', {
+      'callbackID': callbackId,
+    });
+  }
+
+  @override
+  void removeTextInputFocusChanged(int callbackId) {
+    if (textInputFocusCallbacks.containsKey(callbackId)) {
+      textInputFocusCallbacks.remove(callbackId);
+    }
+    if (kIsWeb || !Platform.isWindows) {
+      return;
+    }
+    methodChannel.invokeMethod('unhookTextInputFocusChanged', {
       'callbackID': callbackId,
     });
   }

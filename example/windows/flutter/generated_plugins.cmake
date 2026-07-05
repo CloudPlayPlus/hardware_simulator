@@ -4,7 +4,6 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   hardware_simulator
-  pointer_lock
   url_launcher_windows
 )
 

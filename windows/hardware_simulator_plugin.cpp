@@ -4,6 +4,7 @@
 #include "desktop_service_input_client.h"
 #include "gamecontroller_manager.h"
 #include "notification_window.h"
+#include "text_focus_monitor.h"
 #include "virtual_display_control.h"
 #include "SmartKeyboardBlocker.h"
 
@@ -991,6 +992,7 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
     DesktopServiceInputClient::Instance().Close();
+    TextFocusMonitor::StopAll();
     StopMonitorThread();
     destroyTouchDevice();
     destroyPenDevice();
@@ -1435,6 +1437,36 @@ void HardwareSimulatorPlugin::HandleMethodCall(
   } else if (method_call.method_name().compare("removeDisplayCountChangedCallback") == 0) {
         auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));
         removeDisplayCountChangedCallback(callbackID);
+        result->Success(nullptr);
+  } else if (method_call.method_name().compare("hookTextInputFocusChanged") == 0) {
+        auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));
+        TextFocusMonitor::Start([this, callbackID](const TextFocusInfo& info) {
+            flutter::EncodableMap encoded_message;
+            encoded_message[flutter::EncodableValue("callbackID")] = flutter::EncodableValue(callbackID);
+            encoded_message[flutter::EncodableValue("name")] = flutter::EncodableValue(info.name);
+            encoded_message[flutter::EncodableValue("localizedControlType")] = flutter::EncodableValue(info.localized_control_type);
+            encoded_message[flutter::EncodableValue("className")] = flutter::EncodableValue(info.class_name);
+            encoded_message[flutter::EncodableValue("automationId")] = flutter::EncodableValue(info.automation_id);
+            encoded_message[flutter::EncodableValue("processName")] = flutter::EncodableValue(info.process_name);
+            encoded_message[flutter::EncodableValue("controlTypeId")] = flutter::EncodableValue(info.control_type_id);
+            encoded_message[flutter::EncodableValue("processId")] = flutter::EncodableValue(info.process_id);
+            encoded_message[flutter::EncodableValue("nativeWindowHandle")] = flutter::EncodableValue(info.native_window_handle);
+            encoded_message[flutter::EncodableValue("isPassword")] = flutter::EncodableValue(info.is_password);
+            encoded_message[flutter::EncodableValue("isReadOnly")] = flutter::EncodableValue(info.is_read_only);
+            encoded_message[flutter::EncodableValue("supportsTextPattern")] = flutter::EncodableValue(info.supports_text_pattern);
+            encoded_message[flutter::EncodableValue("supportsValuePattern")] = flutter::EncodableValue(info.supports_value_pattern);
+            encoded_message[flutter::EncodableValue("supportsTextEditPattern")] = flutter::EncodableValue(info.supports_text_edit_pattern);
+            encoded_message[flutter::EncodableValue("hasActiveTextCaret")] = flutter::EncodableValue(info.has_active_text_caret);
+            encoded_message[flutter::EncodableValue("timestampMs")] = flutter::EncodableValue(info.timestamp_ms);
+            if (channel_) {
+                channel_->InvokeMethod("onTextInputFocusChanged",
+                    std::make_unique<flutter::EncodableValue>(encoded_message));
+            }
+        }, callbackID);
+        result->Success(nullptr);
+  } else if (method_call.method_name().compare("unhookTextInputFocusChanged") == 0) {
+        auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));
+        TextFocusMonitor::Stop(callbackID);
         result->Success(nullptr);
   } else if (method_call.method_name().compare("createGameController") == 0) {
         int hr = GameControllerManager::CreateGameController();

@@ -28,6 +28,8 @@ list(APPEND PLUGIN_SOURCES
   "gamecontroller_manager.h"
   "notification_window.cc"
   "notification_window.h"
+  "text_focus_monitor.cc"
+  "text_focus_monitor.h"
   "virtual_display.cc"
   "virtual_display.h"
   "virtual_display_control.cc"
@@ -70,6 +72,9 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/lib/x64/ViGEmClient.lib"
   setupapi
   cfgmgr32
+  ole32
+  oleaut32
+  uiautomationcore
   user32)
 
 # List of absolute paths to libraries that should be bundled with the plugin.

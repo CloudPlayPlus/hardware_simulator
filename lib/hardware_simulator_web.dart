@@ -151,4 +151,11 @@ class HardwareSimulatorPluginWeb extends HardwareSimulatorPlatform {
   void removeCursorWheel(CursorWheelCallback callback) {
     cursorWheelCallbacks.remove(callback);
   }
+
+  @override
+  void addTextInputFocusChanged(
+      TextInputFocusChangedCallback callback, int callbackId) {}
+
+  @override
+  void removeTextInputFocusChanged(int callbackId) {}
 }

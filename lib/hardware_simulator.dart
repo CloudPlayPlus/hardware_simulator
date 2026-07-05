@@ -1,6 +1,9 @@
 import 'hardware_simulator_platform_interface.dart';
 export 'hardware_simulator_platform_interface.dart'
-    show DisplayCountChangedCallback;
+    show
+        DisplayCountChangedCallback,
+        FocusedTextInput,
+        TextInputFocusChangedCallback;
 import 'display_data.dart';
 
 /// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
@@ -251,6 +254,16 @@ class HardwareSimulator {
   static void removeDisplayCountChangedCallback(int callbackId) {
     HardwareSimulatorPlatform.instance
         .removeDisplayCountChangedCallback(callbackId);
+  }
+
+  static void addTextInputFocusChanged(
+      TextInputFocusChangedCallback callback, int callbackId) {
+    HardwareSimulatorPlatform.instance
+        .addTextInputFocusChanged(callback, callbackId);
+  }
+
+  static void removeTextInputFocusChanged(int callbackId) {
+    HardwareSimulatorPlatform.instance.removeTextInputFocusChanged(callbackId);
   }
 
   HWKeyboard getKeyboard() {
