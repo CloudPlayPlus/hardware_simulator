@@ -256,7 +256,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         
         mouseInput.scroll.yAxis.valueChangedHandler = { [weak self] axis, value in
             self?.channel?.invokeMethod("onCursorScroll", arguments: [
-                "dx": Double(value),
+                "dx": -Double(value),
                 "dy": 0
             ])
         }
@@ -264,7 +264,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         mouseInput.scroll.xAxis.valueChangedHandler = { [weak self] axis, value in
             self?.channel?.invokeMethod("onCursorScroll", arguments: [
                 "dx": 0,
-                "dy": Double(value)
+                "dy": -Double(value)
             ])
         }
     }

@@ -839,13 +839,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   func performMouseScroll(dx: Double, dy: Double) {
       let eventSource = CGEventSource(stateID: .hidSystemState)
-      
-      if dy != 0, let scrollEventY = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 1, wheel1: Int32(dy), wheel2: 0, wheel3: 0) {
-          scrollEventY.post(tap: .cghidEventTap)
-      }
 
-      if dx != 0, let scrollEventX = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 1, wheel1: 0, wheel2: Int32(dx), wheel3: 0) {
-          scrollEventX.post(tap: .cghidEventTap)
+      if dx != 0 || dy != 0 {
+          let wheelCount: UInt32 = dx != 0 ? 2 : 1
+          if let scrollEvent = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: wheelCount, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) {
+              scrollEvent.post(tap: .cghidEventTap)
+          }
       }
   }
 
