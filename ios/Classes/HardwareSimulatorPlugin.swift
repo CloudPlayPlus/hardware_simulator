@@ -254,15 +254,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
             ])
         }
         
-        // Match the client-side PointerPanZoom/touch scroll convention.
-        mouseInput.scroll.xAxis.valueChangedHandler = { [weak self] axis, value in
+        mouseInput.scroll.yAxis.valueChangedHandler = { [weak self] axis, value in
             self?.channel?.invokeMethod("onCursorScroll", arguments: [
                 "dx": -Double(value),
                 "dy": 0
             ])
         }
         
-        mouseInput.scroll.yAxis.valueChangedHandler = { [weak self] axis, value in
+        mouseInput.scroll.xAxis.valueChangedHandler = { [weak self] axis, value in
             self?.channel?.invokeMethod("onCursorScroll", arguments: [
                 "dx": 0,
                 "dy": -Double(value)
