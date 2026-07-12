@@ -253,6 +253,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
         'removeGameController() has not been implemented.');
   }
 
+  Future<bool> ensureConsoleSession() {
+    throw UnimplementedError('ensureConsoleSession() has not been implemented.');
+  }
+
   Future<bool> initParsecVdd() {
     throw UnimplementedError('initParsecVdd() has not been implemented.');
   }

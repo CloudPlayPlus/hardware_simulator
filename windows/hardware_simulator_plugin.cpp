@@ -1562,6 +1562,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto displayIndex = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("displayIndex")))->second));
         bool success = setPrimaryDisplay(displayIndex);
         result->Success(flutter::EncodableValue(success));
+  } else if (method_call.method_name().compare("ensureConsoleSession") == 0) {
+    bool ok = VirtualDisplayControl::EnsureConsoleSession();
+    result->Success(flutter::EncodableValue(ok));
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
     if (!VirtualDisplayControl::IsInitialized()) {
       if (VirtualDisplayControl::Initialize()) {

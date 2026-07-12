@@ -449,6 +449,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<bool> ensureConsoleSession() async {
+    return await methodChannel.invokeMethod('ensureConsoleSession') ?? false;
+  }
+
+  @override
   Future<bool> initParsecVdd() async {
     return await methodChannel.invokeMethod('initParsecVdd');
   }

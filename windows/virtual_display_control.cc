@@ -12,6 +12,7 @@
 #include <setupapi.h>
 #include <devpkey.h>    // DEVPKEY_Device_*
 #include <winuser.h>    // DisplayConfig APIs
+#include <wtsapi32.h>   // WTSQuerySessionInformation (linked via CMake)
 
 // Define missing constants for older Windows SDK versions
 #ifndef DISPLAYCONFIG_PATH_PRIMARY_VIEW
@@ -250,11 +251,95 @@ static std::wstring GetDisplayTargetName(LUID adapterId, UINT32 targetId) {
 
 }
 
+bool VirtualDisplayControl::EnsureConsoleSession() {
+    DWORD sessionId = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &sessionId)) {
+        std::cout << "[VDD] EnsureConsoleSession: failed to get session ID" << std::endl;
+        return false;
+    }
+
+    WTS_CONNECTSTATE_CLASS* pState = nullptr;
+    DWORD bytesReturned = 0;
+    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId,
+                                      WTSConnectState, reinterpret_cast<LPWSTR*>(&pState),
+                                      &bytesReturned)) {
+        std::cout << "[VDD] EnsureConsoleSession: WTSQuerySessionInformation failed" << std::endl;
+        return false;
+    }
+
+    WTS_CONNECTSTATE_CLASS state = *pState;
+    WTSFreeMemory(pState);
+
+    if (state == WTSActive) {
+        DWORD consoleSessionId = WTSGetActiveConsoleSessionId();
+        if (consoleSessionId == sessionId) {
+            std::cout << "[VDD] EnsureConsoleSession: already on console session " << sessionId << std::endl;
+        } else {
+            std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
+                      << " is active (console is " << consoleSessionId << ")" << std::endl;
+        }
+        return true;
+    }
+
+    if (state != WTSDisconnected) {
+        std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
+                  << " state=" << static_cast<int>(state) << " (not disconnected, skipping)" << std::endl;
+        return false;
+    }
+
+    std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
+              << " is disconnected, reconnecting to console..." << std::endl;
+
+    std::wstring cmd = L"tscon " + std::to_wstring(sessionId) + L" /dest:console";
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    std::wstring cmdLine = L"cmd.exe /c " + cmd;
+    if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
+                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        std::cout << "[VDD] EnsureConsoleSession: CreateProcess failed, error=" << GetLastError() << std::endl;
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, 10000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (exitCode != 0) {
+        std::cout << "[VDD] EnsureConsoleSession: tscon exited with code " << exitCode
+                  << " (may need admin privileges)" << std::endl;
+        return false;
+    }
+
+    Sleep(1000);
+
+    WTS_CONNECTSTATE_CLASS* pNewState = nullptr;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId,
+                                     WTSConnectState, reinterpret_cast<LPWSTR*>(&pNewState),
+                                     &bytesReturned)) {
+        WTS_CONNECTSTATE_CLASS newState = *pNewState;
+        WTSFreeMemory(pNewState);
+        if (newState == WTSActive) {
+            std::cout << "[VDD] EnsureConsoleSession: successfully reconnected to console" << std::endl;
+            return true;
+        }
+        std::cout << "[VDD] EnsureConsoleSession: tscon succeeded but session state="
+                  << static_cast<int>(newState) << std::endl;
+    }
+
+    return false;
+}
+
 bool VirtualDisplayControl::Initialize() {
     if (initialized_) {
         std::cout << "VirtualDisplayControl already initialized" << std::endl;
         return true;
     }
+
+    EnsureConsoleSession();
     
     parsec_vdd::DeviceStatus status = parsec_vdd::QueryDeviceStatus(&parsec_vdd::VDD_CLASS_GUID, parsec_vdd::VDD_HARDWARE_ID);
     
@@ -323,11 +408,27 @@ int VirtualDisplayControl::AddDisplay() {
         std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
         return -1;
     }
-    
+
     int vdd_index = parsec_vdd::VddAddDisplay(vdd_handle_);
     if (vdd_index >= 0) {
         std::cout << "Virtual display added: " << vdd_index << std::endl;
-        std::ignore = VirtualDisplayControl::GetAllDisplays();
+        // The virtual display may take a moment to be enumerated by the OS,
+        // especially on headless servers. Retry until it becomes visible.
+        int prev_count = static_cast<int>(displays_.size());
+        int new_count = prev_count;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (attempt > 0) {
+                Sleep(500);
+            }
+            new_count = VirtualDisplayControl::GetAllDisplays();
+            if (new_count > prev_count) {
+                break;
+            }
+        }
+        if (new_count <= prev_count) {
+            std::cout << "Warning: added display index=" << vdd_index
+                      << " but it was never enumerated" << std::endl;
+        }
         return vdd_index;
     } else {
         std::cout << "Error: Failed to add display to VDD" << std::endl;
@@ -421,7 +522,7 @@ int VirtualDisplayControl::GetAllDisplays() {
                     break;
                 }
             }
-            if (path_idx < 0) 
+            if (path_idx < 0)
                 continue;
 
 

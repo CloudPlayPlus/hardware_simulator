@@ -301,6 +301,10 @@ class HardwareSimulator {
         .setPrimaryDisplay(displayIndex);
   }
 
+  static Future<bool> ensureConsoleSession() {
+    return HardwareSimulatorPlatform.instance.ensureConsoleSession();
+  }
+
   static Future<bool> initParsecVdd() {
     return HardwareSimulatorPlatform.instance.initParsecVdd();
   }
