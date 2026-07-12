@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <mutex>
 #include <thread>
+#include <vector>
+
+#include "virtual_display.h"
 
 namespace hardware_simulator {
 
@@ -16,6 +19,11 @@ class DesktopServiceInputClient {
 
   void SetServiceAvailable(bool available);
   bool SendInputMessage(const INPUT& input);
+  bool GetCustomDisplayConfigs(
+      std::vector<VirtualDisplay::DisplayConfig>& configs);
+  bool SetCustomDisplayConfigs(
+      const std::vector<VirtualDisplay::DisplayConfig>& configs,
+      bool& success);
   void Close();
 
  private:
@@ -35,7 +43,12 @@ class DesktopServiceInputClient {
   void RequestProbeLocked();
   void ProbeLoop();
   HANDLE TryConnect();
+  bool EnsureConnectedLocked();
   bool SendRawLocked(const void* data, uint32_t size);
+  bool ExchangeRawLocked(uint32_t type, const void* payload,
+                         uint32_t payload_size, uint32_t expected_type,
+                         void* response, uint32_t response_size);
+  bool ReadRawLocked(std::vector<uint8_t>& data);
   bool SendKeyboardLocked(const KEYBDINPUT& input);
   bool SendMouseLocked(const MOUSEINPUT& input);
   void ClosePipeLocked();
@@ -49,6 +62,7 @@ class DesktopServiceInputClient {
   bool probe_requested_ = false;
   bool probe_in_flight_ = false;
   bool service_available_ = false;
+  uint32_t next_seq_ = 1;
 };
 
 }  // namespace hardware_simulator

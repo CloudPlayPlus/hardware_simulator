@@ -9,8 +9,16 @@ constexpr const wchar_t* kInputPipeName =
     L"\\\\.\\pipe\\cloudplayplus_desktop_input";
 constexpr uint32_t kMsgKeyInput = 0x02;
 constexpr uint32_t kMsgMouseInput = 0x03;
+constexpr uint32_t kMsgGetCustomDisplayConfigs = 0x04;
+constexpr uint32_t kMsgSetCustomDisplayConfigs = 0x05;
+constexpr uint32_t kMsgCustomDisplayConfigsResp = 0x84;
+constexpr uint32_t kMsgBoolResp = 0x85;
+constexpr uint32_t kMsgErrorResp = 0xFF;
+constexpr uint32_t kMaxMessageSize = 4096;
+constexpr uint32_t kMaxCustomDisplayConfigs = 5;
 constexpr DWORD kConnectBusyWaitMs = 2;
 constexpr DWORD kWriteTimeoutMs = 20;
+constexpr DWORD kControlTimeoutMs = 1000;
 
 #pragma pack(push, 1)
 struct MsgHeader {
@@ -31,6 +39,21 @@ struct MouseInputPayload {
   uint32_t flags;
   int32_t data;
 };
+
+struct CustomDisplayConfigPayload {
+  uint32_t width;
+  uint32_t height;
+  uint32_t refresh_rate;
+};
+
+struct CustomDisplayConfigListPayload {
+  uint32_t count;
+  CustomDisplayConfigPayload configs[kMaxCustomDisplayConfigs];
+};
+
+struct BoolResponsePayload {
+  uint32_t ok;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(MsgHeader) == 12, "MsgHeader size must match service IPC");
@@ -38,6 +61,16 @@ static_assert(sizeof(KeyboardInputPayload) == 8,
               "KeyboardInput size must match service IPC");
 static_assert(sizeof(MouseInputPayload) == 16,
               "MouseInput size must match service IPC");
+static_assert(sizeof(CustomDisplayConfigPayload) == 12,
+              "CustomDisplayConfig size must match service IPC");
+static_assert(sizeof(CustomDisplayConfigListPayload) == 64,
+              "CustomDisplayConfigList size must match service IPC");
+static_assert(sizeof(BoolResponsePayload) == 4,
+              "BoolResponse size must match service IPC");
+
+bool IsValidConfig(const VirtualDisplay::DisplayConfig& config) {
+  return config.width > 0 && config.height > 0 && config.refresh_rate > 0;
+}
 
 }  // namespace
 
@@ -75,6 +108,70 @@ bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
     default:
       return false;
   }
+}
+
+bool DesktopServiceInputClient::GetCustomDisplayConfigs(
+    std::vector<VirtualDisplay::DisplayConfig>& configs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!EnsureConnectedLocked()) {
+    return false;
+  }
+
+  CustomDisplayConfigListPayload response = {};
+  if (!ExchangeRawLocked(kMsgGetCustomDisplayConfigs, nullptr, 0,
+                         kMsgCustomDisplayConfigsResp, &response,
+                         sizeof(response)) ||
+      response.count > kMaxCustomDisplayConfigs) {
+    return false;
+  }
+
+  configs.clear();
+  for (uint32_t i = 0; i < response.count; ++i) {
+    const auto& item = response.configs[i];
+    if (item.width == 0 || item.height == 0 || item.refresh_rate == 0) {
+      return false;
+    }
+    configs.emplace_back(static_cast<int>(item.width),
+                         static_cast<int>(item.height),
+                         static_cast<int>(item.refresh_rate));
+  }
+  return true;
+}
+
+bool DesktopServiceInputClient::SetCustomDisplayConfigs(
+    const std::vector<VirtualDisplay::DisplayConfig>& configs,
+    bool& success) {
+  success = false;
+  if (configs.size() > kMaxCustomDisplayConfigs) {
+    return false;
+  }
+
+  CustomDisplayConfigListPayload request = {};
+  request.count = static_cast<uint32_t>(configs.size());
+  for (size_t i = 0; i < configs.size(); ++i) {
+    if (!IsValidConfig(configs[i])) {
+      return false;
+    }
+    request.configs[i].width = static_cast<uint32_t>(configs[i].width);
+    request.configs[i].height = static_cast<uint32_t>(configs[i].height);
+    request.configs[i].refresh_rate =
+        static_cast<uint32_t>(configs[i].refresh_rate);
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!EnsureConnectedLocked()) {
+    return false;
+  }
+
+  BoolResponsePayload response = {};
+  if (!ExchangeRawLocked(kMsgSetCustomDisplayConfigs, &request,
+                         sizeof(request), kMsgBoolResp, &response,
+                         sizeof(response))) {
+    return false;
+  }
+
+  success = response.ok != 0;
+  return true;
 }
 
 void DesktopServiceInputClient::Close() {
@@ -201,6 +298,25 @@ HANDLE DesktopServiceInputClient::TryConnect() {
   return pipe;
 }
 
+bool DesktopServiceInputClient::EnsureConnectedLocked() {
+  if (!service_available_) {
+    return false;
+  }
+  if (pipe_ != INVALID_HANDLE_VALUE) {
+    return true;
+  }
+
+  HANDLE pipe = TryConnect();
+  if (pipe != INVALID_HANDLE_VALUE) {
+    pipe_ = pipe;
+    state_ = ServiceState::kConnected;
+    return true;
+  }
+
+  RequestProbeLocked();
+  return false;
+}
+
 bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
   OVERLAPPED overlapped = {};
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -238,6 +354,99 @@ bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
     RequestProbeLocked();
     return false;
   }
+  return true;
+}
+
+bool DesktopServiceInputClient::ExchangeRawLocked(uint32_t type,
+                                                  const void* payload,
+                                                  uint32_t payload_size,
+                                                  uint32_t expected_type,
+                                                  void* response,
+                                                  uint32_t response_size) {
+  const uint32_t seq = next_seq_++;
+  if (next_seq_ == 0) {
+    next_seq_ = 1;
+  }
+
+  std::vector<uint8_t> request(sizeof(MsgHeader) + payload_size);
+  MsgHeader header = {};
+  header.type = type;
+  header.payload_size = payload_size;
+  header.seq = seq;
+  memcpy(request.data(), &header, sizeof(header));
+  if (payload_size > 0 && payload != nullptr) {
+    memcpy(request.data() + sizeof(header), payload, payload_size);
+  }
+
+  if (!SendRawLocked(request.data(), static_cast<uint32_t>(request.size()))) {
+    return false;
+  }
+
+  std::vector<uint8_t> response_data;
+  if (!ReadRawLocked(response_data) ||
+      response_data.size() < sizeof(MsgHeader)) {
+    return false;
+  }
+
+  MsgHeader response_header = {};
+  memcpy(&response_header, response_data.data(), sizeof(response_header));
+  const uint32_t actual_payload_size =
+      static_cast<uint32_t>(response_data.size() - sizeof(MsgHeader));
+
+  if (response_header.seq != seq ||
+      response_header.payload_size != actual_payload_size ||
+      response_header.type == kMsgErrorResp ||
+      response_header.type != expected_type ||
+      response_header.payload_size != response_size) {
+    return false;
+  }
+
+  memcpy(response, response_data.data() + sizeof(MsgHeader), response_size);
+  return true;
+}
+
+bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data) {
+  data.resize(kMaxMessageSize);
+
+  OVERLAPPED overlapped = {};
+  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!overlapped.hEvent) {
+    ClosePipeLocked();
+    RequestProbeLocked();
+    return false;
+  }
+
+  DWORD bytes_read = 0;
+  BOOL ok = ReadFile(pipe_, data.data(), static_cast<DWORD>(data.size()),
+                     &bytes_read, &overlapped);
+  if (!ok) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_IO_PENDING) {
+      DWORD wait = WaitForSingleObject(overlapped.hEvent, kControlTimeoutMs);
+      if (wait != WAIT_OBJECT_0 ||
+          !GetOverlappedResult(pipe_, &overlapped, &bytes_read, FALSE)) {
+        CancelIo(pipe_);
+        CloseHandle(overlapped.hEvent);
+        ClosePipeLocked();
+        RequestProbeLocked();
+        return false;
+      }
+    } else {
+      CloseHandle(overlapped.hEvent);
+      ClosePipeLocked();
+      RequestProbeLocked();
+      return false;
+    }
+  }
+
+  CloseHandle(overlapped.hEvent);
+  if (bytes_read == 0) {
+    ClosePipeLocked();
+    RequestProbeLocked();
+    return false;
+  }
+
+  data.resize(bytes_read);
   return true;
 }
 
