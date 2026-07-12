@@ -1693,7 +1693,10 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      
      result->Success(flutter::EncodableValue(configList));
   } else if (method_call.method_name().compare("getCustomDisplayConfigs") == 0) {
-     auto configs = VirtualDisplayControl::GetCustomDisplayConfigs();
+     std::vector<VirtualDisplay::DisplayConfig> configs;
+     if (!DesktopServiceInputClient::Instance().GetCustomDisplayConfigs(configs)) {
+         configs = VirtualDisplayControl::GetCustomDisplayConfigs();
+     }
      
      flutter::EncodableList configList;
      for (const auto& config : configs) {
@@ -1731,7 +1734,11 @@ void HardwareSimulatorPlugin::HandleMethodCall(
          }
      }
      
-     bool success = VirtualDisplayControl::SetCustomDisplayConfigs(configs);
+     bool success = false;
+     if (!DesktopServiceInputClient::Instance().SetCustomDisplayConfigs(
+             configs, success)) {
+         success = VirtualDisplayControl::SetCustomDisplayConfigs(configs);
+     }
      result->Success(flutter::EncodableValue(success));
   } else if (method_call.method_name().compare("setDisplayOrientation") == 0) {
      auto display_uid_it = args->find(flutter::EncodableValue("displayUid"));
