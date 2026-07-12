@@ -25,6 +25,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let mouseEventSource = CGEventSource(stateID: .hidSystemState)
   private var injectedMouseButtonIds = Set<Int>()
   private let maxDoubleClickDistance: CGFloat = 6
+  private let keyboardRepeatQueue = DispatchQueue(
+    label: "com.cloudplayplus.hardware-simulator.keyboard-repeat"
+  )
+  private var activeKeyRepeatTimer: DispatchSourceTimer?
+  private var activeRepeatingWindowsKeyCode: Int?
+  private var activeKeyMacCodes: [Int: CGKeyCode] = [:]
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
   private let macVirtualDisplayQueue = DispatchQueue(
@@ -599,29 +605,177 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       0x91: 0x7F, // Scroll Lock
   ]
 
+  private func postKeyboardEvent(
+      macKeyCode: CGKeyCode,
+      isDown: Bool,
+      isRepeat: Bool
+  ) {
+      // Create and post the keyboard event.
+      //
+      // Strip the Fn (secondaryFn) and NumericPad flags before posting.
+      // Arrow / navigation keys (kVK 0x7B–0x7E) are macOS function + numpad
+      // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
+      // such an event latches Fn into the shared session modifier state — and
+      // because the key-up event carries Fn too, it is never released. Every
+      // subsequent injected key is built with `keyboardEventSource: nil`,
+      // which inherits that polluted session state, so the stray Fn leaks onto
+      // ordinary keys: e.g. "E" becomes 🌐+E and opens the Emoji & Symbols
+      // picker. We never intend to inject Fn, so clear it (and NumericPad)
+      // from every event; the virtual key code alone still drives arrows.
+      let event = CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: macKeyCode,
+        keyDown: isDown
+      )
+      event?.flags.remove([.maskSecondaryFn, .maskNumericPad])
+      if isDown {
+          event?.setIntegerValueField(
+            .keyboardEventAutorepeat,
+            value: isRepeat ? 1 : 0
+          )
+      }
+      event?.post(tap: .cghidEventTap)
+  }
+
+  private func systemKeyboardRepeatDelay() -> DispatchTimeInterval {
+      let ticks = systemKeyboardRepeatTicks(
+        key: "InitialKeyRepeat",
+        defaultTicks: 34,
+        minTicks: 10,
+        maxTicks: 120
+      )
+      return .milliseconds(ticks * 15)
+  }
+
+  private func systemKeyboardRepeatInterval() -> DispatchTimeInterval {
+      let ticks = systemKeyboardRepeatTicks(
+        key: "KeyRepeat",
+        defaultTicks: 3,
+        minTicks: 1,
+        maxTicks: 20
+      )
+      return .milliseconds(ticks * 15)
+  }
+
+  private func systemKeyboardRepeatTicks(
+      key: String,
+      defaultTicks: Int,
+      minTicks: Int,
+      maxTicks: Int
+  ) -> Int {
+      guard let value = UserDefaults.standard.object(forKey: key) as? NSNumber
+      else {
+          return defaultTicks
+      }
+      return min(max(value.intValue, minTicks), maxTicks)
+  }
+
+  private func shouldAutoRepeat(windowsKeyCode: Int) -> Bool {
+      switch windowsKeyCode {
+      case 0x10, 0x11, 0x12, // Generic Shift / Ctrl / Alt
+           0x13,             // Pause
+           0x14,             // Caps Lock
+           0x29, 0x2A, 0x2B, 0x2C, // Select / Print / Execute / Print Screen
+           0x5B, 0x5C, 0x5D, // Command / Context Menu
+           0x90, 0x91,       // Num Lock / Scroll Lock
+           0xA0...0xA5,      // Left/right Shift / Ctrl / Alt
+           0xA6...0xAF,      // Browser + volume keys
+           0xB0...0xB3:      // Media keys
+          return false
+      default:
+          return true
+      }
+  }
+
+  private func startAutoRepeatIfNeeded(
+      windowsKeyCode: Int,
+      macKeyCode: CGKeyCode
+  ) {
+      stopActiveAutoRepeat()
+      guard shouldAutoRepeat(windowsKeyCode: windowsKeyCode) else {
+          return
+      }
+      let timer = DispatchSource.makeTimerSource(queue: keyboardRepeatQueue)
+      timer.schedule(
+        deadline: .now() + systemKeyboardRepeatDelay(),
+        repeating: systemKeyboardRepeatInterval(),
+        leeway: .milliseconds(3)
+      )
+      timer.setEventHandler { [weak self] in
+          guard let self = self else {
+              return
+          }
+          guard self.activeKeyMacCodes[windowsKeyCode] == macKeyCode else {
+              return
+          }
+          self.postKeyboardEvent(
+            macKeyCode: macKeyCode,
+            isDown: true,
+            isRepeat: true
+          )
+      }
+      activeRepeatingWindowsKeyCode = windowsKeyCode
+      activeKeyRepeatTimer = timer
+      timer.resume()
+  }
+
+  private func stopActiveAutoRepeat() {
+      activeKeyRepeatTimer?.cancel()
+      activeKeyRepeatTimer = nil
+      activeRepeatingWindowsKeyCode = nil
+  }
+
+  private func stopAutoRepeatIfNeeded(windowsKeyCode: Int) {
+      guard activeRepeatingWindowsKeyCode == windowsKeyCode else {
+          return
+      }
+      stopActiveAutoRepeat()
+  }
+
+  private func handleKeyDown(windowsKeyCode: Int, macKeyCode: CGKeyCode) {
+      if activeKeyMacCodes[windowsKeyCode] != nil {
+          return
+      }
+      activeKeyMacCodes[windowsKeyCode] = macKeyCode
+      postKeyboardEvent(macKeyCode: macKeyCode, isDown: true, isRepeat: false)
+      startAutoRepeatIfNeeded(
+        windowsKeyCode: windowsKeyCode,
+        macKeyCode: macKeyCode
+      )
+  }
+
+  private func handleKeyUp(windowsKeyCode: Int, macKeyCode: CGKeyCode) {
+      activeKeyMacCodes.removeValue(forKey: windowsKeyCode)
+      stopAutoRepeatIfNeeded(windowsKeyCode: windowsKeyCode)
+      postKeyboardEvent(macKeyCode: macKeyCode, isDown: false, isRepeat: false)
+  }
+
+  private func clearAllPressedEventsOnKeyboardQueue() {
+      let pressedKeyCodes = Array(activeKeyMacCodes.values)
+      activeKeyMacCodes.removeAll()
+      stopActiveAutoRepeat()
+      for macKeyCode in pressedKeyCodes {
+          postKeyboardEvent(macKeyCode: macKeyCode, isDown: false, isRepeat: false)
+      }
+  }
+
   // Function to perform key event based on Windows key code
   func PerformKeyEvent(code: Int, isDown: Bool) {
       // Reverse mapping from Windows key code to macOS key code
-      if let macKeyCode = windowsToMacKeyMap[code] {
-          let keyCode = CGKeyCode(macKeyCode)
-
-          // Create and post the keyboard event.
-          //
-          // Strip the Fn (secondaryFn) and NumericPad flags before posting.
-          // Arrow / navigation keys (kVK 0x7B–0x7E) are macOS function + numpad
-          // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
-          // such an event latches Fn into the shared session modifier state — and
-          // because the key-up event carries Fn too, it is never released. Every
-          // subsequent injected key is built with `keyboardEventSource: nil`,
-          // which inherits that polluted session state, so the stray Fn leaks onto
-          // ordinary keys: e.g. "E" becomes 🌐+E and opens the Emoji & Symbols
-          // picker. We never intend to inject Fn, so clear it (and NumericPad)
-          // from every event; the virtual key code alone still drives arrows.
-          let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown)
-          event?.flags.remove([.maskSecondaryFn, .maskNumericPad])
-          event?.post(tap: .cghidEventTap)
-      } else {
+      guard let rawMacKeyCode = windowsToMacKeyMap[code] else {
           print("Key code \(code) not found in mapping.")
+          return
+      }
+      let macKeyCode = CGKeyCode(rawMacKeyCode)
+      keyboardRepeatQueue.async { [weak self] in
+          guard let self = self else {
+              return
+          }
+          if isDown {
+              self.handleKeyDown(windowsKeyCode: code, macKeyCode: macKeyCode)
+          } else {
+              self.handleKeyUp(windowsKeyCode: code, macKeyCode: macKeyCode)
+          }
       }
   }
 
@@ -1503,6 +1657,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         result(nil) // 表示成功执行，不返回值
       } else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for KeyPress", details: nil))
+      }
+    case "clearAllPressedEvents":
+      keyboardRepeatQueue.async { [weak self] in
+        self?.clearAllPressedEventsOnKeyboardQueue()
+        DispatchQueue.main.async {
+          result(nil)
+        }
       }
     case "lockCursor":
       CGAssociateMouseAndMouseCursorPosition(0)
