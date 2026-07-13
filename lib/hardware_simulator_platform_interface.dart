@@ -257,7 +257,9 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('initParsecVdd() has not been implemented.');
   }
 
-  Future<int> createDisplay() {
+  Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) {
     throw UnimplementedError('createDisplay() has not been implemented.');
   }
 

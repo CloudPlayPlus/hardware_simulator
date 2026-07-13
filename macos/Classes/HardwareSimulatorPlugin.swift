@@ -79,7 +79,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
   }
 
-  private struct MacVirtualDisplayConfig {
+  private struct MacVirtualDisplayConfig: Hashable {
     let width: Int
     let height: Int
     let refreshRate: Int
@@ -227,6 +227,100 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return MacVirtualDisplayConfig(width: 1920, height: 1080, refreshRate: 60)
   }
 
+  private func macCommonDisplayConfigs(
+    refreshRate: Int = 60
+  ) -> [MacVirtualDisplayConfig] {
+    return [
+      MacVirtualDisplayConfig(width: 1280, height: 720, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 1366, height: 768, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 1600, height: 900, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 1600, height: 1200, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 1920, height: 1080, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 1920, height: 1200, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 2560, height: 1080, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 2560, height: 1440, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 3440, height: 1440, refreshRate: refreshRate),
+      MacVirtualDisplayConfig(width: 3840, height: 2160, refreshRate: refreshRate),
+    ]
+  }
+
+  private func macVirtualDisplayConfig(
+    from raw: [String: Any]
+  ) -> MacVirtualDisplayConfig? {
+    guard
+      let width = raw["width"] as? Int,
+      let height = raw["height"] as? Int,
+      let refreshRate = raw["refreshRate"] as? Int,
+      width > 0,
+      height > 0,
+      refreshRate > 0
+    else {
+      return nil
+    }
+    return MacVirtualDisplayConfig(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    )
+  }
+
+  private func macVirtualDisplayConfig(
+    from raw: [String: Int]
+  ) -> MacVirtualDisplayConfig? {
+    guard
+      let width = raw["width"],
+      let height = raw["height"],
+      let refreshRate = raw["refreshRate"],
+      width > 0,
+      height > 0,
+      refreshRate > 0
+    else {
+      return nil
+    }
+    return MacVirtualDisplayConfig(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    )
+  }
+
+  private func macCreateDisplayConfigs(
+    primary: MacVirtualDisplayConfig,
+    rawConfigs: [[String: Any]]?
+  ) -> [MacVirtualDisplayConfig] {
+    var configs: [MacVirtualDisplayConfig] = []
+    var seen = Set<MacVirtualDisplayConfig>()
+    func append(_ config: MacVirtualDisplayConfig) {
+      guard !seen.contains(config) else {
+        return
+      }
+      seen.insert(config)
+      configs.append(config)
+    }
+
+    append(primary)
+    if let rawConfigs, !rawConfigs.isEmpty {
+      for raw in rawConfigs {
+        guard let config = macVirtualDisplayConfig(from: raw) else {
+          continue
+        }
+        append(config)
+      }
+      return configs
+    }
+
+    for config in macCommonDisplayConfigs(refreshRate: primary.refreshRate) {
+      append(config)
+    }
+    for raw in macCustomDisplayConfigs().prefix(5) {
+      guard let config = macVirtualDisplayConfig(from: raw) else {
+        continue
+      }
+      append(config)
+    }
+    return configs
+  }
+
   private func readMacHelperDisplayId(from output: Pipe, timeout: DispatchTime) -> String? {
     let handle = output.fileHandleForReading
     let semaphore = DispatchSemaphore(value: 0)
@@ -313,7 +407,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "refreshRate": refreshRate,
       ]
     }
-    UserDefaults.standard.set(sanitized, forKey: macCustomDisplayConfigsKey)
+    let capped = sanitized.count <= 5
+      ? sanitized
+      : Array(sanitized.suffix(5))
+    UserDefaults.standard.set(capped, forKey: macCustomDisplayConfigsKey)
     return sanitized.count == configs.count
   }
 
@@ -338,7 +435,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private func spawnMacVirtualDisplay(
     width: Int,
     height: Int,
-    refreshRate: Int
+    refreshRate: Int,
+    configs: [MacVirtualDisplayConfig]? = nil
   ) -> Int {
     guard macVirtualDisplayAvailable(), let helper = macHelperURL() else {
       return -1
@@ -347,14 +445,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let process = Process()
     let output = Pipe()
     let serial = nextMacVirtualDisplaySerial()
+    let requested = MacVirtualDisplayConfig(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    )
+    let displayConfigs = configs ?? macCreateDisplayConfigs(
+      primary: requested,
+      rawConfigs: nil
+    )
     process.executableURL = helper
-    process.arguments = [
+    var arguments = [
       "\(width)",
       "\(height)",
       "\(refreshRate)",
       "\(ProcessInfo.processInfo.processIdentifier)",
       "\(serial)",
     ]
+    arguments.append(contentsOf: displayConfigs.flatMap { config in
+      [
+        "\(config.width)",
+        "\(config.height)",
+        "\(config.refreshRate)",
+      ]
+    })
+    process.arguments = arguments
     process.standardOutput = output
     process.standardError = FileHandle.standardError
 
@@ -557,11 +672,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
       return false
     }
+    let config = MacVirtualDisplayConfig(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    )
     _ = terminateMacVirtualDisplay(displayId)
     return spawnMacVirtualDisplay(
       width: width,
       height: height,
-      refreshRate: refreshRate
+      refreshRate: refreshRate,
+      configs: macCreateDisplayConfigs(primary: config, rawConfigs: nil)
     ) > 0
   }
 
@@ -2202,12 +2323,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "initParsecVdd":
       result(macVirtualDisplayAvailable())
     case "createDisplay":
+      let args = call.arguments as? [String: Any]
+      let rawConfigs = args?["configs"] as? [[String: Any]]
       macVirtualDisplayQueue.async {
-        let config = self.macDefaultDisplayConfig()
+        let defaultConfig = self.macDefaultDisplayConfig()
+        let primaryConfig =
+          rawConfigs?.compactMap { self.macVirtualDisplayConfig(from: $0) }.first
+          ?? defaultConfig
+        let configs = self.macCreateDisplayConfigs(
+          primary: primaryConfig,
+          rawConfigs: rawConfigs
+        )
         let id = self.spawnMacVirtualDisplay(
-          width: config.width,
-          height: config.height,
-          refreshRate: config.refreshRate
+          width: primaryConfig.width,
+          height: primaryConfig.height,
+          refreshRate: primaryConfig.refreshRate,
+          configs: configs
         )
         DispatchQueue.main.async { result(id) }
       }
