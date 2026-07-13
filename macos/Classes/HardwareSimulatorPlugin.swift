@@ -83,36 +83,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private struct MacSLSDisplayConfig {
-    typealias BeginFn = @convention(c) (
-      UnsafeMutablePointer<CGDisplayConfigRef?>
-    ) -> CGError
     typealias ConfigureEnabledFn = @convention(c) (
       CGDisplayConfigRef?,
       CGDirectDisplayID,
       Bool
-    ) -> CGError
-    typealias ConfigureOriginFn = @convention(c) (
-      CGDisplayConfigRef?,
-      CGDirectDisplayID,
-      Int32,
-      Int32
     ) -> CGError
     typealias GetDisplayListFn = @convention(c) (
       UInt32,
       UnsafeMutablePointer<CGDirectDisplayID>?,
       UnsafeMutablePointer<UInt32>?
     ) -> CGError
-    typealias CompleteFn = @convention(c) (
-      CGDisplayConfigRef?,
-      CGConfigureOption,
-      UInt32
-    ) -> CGError
 
-    let begin: BeginFn
     let configureEnabled: ConfigureEnabledFn
-    let configureOrigin: ConfigureOriginFn
     let getDisplayList: GetDisplayListFn
-    let complete: CompleteFn
 
     static func load(
       using loadSkyLight: () -> UnsafeMutableRawPointer?
@@ -129,32 +112,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
 
       guard
-        let begin = symbol("SLSBeginDisplayConfiguration", as: BeginFn.self),
         let configureEnabled = symbol(
           "SLSConfigureDisplayEnabled",
           as: ConfigureEnabledFn.self
-        ),
-        let configureOrigin = symbol(
-          "SLSConfigureDisplayOrigin",
-          as: ConfigureOriginFn.self
-        ),
+        ) ?? symbol("CGSConfigureDisplayEnabled", as: ConfigureEnabledFn.self),
         let getDisplayList =
           symbol("SLSGetDisplayList", as: GetDisplayListFn.self)
-          ?? symbol("CGSGetDisplayList", as: GetDisplayListFn.self),
-        let complete = symbol(
-          "SLSCompleteDisplayConfiguration",
-          as: CompleteFn.self
-        )
+          ?? symbol("CGSGetDisplayList", as: GetDisplayListFn.self)
       else {
         return nil
       }
 
       return MacSLSDisplayConfig(
-        begin: begin,
         configureEnabled: configureEnabled,
-        configureOrigin: configureOrigin,
-        getDisplayList: getDisplayList,
-        complete: complete
+        getDisplayList: getDisplayList
       )
     }
   }
@@ -445,21 +416,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func macDisplayList() -> [[String: Any]] {
-    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: 32)
-    var displayCount: UInt32 = 0
-    let err = CGGetActiveDisplayList(
-      UInt32(displayIds.count),
-      &displayIds,
-      &displayCount
-    )
-    guard err == .success else {
+    let displayIds = enabledMacDisplayIds()
+    guard !displayIds.isEmpty else {
       return []
     }
 
     let names = screenNameByDisplayId()
     let mainId = Int(CGMainDisplayID())
     let virtualDisplayIds = macVirtualDisplayIdsSnapshot()
-    return displayIds.prefix(Int(displayCount)).enumerated().map { index, id in
+    return displayIds.enumerated().map { index, id in
       let displayId = Int(id)
       let mode = CGDisplayCopyDisplayMode(id)
       let bounds = CGDisplayBounds(id)
@@ -475,7 +440,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "isVirtual": isVirtual,
         "displayName": name,
         "deviceName": "\(displayId)",
-        "active": CGDisplayIsActive(id) != 0,
+        "active": isMacDisplayEnabled(id),
         "displayUid": displayId,
         "orientation": 0,
         "left": Int(bounds.minX.rounded()),
@@ -578,6 +543,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return Array(displayIds.prefix(min(Int(displayCount), displayIds.count)))
   }
 
+  private func isMacDisplayEnabled(_ displayId: CGDirectDisplayID) -> Bool {
+    return CGDisplayIsActive(displayId) != 0 ||
+      CGDisplayIsInMirrorSet(displayId) != 0
+  }
+
+  private func enabledMacDisplayIds() -> [CGDirectDisplayID] {
+    return allMacDisplayIds().filter(isMacDisplayEnabled)
+  }
+
   private func unmirrorMacDisplays(_ displayIds: [CGDirectDisplayID]) -> Bool {
     var config: CGDisplayConfigRef?
     let beginError = CGBeginDisplayConfiguration(&config)
@@ -633,10 +607,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     var config: CGDisplayConfigRef?
-    let beginError = sls.begin(&config)
+    let beginError = CGBeginDisplayConfiguration(&config)
     guard beginError == .success, let config else {
       return setMacDisplayError(
-        "SLSBeginDisplayConfiguration failed: \(macCGErrorDescription(beginError))"
+        "CGBeginDisplayConfiguration(enable) failed: \(macCGErrorDescription(beginError))"
       )
     }
 
@@ -651,7 +625,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
       if shouldEnable {
         let bounds = CGDisplayBounds(id)
-        let originError = sls.configureOrigin(
+        let originError = CGConfigureDisplayOrigin(
           config,
           id,
           Int32(bounds.origin.x.rounded()),
@@ -660,16 +634,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         guard originError == .success else {
           CGCancelDisplayConfiguration(config)
           return setMacDisplayError(
-            "SLSConfigureDisplayOrigin(\(id)) failed: \(macCGErrorDescription(originError))"
+            "CGConfigureDisplayOrigin(enable \(id)) failed: \(macCGErrorDescription(originError))"
           )
         }
       }
     }
 
-    let completeError = sls.complete(config, .permanently, 0)
+    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
     guard completeError == .success else {
       return setMacDisplayError(
-        "SLSCompleteDisplayConfiguration(enable) failed: \(macCGErrorDescription(completeError))"
+        "CGCompleteDisplayConfiguration(enable) failed: \(macCGErrorDescription(completeError))"
       )
     }
     return true
@@ -775,6 +749,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "CGCompleteDisplayConfiguration(duplicate) failed: \(macCGErrorDescription(completeError))"
       )
     }
+    guard waitForMacDuplicateTopology(primary, expectedDisplayIds: activeIds) else {
+      let mirrors = enabledMacDisplayIds().map {
+        "\($0)->\(CGDisplayMirrorsDisplay($0))"
+      }.joined(separator: ",")
+      return setMacDisplayError(
+        "Timed out waiting for duplicate topology; mirrors: [\(mirrors)]"
+      )
+    }
     macDisplayConfigurationBackup = nil
     return true
   }
@@ -789,14 +771,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func getCurrentMacMultiDisplayMode() -> Int {
-    let activeIds = activeMacDisplayIds()
-    guard !activeIds.isEmpty else {
+    let displayIds = macDisplayConfigurationBackup?.map { $0.displayId }
+      ?? allMacDisplayIds()
+    let enabledIds = displayIds.filter(isMacDisplayEnabled)
+    guard !enabledIds.isEmpty else {
       return 4
     }
-    if activeIds.count <= 1 {
-      let displayIds = macDisplayConfigurationBackup?.map { $0.displayId }
-        ?? allMacDisplayIds()
-      guard let activeId = activeIds.first,
+    if enabledIds.count <= 1 {
+      guard let activeId = enabledIds.first,
         let index = displayIds.firstIndex(of: activeId)
       else {
         return 1
@@ -804,8 +786,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return index == 1 ? 2 : 1
     }
 
-    let mirroredCount = activeIds.filter { id in
-      CGDisplayMirrorsDisplay(id) != 0 || CGDisplayIsInMirrorSet(id) != 0
+    let mirroredCount = enabledIds.filter { id in
+      CGDisplayMirrorsDisplay(id) != 0
     }.count
     if mirroredCount > 0 {
       return 3
@@ -870,8 +852,32 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   ) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     repeat {
-      let activeIds = activeMacDisplayIds()
-      if activeIds.count == 1 && activeIds.first == displayId {
+      let enabledIds = enabledMacDisplayIds()
+      if enabledIds.count == 1 && enabledIds.first == displayId {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.1)
+    } while Date() < deadline
+    return false
+  }
+
+  private func waitForMacDuplicateTopology(
+    _ primaryDisplayId: CGDirectDisplayID,
+    expectedDisplayIds: [CGDirectDisplayID],
+    timeout: TimeInterval = 1.5
+  ) -> Bool {
+    let expected = Set(expectedDisplayIds)
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      let enabledIds = enabledMacDisplayIds()
+      let enabled = Set(enabledIds)
+      let allExpectedEnabled = expected.isSubset(of: enabled)
+      let mirroredDisplays = enabledIds.filter { id in
+        id != primaryDisplayId && CGDisplayMirrorsDisplay(id) == primaryDisplayId
+      }
+      if enabled.contains(primaryDisplayId),
+        allExpectedEnabled,
+        mirroredDisplays.count == enabledIds.count - 1 {
         return true
       }
       Thread.sleep(forTimeInterval: 0.1)
@@ -954,11 +960,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     guard
       (macDisplayConfigurationBackup != nil ||
-        saveMacDisplayConfiguration(displayIds: displayIds)),
-      let sls = macSLSDisplayConfig
+        saveMacDisplayConfiguration(displayIds: displayIds))
     else {
       rollbackMacDisplayConfiguration()
       return false
+    }
+    guard let sls = macSLSDisplayConfig else {
+      rollbackMacDisplayConfiguration()
+      return setMacDisplayError(
+        "SkyLight display configuration symbols are unavailable"
+      )
     }
 
     guard configureMacDisplayEnabled(displayIds, enabled: { id in
@@ -986,11 +997,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     var config: CGDisplayConfigRef?
-    let beginError = sls.begin(&config)
+    let beginError = CGBeginDisplayConfiguration(&config)
     guard beginError == .success, let config else {
       rollbackMacDisplayConfiguration()
       return setMacDisplayError(
-        "SLSBeginDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(beginError))"
+        "CGBeginDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(beginError))"
       )
     }
 
@@ -1005,22 +1016,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         )
       }
       if enable {
-        let originError = sls.configureOrigin(config, id, 0, 0)
+        let originError = CGConfigureDisplayOrigin(config, id, 0, 0)
         if originError != .success {
           CGCancelDisplayConfiguration(config)
           rollbackMacDisplayConfiguration()
           return setMacDisplayError(
-            "SLSConfigureDisplayOrigin(primary-only \(id)) failed: \(macCGErrorDescription(originError))"
+            "CGConfigureDisplayOrigin(primary-only \(id)) failed: \(macCGErrorDescription(originError))"
           )
         }
       }
     }
 
-    let completeError = sls.complete(config, .permanently, 0)
+    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
     if completeError != .success {
       rollbackMacDisplayConfiguration()
       return setMacDisplayError(
-        "SLSCompleteDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(completeError))"
+        "CGCompleteDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(completeError))"
       )
     }
 
@@ -1057,10 +1068,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     var config: CGDisplayConfigRef?
-    let beginError = sls.begin(&config)
+    let beginError = CGBeginDisplayConfiguration(&config)
     guard beginError == .success, let config else {
       return setMacDisplayError(
-        "SLSBeginDisplayConfiguration(restore) failed: \(macCGErrorDescription(beginError))"
+        "CGBeginDisplayConfiguration(restore) failed: \(macCGErrorDescription(beginError))"
       )
     }
 
@@ -1072,7 +1083,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           "SLSConfigureDisplayEnabled(restore \(item.displayId)) failed: \(macCGErrorDescription(enabledError))"
         )
       }
-      let originError = sls.configureOrigin(
+      let originError = CGConfigureDisplayOrigin(
         config,
         item.displayId,
         Int32(item.origin.x.rounded()),
@@ -1081,15 +1092,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       guard originError == .success else {
         CGCancelDisplayConfiguration(config)
         return setMacDisplayError(
-          "SLSConfigureDisplayOrigin(restore \(item.displayId)) failed: \(macCGErrorDescription(originError))"
+          "CGConfigureDisplayOrigin(restore \(item.displayId)) failed: \(macCGErrorDescription(originError))"
         )
       }
     }
 
-    let completeError = sls.complete(config, .permanently, 0)
+    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
     guard completeError == .success else {
       return setMacDisplayError(
-        "SLSCompleteDisplayConfiguration(restore) failed: \(macCGErrorDescription(completeError))"
+        "CGCompleteDisplayConfiguration(restore) failed: \(macCGErrorDescription(completeError))"
       )
     }
 
