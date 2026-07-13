@@ -38,6 +38,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     label: "com.cloudplayplus.hardware-simulator.virtual-display"
   )
   private var macVirtualDisplayProcesses: [Int: Process] = [:]
+  private var macVirtualDisplaySerials: [Int: Int] = [:]
   private var macDisplayConfigurationBackup: [MacDisplayBackupItem]? = nil
   private var macSkyLightHandle: UnsafeMutableRawPointer?
   private lazy var macSLSDisplayConfig = MacSLSDisplayConfig.load(
@@ -283,6 +284,18 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return macVirtualDisplayQueue.sync(execute: body)
   }
 
+  private func nextMacVirtualDisplaySerial() -> Int {
+    let usedSerials = Set(macVirtualDisplaySerials.values)
+    let serialBase = 0x4350_5600
+    for slot in 1...255 {
+      let serial = serialBase + slot
+      if !usedSerials.contains(serial) {
+        return serial
+      }
+    }
+    return serialBase + macVirtualDisplaySerials.count + 1
+  }
+
   private func spawnMacVirtualDisplay(
     width: Int,
     height: Int,
@@ -294,12 +307,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     let process = Process()
     let output = Pipe()
+    let serial = nextMacVirtualDisplaySerial()
     process.executableURL = helper
     process.arguments = [
       "\(width)",
       "\(height)",
       "\(refreshRate)",
       "\(ProcessInfo.processInfo.processIdentifier)",
+      "\(serial)",
     ]
     process.standardOutput = output
     process.standardError = FileHandle.standardError
@@ -327,10 +342,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     process.terminationHandler = { [weak self] _ in
       self?.macVirtualDisplayQueue.async {
         self?.macVirtualDisplayProcesses.removeValue(forKey: displayId)
+        self?.macVirtualDisplaySerials.removeValue(forKey: displayId)
       }
     }
     withMacVirtualDisplayProcesses {
       macVirtualDisplayProcesses[displayId] = process
+      macVirtualDisplaySerials[displayId] = serial
     }
     Thread.sleep(forTimeInterval: 1.0)
     return displayId
@@ -343,7 +360,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       _ = restoreMacDisplayConfiguration()
     }
     let process: Process? = withMacVirtualDisplayProcesses {
-      macVirtualDisplayProcesses.removeValue(forKey: displayId)
+      macVirtualDisplaySerials.removeValue(forKey: displayId)
+      return macVirtualDisplayProcesses.removeValue(forKey: displayId)
     }
     guard let process else {
       return false
@@ -360,6 +378,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         process.terminate()
       }
       macVirtualDisplayProcesses.removeAll()
+      macVirtualDisplaySerials.removeAll()
     }
   }
 
