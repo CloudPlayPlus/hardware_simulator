@@ -589,7 +589,63 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return true
   }
 
+  private func waitForMacMainDisplay(
+    _ displayId: CGDirectDisplayID,
+    timeout: TimeInterval = 1
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      if CGMainDisplayID() == displayId || CGDisplayIsMain(displayId) != 0 {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.1)
+    } while Date() < deadline
+    return false
+  }
+
+  private func setMacMainDisplay(
+    _ targetDisplayId: CGDirectDisplayID,
+    displayIds: [CGDirectDisplayID]
+  ) -> Bool {
+    guard displayIds.contains(targetDisplayId) else {
+      return false
+    }
+
+    let targetBounds = CGDisplayBounds(targetDisplayId)
+    let deltaX = -targetBounds.origin.x
+    let deltaY = -targetBounds.origin.y
+
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+      return false
+    }
+
+    for id in displayIds {
+      let bounds = CGDisplayBounds(id)
+      let newX = Int32((bounds.origin.x + deltaX).rounded())
+      let newY = Int32((bounds.origin.y + deltaY).rounded())
+      guard CGConfigureDisplayOrigin(config, id, newX, newY) == .success
+      else {
+        CGCancelDisplayConfiguration(config)
+        return false
+      }
+    }
+
+    guard CGCompleteDisplayConfiguration(config, .forSession) == .success else {
+      return false
+    }
+    return waitForMacMainDisplay(targetDisplayId)
+  }
+
   private func setMacPrimaryDisplayOnly(_ displayId: Int) -> Bool {
+    func rollbackMacDisplayConfiguration() {
+      let backup = macDisplayConfigurationBackup
+      macDisplayConfigurationBackup = nil
+      if backup != nil {
+        _ = restoreMacDisplayConfiguration(from: backup)
+      }
+    }
+
     guard macDisplayConfigurationBackup == nil else {
       return false
     }
@@ -600,41 +656,47 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard CGDisplayIsActive(targetDisplayId) != 0 else {
       return false
     }
+    let displayIds = activeMacDisplayIds()
     guard saveMacDisplayConfiguration(), let sls = macSLSDisplayConfig else {
-      macDisplayConfigurationBackup = nil
+      rollbackMacDisplayConfiguration()
+      return false
+    }
+    guard setMacMainDisplay(targetDisplayId, displayIds: displayIds) else {
+      rollbackMacDisplayConfiguration()
       return false
     }
 
     var config: CGDisplayConfigRef?
     guard sls.begin(&config) == .success, let config else {
-      macDisplayConfigurationBackup = nil
+      rollbackMacDisplayConfiguration()
       return false
     }
 
-    let displayIds = activeMacDisplayIds()
     for id in displayIds {
       let enable = id == targetDisplayId
       if sls.configureEnabled(config, id, enable) != .success {
-        macDisplayConfigurationBackup = nil
+        CGCancelDisplayConfiguration(config)
+        rollbackMacDisplayConfiguration()
         return false
       }
       if enable &&
         sls.configureOrigin(config, id, 0, 0) != .success {
-        macDisplayConfigurationBackup = nil
+        CGCancelDisplayConfiguration(config)
+        rollbackMacDisplayConfiguration()
         return false
       }
     }
 
     if sls.complete(config, .forSession, 0) != .success {
-      let backup = macDisplayConfigurationBackup
-      macDisplayConfigurationBackup = nil
-      if backup != nil {
-        _ = restoreMacDisplayConfiguration(from: backup)
-      }
+      rollbackMacDisplayConfiguration()
       return false
     }
 
     Thread.sleep(forTimeInterval: 0.5)
+    guard waitForMacMainDisplay(targetDisplayId) else {
+      rollbackMacDisplayConfiguration()
+      return false
+    }
     return true
   }
 
