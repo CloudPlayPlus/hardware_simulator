@@ -3,6 +3,7 @@ import FlutterMacOS
 import CommonCrypto
 import CoreGraphics
 import ApplicationServices
+import Darwin
 
 class CursorConstants {    
   static let cursorVisible = 2
@@ -37,6 +38,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     label: "com.cloudplayplus.hardware-simulator.virtual-display"
   )
   private var macVirtualDisplayProcesses: [Int: Process] = [:]
+  private var macDisplayConfigurationBackup: [MacDisplayBackupItem]? = nil
+  private var macSkyLightHandle: UnsafeMutableRawPointer?
+  private lazy var macSLSDisplayConfig = MacSLSDisplayConfig.load(
+    using: { [weak self] in self?.loadMacSkyLight() }
+  )
   private let macCustomDisplayConfigsKey =
     "com.cloudplayplus.hardware_simulator.macos.custom_display_configs"
   private let macHelperName = "cloudplayplus_vd_helper"
@@ -52,6 +58,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   deinit {
+    _ = restoreMacDisplayConfiguration()
     terminateAllMacVirtualDisplays()
   }
 
@@ -66,6 +73,92 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let refreshRate: Int
   }
 
+  private struct MacDisplayBackupItem {
+    let displayId: CGDirectDisplayID
+    let mode: CGDisplayMode?
+    let origin: CGPoint
+    let mirrorTarget: CGDirectDisplayID
+  }
+
+  private struct MacSLSDisplayConfig {
+    typealias BeginFn = @convention(c) (
+      UnsafeMutablePointer<CGDisplayConfigRef?>
+    ) -> CGError
+    typealias ConfigureEnabledFn = @convention(c) (
+      CGDisplayConfigRef?,
+      CGDirectDisplayID,
+      Bool
+    ) -> CGError
+    typealias ConfigureOriginFn = @convention(c) (
+      CGDisplayConfigRef?,
+      CGDirectDisplayID,
+      Int32,
+      Int32
+    ) -> CGError
+    typealias CompleteFn = @convention(c) (
+      CGDisplayConfigRef?,
+      CGConfigureOption,
+      UInt32
+    ) -> CGError
+
+    let begin: BeginFn
+    let configureEnabled: ConfigureEnabledFn
+    let configureOrigin: ConfigureOriginFn
+    let complete: CompleteFn
+
+    static func load(
+      using loadSkyLight: () -> UnsafeMutableRawPointer?
+    ) -> MacSLSDisplayConfig? {
+      guard let handle = loadSkyLight() else {
+        return nil
+      }
+
+      func symbol<T>(_ name: String, as type: T.Type) -> T? {
+        guard let pointer = dlsym(handle, name) else {
+          return nil
+        }
+        return unsafeBitCast(pointer, to: type)
+      }
+
+      guard
+        let begin = symbol("SLSBeginDisplayConfiguration", as: BeginFn.self),
+        let configureEnabled = symbol(
+          "SLSConfigureDisplayEnabled",
+          as: ConfigureEnabledFn.self
+        ),
+        let configureOrigin = symbol(
+          "SLSConfigureDisplayOrigin",
+          as: ConfigureOriginFn.self
+        ),
+        let complete = symbol(
+          "SLSCompleteDisplayConfiguration",
+          as: CompleteFn.self
+        )
+      else {
+        return nil
+      }
+
+      return MacSLSDisplayConfig(
+        begin: begin,
+        configureEnabled: configureEnabled,
+        configureOrigin: configureOrigin,
+        complete: complete
+      )
+    }
+  }
+
+  private func loadMacSkyLight() -> UnsafeMutableRawPointer? {
+    if let macSkyLightHandle {
+      return macSkyLightHandle
+    }
+    let path = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+    guard let handle = dlopen(path, RTLD_NOW) else {
+      return nil
+    }
+    macSkyLightHandle = handle
+    return handle
+  }
+
   private func macHelperURL() -> URL? {
     return Bundle.main.bundleURL
       .appendingPathComponent("Contents")
@@ -75,6 +168,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func macVirtualDisplayAvailable() -> Bool {
     guard #available(macOS 14.0, *) else {
+      return false
+    }
+    guard loadMacSkyLight() != nil else {
       return false
     }
     guard NSClassFromString("CGVirtualDisplay") != nil else {
@@ -241,6 +337,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func terminateMacVirtualDisplay(_ displayId: Int) -> Bool {
+    if macDisplayConfigurationBackup?.contains(
+      where: { Int($0.displayId) == displayId }
+    ) == true {
+      _ = restoreMacDisplayConfiguration()
+    }
     let process: Process? = withMacVirtualDisplayProcesses {
       macVirtualDisplayProcesses.removeValue(forKey: displayId)
     }
@@ -437,6 +538,152 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       )
     }
     return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
+  }
+
+  private func activeMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
+    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: limit)
+    var displayCount: UInt32 = 0
+    guard
+      CGGetActiveDisplayList(UInt32(displayIds.count), &displayIds, &displayCount)
+        == .success
+    else {
+      return []
+    }
+    return Array(displayIds.prefix(Int(displayCount)))
+  }
+
+  private func saveMacDisplayConfiguration() -> Bool {
+    let displayIds = activeMacDisplayIds()
+    guard !displayIds.isEmpty else {
+      return false
+    }
+
+    macDisplayConfigurationBackup = displayIds.map { displayId in
+      let bounds = CGDisplayBounds(displayId)
+      return MacDisplayBackupItem(
+        displayId: displayId,
+        mode: CGDisplayCopyDisplayMode(displayId),
+        origin: bounds.origin,
+        mirrorTarget: CGDisplayMirrorsDisplay(displayId)
+      )
+    }
+    return true
+  }
+
+  private func setMacPrimaryDisplayOnly(_ displayId: Int) -> Bool {
+    guard macDisplayConfigurationBackup == nil else {
+      return false
+    }
+    guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
+      return false
+    }
+    let targetDisplayId = CGDirectDisplayID(displayId)
+    guard CGDisplayIsActive(targetDisplayId) != 0 else {
+      return false
+    }
+    guard saveMacDisplayConfiguration(), let sls = macSLSDisplayConfig else {
+      macDisplayConfigurationBackup = nil
+      return false
+    }
+
+    var config: CGDisplayConfigRef?
+    guard sls.begin(&config) == .success, let config else {
+      macDisplayConfigurationBackup = nil
+      return false
+    }
+
+    let displayIds = activeMacDisplayIds()
+    for id in displayIds {
+      let enable = id == targetDisplayId
+      if sls.configureEnabled(config, id, enable) != .success {
+        macDisplayConfigurationBackup = nil
+        return false
+      }
+      if enable &&
+        sls.configureOrigin(config, id, 0, 0) != .success {
+        macDisplayConfigurationBackup = nil
+        return false
+      }
+    }
+
+    if sls.complete(config, .forSession, 0) != .success {
+      let backup = macDisplayConfigurationBackup
+      macDisplayConfigurationBackup = nil
+      if backup != nil {
+        _ = restoreMacDisplayConfiguration(from: backup)
+      }
+      return false
+    }
+
+    Thread.sleep(forTimeInterval: 0.5)
+    return true
+  }
+
+  private func restoreMacDisplayConfiguration(
+    from backupOverride: [MacDisplayBackupItem]? = nil
+  ) -> Bool {
+    guard let backup = backupOverride ?? macDisplayConfigurationBackup else {
+      return true
+    }
+    guard let sls = macSLSDisplayConfig else {
+      return false
+    }
+
+    var config: CGDisplayConfigRef?
+    guard sls.begin(&config) == .success, let config else {
+      return false
+    }
+
+    for item in backup {
+      guard sls.configureEnabled(config, item.displayId, true) == .success else {
+        return false
+      }
+      guard
+        sls.configureOrigin(
+          config,
+          item.displayId,
+          Int32(item.origin.x.rounded()),
+          Int32(item.origin.y.rounded())
+        ) == .success
+      else {
+        return false
+      }
+    }
+
+    guard sls.complete(config, .forSession, 0) == .success else {
+      return false
+    }
+
+    for item in backup {
+      if let mode = item.mode {
+        _ = CGDisplaySetDisplayMode(item.displayId, mode, nil)
+      }
+    }
+
+    var mirrorConfig: CGDisplayConfigRef?
+    if CGBeginDisplayConfiguration(&mirrorConfig) == .success,
+      let mirrorConfig {
+      for item in backup {
+        CGConfigureDisplayMirrorOfDisplay(
+          mirrorConfig,
+          item.displayId,
+          item.mirrorTarget == 0 ? kCGNullDirectDisplay : item.mirrorTarget
+        )
+        CGConfigureDisplayOrigin(
+          mirrorConfig,
+          item.displayId,
+          Int32(item.origin.x.rounded()),
+          Int32(item.origin.y.rounded())
+        )
+      }
+      _ = CGCompleteDisplayConfiguration(mirrorConfig, .forSession)
+    }
+
+    if backupOverride == nil {
+      macDisplayConfigurationBackup = nil
+    }
+    Thread.sleep(forTimeInterval: 0.5)
+    return true
   }
 #endif
 
@@ -1553,11 +1800,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         result(anyMirrored ? 3 : 0)
       }
     case "setPrimaryDisplayOnly":
-      result(false)
+      let args = call.arguments as? [String: Any]
+      let displayUid = args?["displayUid"] as? Int ?? -1
+      macVirtualDisplayQueue.async {
+        let ok = self.setMacPrimaryDisplayOnly(displayUid)
+        DispatchQueue.main.async { result(ok) }
+      }
     case "restoreDisplayConfiguration":
-      result(false)
+      macVirtualDisplayQueue.async {
+        let ok = self.restoreMacDisplayConfiguration()
+        DispatchQueue.main.async { result(ok) }
+      }
     case "hasPendingConfiguration":
-      result(false)
+      macVirtualDisplayQueue.async {
+        let hasPending = self.macDisplayConfigurationBackup != nil
+        DispatchQueue.main.async { result(hasPending) }
+      }
     case "updateStaticMonitors":
       result(nil)
 #else
