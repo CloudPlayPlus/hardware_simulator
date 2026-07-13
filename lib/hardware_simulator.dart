@@ -305,8 +305,10 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.initParsecVdd();
   }
 
-  static Future<int> createDisplay() {
-    return HardwareSimulatorPlatform.instance.createDisplay();
+  static Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) {
+    return HardwareSimulatorPlatform.instance.createDisplay(configs: configs);
   }
 
   static Future<bool> removeDisplay(int displayUid) {

@@ -454,8 +454,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<int> createDisplay() async {
-    return await methodChannel.invokeMethod('createDisplay');
+  Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) async {
+    return await methodChannel.invokeMethod('createDisplay', {
+      if (configs != null) 'configs': configs,
+    });
   }
 
   @override

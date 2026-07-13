@@ -96,14 +96,77 @@ static void addMode(NSMutableArray *modes,
   }
 }
 
-static NSArray *buildModes(int width, int height, int refreshRate) {
-  NSMutableArray *modes = [NSMutableArray array];
-  const unsigned int maxWidth = (unsigned int)width;
-  const unsigned int maxHeight = (unsigned int)height;
-  const double hz = (double)refreshRate;
+static void addModeConfig(NSMutableArray *configs,
+                          NSMutableSet *seen,
+                          unsigned int width,
+                          unsigned int height,
+                          int refreshRate,
+                          unsigned int *maxWidth,
+                          unsigned int *maxHeight) {
+  if (width == 0 || height == 0 || refreshRate <= 0) return;
+  NSString *key =
+      [NSString stringWithFormat:@"%ux%u@%d", width, height, refreshRate];
+  if ([seen containsObject:key]) return;
+  [seen addObject:key];
+  [configs addObject:@{
+    @"width" : @(width),
+    @"height" : @(height),
+    @"refreshRate" : @(refreshRate)
+  }];
+  if (maxWidth != NULL && width > *maxWidth) *maxWidth = width;
+  if (maxHeight != NULL && height > *maxHeight) *maxHeight = height;
+}
 
-  addMode(modes, maxWidth, maxHeight, hz, maxWidth, maxHeight);
-  addMode(modes, maxWidth / 2, maxHeight / 2, hz, maxWidth, maxHeight);
+static NSArray *buildModes(int width,
+                           int height,
+                           int refreshRate,
+                           int argc,
+                           const char *argv[],
+                           int startIndex,
+                           unsigned int *outMaxWidth,
+                           unsigned int *outMaxHeight) {
+  NSMutableArray *configs = [NSMutableArray array];
+  NSMutableSet *seen = [NSMutableSet set];
+  unsigned int maxWidth = (unsigned int)width;
+  unsigned int maxHeight = (unsigned int)height;
+  addModeConfig(configs,
+                seen,
+                (unsigned int)width,
+                (unsigned int)height,
+                refreshRate,
+                &maxWidth,
+                &maxHeight);
+
+  for (int i = startIndex; i + 2 < argc; i += 3) {
+    int modeWidth = 0;
+    int modeHeight = 0;
+    int modeRefreshRate = 0;
+    if (!parsePositiveInt(argv[i], &modeWidth) ||
+        !parsePositiveInt(argv[i + 1], &modeHeight) ||
+        !parsePositiveInt(argv[i + 2], &modeRefreshRate)) {
+      continue;
+    }
+    addModeConfig(configs,
+                  seen,
+                  (unsigned int)modeWidth,
+                  (unsigned int)modeHeight,
+                  modeRefreshRate,
+                  &maxWidth,
+                  &maxHeight);
+  }
+
+  NSMutableArray *modes = [NSMutableArray array];
+  for (NSDictionary *config in configs) {
+    addMode(modes,
+            [[config objectForKey:@"width"] unsignedIntValue],
+            [[config objectForKey:@"height"] unsignedIntValue],
+            [[config objectForKey:@"refreshRate"] doubleValue],
+            maxWidth,
+            maxHeight);
+  }
+
+  if (outMaxWidth != NULL) *outMaxWidth = maxWidth;
+  if (outMaxHeight != NULL) *outMaxHeight = maxHeight;
 
   return modes;
 }
@@ -206,14 +269,25 @@ int main(int argc, const char *argv[]) {
     signal(SIGINT, handleSignal);
     signal(SIGHUP, handleSignal);
 
+    unsigned int maxPixelsWide = (unsigned int)width;
+    unsigned int maxPixelsHigh = (unsigned int)height;
+    NSArray *modes = buildModes(width,
+                                height,
+                                refreshRate,
+                                argc,
+                                argv,
+                                6,
+                                &maxPixelsWide,
+                                &maxPixelsHigh);
+
     CGVirtualDisplayDescriptor *descriptor =
         [[CGVirtualDisplayDescriptor alloc] init];
     descriptor.name = @"CloudPlayPlus Virtual Display";
     descriptor.vendorID = 0x4350;
     descriptor.productID = 0x5644;
     descriptor.serialNum = (unsigned int)serialNum;
-    descriptor.maxPixelsWide = (unsigned int)width;
-    descriptor.maxPixelsHigh = (unsigned int)height;
+    descriptor.maxPixelsWide = maxPixelsWide;
+    descriptor.maxPixelsHigh = maxPixelsHigh;
     descriptor.sizeInMillimeters = CGSizeMake(597, 336);
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
     descriptor.redPrimary = CGPointMake(0.64, 0.33);
@@ -231,7 +305,7 @@ int main(int argc, const char *argv[]) {
     CGVirtualDisplaySettings *settings =
         [[CGVirtualDisplaySettings alloc] init];
     settings.hiDPI = 1;
-    settings.modes = buildModes(width, height, refreshRate);
+    settings.modes = modes;
 
     fprintf(stderr,
             "[cloudplayplus_vd_helper] creating %dx%d@%d\n",
