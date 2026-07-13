@@ -251,86 +251,141 @@ static std::wstring GetDisplayTargetName(LUID adapterId, UINT32 targetId) {
 
 }
 
-bool VirtualDisplayControl::EnsureConsoleSession() {
-    DWORD sessionId = 0;
-    if (!ProcessIdToSessionId(GetCurrentProcessId(), &sessionId)) {
-        std::cout << "[VDD] EnsureConsoleSession: failed to get session ID" << std::endl;
-        return false;
+namespace {
+
+// True if the current session/desktop has at least one active display adapter.
+// Note: EnumDisplayDevices reflects the calling process's session context, so this
+// is meaningful only when the process runs in the target (console) session — which
+// is the Phase 1 assumption (plugin runs in the session-1 GUI process).
+static bool HasActiveDisplay() {
+    DISPLAY_DEVICEW dd = {};
+    dd.cb = sizeof(dd);
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
+        if (dd.StateFlags & DISPLAY_DEVICE_ACTIVE) return true;
     }
+    return false;
+}
 
-    WTS_CONNECTSTATE_CLASS* pState = nullptr;
-    DWORD bytesReturned = 0;
-    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId,
-                                      WTSConnectState, reinterpret_cast<LPWSTR*>(&pState),
-                                      &bytesReturned)) {
-        std::cout << "[VDD] EnsureConsoleSession: WTSQuerySessionInformation failed" << std::endl;
-        return false;
-    }
+// The interactive session we want on the console: sid > 0 with a logged-in user.
+// Prefer a Disconnected session (the common post-RDP-disconnect case); otherwise
+// fall back to the first user session found. Returns 0 if none.
+static DWORD FindTargetSession() {
+    WTS_SESSION_INFOW* sessions = nullptr;
+    DWORD count = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
+        return 0;
 
-    WTS_CONNECTSTATE_CLASS state = *pState;
-    WTSFreeMemory(pState);
+    DWORD chosen = 0, firstUser = 0;
+    for (DWORD i = 0; i < count; ++i) {
+        DWORD sid = sessions[i].SessionId;
+        if (sid == 0) continue;  // skip services session
 
-    if (state == WTSActive) {
-        DWORD consoleSessionId = WTSGetActiveConsoleSessionId();
-        if (consoleSessionId == sessionId) {
-            std::cout << "[VDD] EnsureConsoleSession: already on console session " << sessionId << std::endl;
-        } else {
-            std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
-                      << " is active (console is " << consoleSessionId << ")" << std::endl;
+        LPWSTR user = nullptr;
+        DWORD bytes = 0;
+        bool hasUser = false;
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
+                                        WTSUserName, &user, &bytes)) {
+            hasUser = (user && user[0] != L'\0');
+            WTSFreeMemory(user);
         }
-        return true;
-    }
+        if (!hasUser) continue;
 
-    if (state != WTSDisconnected) {
-        std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
-                  << " state=" << static_cast<int>(state) << " (not disconnected, skipping)" << std::endl;
+        if (firstUser == 0) firstUser = sid;
+        if (sessions[i].State == WTSDisconnected) { chosen = sid; break; }
+    }
+    WTSFreeMemory(sessions);
+    return chosen ? chosen : firstUser;
+}
+
+// True if an RDP session is currently active. tscon /dest:console would disconnect
+// it, so we must yield when one is present. Primary check: client protocol type ==
+// RDP (2); fallback: WinStation name prefix "RDP-".
+static bool HasActiveRdpSession() {
+    WTS_SESSION_INFOW* sessions = nullptr;
+    DWORD count = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
         return false;
+
+    bool found = false;
+    for (DWORD i = 0; i < count && !found; ++i) {
+        if (sessions[i].State != WTSActive) continue;
+
+        USHORT* pProto = nullptr;
+        DWORD bytes = 0;
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessions[i].SessionId,
+                                        WTSClientProtocolType,
+                                        reinterpret_cast<LPWSTR*>(&pProto), &bytes)) {
+            if (pProto && *pProto == 2) found = true;  // WTS_PROTOCOL_TYPE_RDP
+            WTSFreeMemory(pProto);
+        }
+        if (!found && sessions[i].pWinStationName &&
+            wcsncmp(sessions[i].pWinStationName, L"RDP-", 4) == 0) {
+            found = true;
+        }
     }
+    WTSFreeMemory(sessions);
+    return found;
+}
 
-    std::cout << "[VDD] EnsureConsoleSession: session " << sessionId
-              << " is disconnected, reconnecting to console..." << std::endl;
-
-    std::wstring cmd = L"tscon " + std::to_wstring(sessionId) + L" /dest:console";
+// Reconnect the given session to the physical console via `tscon`.
+static bool RunTscon(DWORD sid) {
+    std::wstring cmdLine = L"cmd.exe /c tscon " + std::to_wstring(sid) + L" /dest:console";
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
-
-    std::wstring cmdLine = L"cmd.exe /c " + cmd;
     if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
-                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        std::cout << "[VDD] EnsureConsoleSession: CreateProcess failed, error=" << GetLastError() << std::endl;
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        std::cout << "[VDD] tscon: CreateProcess failed, error=" << GetLastError() << std::endl;
         return false;
     }
-
     WaitForSingleObject(pi.hProcess, 10000);
     DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-
     if (exitCode != 0) {
-        std::cout << "[VDD] EnsureConsoleSession: tscon exited with code " << exitCode
+        std::cout << "[VDD] tscon exited with code " << exitCode
                   << " (may need admin privileges)" << std::endl;
         return false;
     }
+    return true;
+}
 
-    Sleep(1000);
+}  // namespace
 
-    WTS_CONNECTSTATE_CLASS* pNewState = nullptr;
-    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId,
-                                     WTSConnectState, reinterpret_cast<LPWSTR*>(&pNewState),
-                                     &bytesReturned)) {
-        WTS_CONNECTSTATE_CLASS newState = *pNewState;
-        WTSFreeMemory(pNewState);
-        if (newState == WTSActive) {
-            std::cout << "[VDD] EnsureConsoleSession: successfully reconnected to console" << std::endl;
-            return true;
-        }
-        std::cout << "[VDD] EnsureConsoleSession: tscon succeeded but session state="
-                  << static_cast<int>(newState) << std::endl;
+// Ensure the target interactive session is on the console so its VDD display is
+// visible. The existing Initialize()/AddDisplay() flow is unchanged; this only
+// switches the console when there is no display available AND doing so won't
+// disconnect an active RDP session. Root cause: a VDD binds to the console
+// session, so a target session that is not on the console has no visible display.
+bool VirtualDisplayControl::EnsureConsoleForDisplay() {
+    if (HasActiveDisplay()) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: display already available" << std::endl;
+        return true;
     }
 
-    return false;
+    DWORD target = FindTargetSession();
+    if (target == 0) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: no interactive user session" << std::endl;
+        return false;
+    }
+
+    DWORD console = WTSGetActiveConsoleSessionId();
+    if (console == target) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: target session " << target
+                  << " already on console; leaving display to AddDisplay" << std::endl;
+        return true;
+    }
+
+    if (HasActiveRdpSession()) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: active RDP session present, "
+                     "yielding (skip tscon)" << std::endl;
+        return false;
+    }
+
+    std::cout << "[VDD] EnsureConsoleForDisplay: switching session " << target
+              << " to console (was " << console << ")" << std::endl;
+    return RunTscon(target);
 }
 
 bool VirtualDisplayControl::Initialize() {
@@ -339,8 +394,8 @@ bool VirtualDisplayControl::Initialize() {
         return true;
     }
 
-    EnsureConsoleSession();
-    
+    EnsureConsoleForDisplay();
+
     parsec_vdd::DeviceStatus status = parsec_vdd::QueryDeviceStatus(&parsec_vdd::VDD_CLASS_GUID, parsec_vdd::VDD_HARDWARE_ID);
     
     //TODOXU:return value to check?

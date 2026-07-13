@@ -449,8 +449,8 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<bool> ensureConsoleSession() async {
-    return await methodChannel.invokeMethod('ensureConsoleSession') ?? false;
+  Future<bool> ensureConsoleForDisplay() async {
+    return await methodChannel.invokeMethod('ensureConsoleForDisplay') ?? false;
   }
 
   @override

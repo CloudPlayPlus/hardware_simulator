@@ -301,8 +301,8 @@ class HardwareSimulator {
         .setPrimaryDisplay(displayIndex);
   }
 
-  static Future<bool> ensureConsoleSession() {
-    return HardwareSimulatorPlatform.instance.ensureConsoleSession();
+  static Future<bool> ensureConsoleForDisplay() {
+    return HardwareSimulatorPlatform.instance.ensureConsoleForDisplay();
   }
 
   static Future<bool> initParsecVdd() {
