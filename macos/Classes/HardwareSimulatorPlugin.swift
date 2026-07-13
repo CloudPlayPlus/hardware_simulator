@@ -616,27 +616,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     for id in displayIds {
       let shouldEnable = enabled(id)
+      if isMacDisplayEnabled(id) == shouldEnable {
+        continue
+      }
       let enabledError = sls.configureEnabled(config, id, shouldEnable)
       guard enabledError == .success else {
         CGCancelDisplayConfiguration(config)
         return setMacDisplayError(
           "SLSConfigureDisplayEnabled(\(id), \(shouldEnable)) failed: \(macCGErrorDescription(enabledError))"
         )
-      }
-      if shouldEnable {
-        let bounds = CGDisplayBounds(id)
-        let originError = CGConfigureDisplayOrigin(
-          config,
-          id,
-          Int32(bounds.origin.x.rounded()),
-          Int32(bounds.origin.y.rounded())
-        )
-        guard originError == .success else {
-          CGCancelDisplayConfiguration(config)
-          return setMacDisplayError(
-            "CGConfigureDisplayOrigin(enable \(id)) failed: \(macCGErrorDescription(originError))"
-          )
-        }
       }
     }
 
@@ -965,13 +953,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       rollbackMacDisplayConfiguration()
       return false
     }
-    guard let sls = macSLSDisplayConfig else {
-      rollbackMacDisplayConfiguration()
-      return setMacDisplayError(
-        "SkyLight display configuration symbols are unavailable"
-      )
-    }
-
     guard configureMacDisplayEnabled(displayIds, enabled: { id in
       id == targetDisplayId || CGDisplayIsActive(id) != 0
     }) else {
@@ -996,43 +977,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
 
-    var config: CGDisplayConfigRef?
-    let beginError = CGBeginDisplayConfiguration(&config)
-    guard beginError == .success, let config else {
+    guard configureMacDisplayEnabled(allMacDisplayIds(), enabled: { id in
+      id == targetDisplayId
+    }) else {
       rollbackMacDisplayConfiguration()
-      return setMacDisplayError(
-        "CGBeginDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(beginError))"
-      )
-    }
-
-    for id in allMacDisplayIds() {
-      let enable = id == targetDisplayId
-      let enabledError = sls.configureEnabled(config, id, enable)
-      if enabledError != .success {
-        CGCancelDisplayConfiguration(config)
-        rollbackMacDisplayConfiguration()
-        return setMacDisplayError(
-          "SLSConfigureDisplayEnabled(primary-only \(id), \(enable)) failed: \(macCGErrorDescription(enabledError))"
-        )
-      }
-      if enable {
-        let originError = CGConfigureDisplayOrigin(config, id, 0, 0)
-        if originError != .success {
-          CGCancelDisplayConfiguration(config)
-          rollbackMacDisplayConfiguration()
-          return setMacDisplayError(
-            "CGConfigureDisplayOrigin(primary-only \(id)) failed: \(macCGErrorDescription(originError))"
-          )
-        }
-      }
-    }
-
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    if completeError != .success {
-      rollbackMacDisplayConfiguration()
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(primary-only) failed: \(macCGErrorDescription(completeError))"
-      )
+      return false
     }
 
     Thread.sleep(forTimeInterval: 0.5)
@@ -1061,48 +1010,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard let backup = backupOverride ?? macDisplayConfigurationBackup else {
       return true
     }
-    guard let sls = macSLSDisplayConfig else {
-      return setMacDisplayError(
-        "SkyLight display configuration symbols are unavailable"
-      )
-    }
+    let displayIds = backup.map { $0.displayId }
 
-    var config: CGDisplayConfigRef?
-    let beginError = CGBeginDisplayConfiguration(&config)
-    guard beginError == .success, let config else {
-      return setMacDisplayError(
-        "CGBeginDisplayConfiguration(restore) failed: \(macCGErrorDescription(beginError))"
-      )
+    guard configureMacDisplayEnabled(displayIds, enabled: { _ in true }) else {
+      return false
     }
-
-    for item in backup {
-      let enabledError = sls.configureEnabled(config, item.displayId, true)
-      guard enabledError == .success else {
-        CGCancelDisplayConfiguration(config)
-        return setMacDisplayError(
-          "SLSConfigureDisplayEnabled(restore \(item.displayId)) failed: \(macCGErrorDescription(enabledError))"
-        )
-      }
-      let originError = CGConfigureDisplayOrigin(
-        config,
-        item.displayId,
-        Int32(item.origin.x.rounded()),
-        Int32(item.origin.y.rounded())
-      )
-      guard originError == .success else {
-        CGCancelDisplayConfiguration(config)
-        return setMacDisplayError(
-          "CGConfigureDisplayOrigin(restore \(item.displayId)) failed: \(macCGErrorDescription(originError))"
-        )
-      }
-    }
-
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(restore) failed: \(macCGErrorDescription(completeError))"
-      )
-    }
+    Thread.sleep(forTimeInterval: 0.3)
 
     for item in backup {
       if let mode = item.mode {
