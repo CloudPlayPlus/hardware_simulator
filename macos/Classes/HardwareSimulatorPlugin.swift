@@ -42,9 +42,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macDisplayConfigurationBackup: [MacDisplayBackupItem]? = nil
   private var macLastVirtualDisplayError: String? = nil
   private var macSkyLightHandle: UnsafeMutableRawPointer?
+  private var macTerminationObserver: NSObjectProtocol?
   private lazy var macSLSDisplayConfig = MacSLSDisplayConfig.load(
     using: { [weak self] in self?.loadMacSkyLight() }
   )
+  private let macVirtualDisplaySerialBase = 0x4350_5600
+  private let macVirtualDisplaySerialMax = 0x4350_56ff
   private let macCustomDisplayConfigsKey =
     "com.cloudplayplus.hardware_simulator.macos.custom_display_configs"
   private let macHelperName = "cloudplayplus_vd_helper"
@@ -55,15 +58,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let instance = HardwareSimulatorPlugin()
     instance.methodChannel = channel
     instance.defaultCursorHasher = CursorHasher()
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    instance.registerMacTerminationObserver()
+#endif
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
 
-#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   deinit {
-    _ = restoreMacDisplayConfiguration()
-    terminateAllMacVirtualDisplays()
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    if let macTerminationObserver {
+      NotificationCenter.default.removeObserver(macTerminationObserver)
+    }
+    restoreMacDisplaysBeforeExit()
+#endif
   }
 
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   override init() {
     super.init()
     macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
@@ -150,11 +160,44 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return "CGError(\(error.rawValue))"
   }
 
+  private func completeMacDisplayConfiguration(
+    _ config: CGDisplayConfigRef,
+    reason: String
+  ) -> Bool {
+    let completeError = CGCompleteDisplayConfiguration(config, .forSession)
+    guard completeError == .success else {
+      return setMacDisplayError(
+        "CGCompleteDisplayConfiguration(\(reason)) failed: \(macCGErrorDescription(completeError))"
+      )
+    }
+    return true
+  }
+
   @discardableResult
   private func setMacDisplayError(_ message: String) -> Bool {
     macLastVirtualDisplayError = message
     NSLog("CloudPlayPlus macOS display: %@", message)
     return false
+  }
+
+  private func registerMacTerminationObserver() {
+    guard macTerminationObserver == nil else {
+      return
+    }
+    macTerminationObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willTerminateNotification,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.restoreMacDisplaysBeforeExit()
+    }
+  }
+
+  private func restoreMacDisplaysBeforeExit() {
+    if macDisplayConfigurationBackup != nil {
+      _ = restoreMacDisplayConfiguration()
+    }
+    terminateAllMacVirtualDisplays()
   }
 
   private func macHelperURL() -> URL? {
@@ -283,14 +326,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func nextMacVirtualDisplaySerial() -> Int {
     let usedSerials = Set(macVirtualDisplaySerials.values)
-    let serialBase = 0x4350_5600
     for slot in 1...255 {
-      let serial = serialBase + slot
+      let serial = macVirtualDisplaySerialBase + slot
       if !usedSerials.contains(serial) {
         return serial
       }
     }
-    return serialBase + macVirtualDisplaySerials.count + 1
+    return macVirtualDisplaySerialBase + macVirtualDisplaySerials.count + 1
   }
 
   private func spawnMacVirtualDisplay(
@@ -552,6 +594,28 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return allMacDisplayIds().filter(isMacDisplayEnabled)
   }
 
+  private func isMacCloudPlayVirtualDisplay(_ displayId: CGDirectDisplayID) -> Bool {
+    let serial = Int(CGDisplaySerialNumber(displayId))
+    return macVirtualDisplayIdsSnapshot().contains(Int(displayId)) ||
+      (serial > macVirtualDisplaySerialBase && serial <= macVirtualDisplaySerialMax)
+  }
+
+  private func isMacDisplayEnableCandidate(_ displayId: CGDirectDisplayID) -> Bool {
+    if CGDisplayIsBuiltin(displayId) != 0 || isMacDisplayEnabled(displayId) {
+      return true
+    }
+    if isMacCloudPlayVirtualDisplay(displayId) {
+      return macVirtualDisplayIdsSnapshot().contains(Int(displayId))
+    }
+    return CGDisplayVendorNumber(displayId) != 0 ||
+      CGDisplayModelNumber(displayId) != 0 ||
+      CGDisplaySerialNumber(displayId) != 0
+  }
+
+  private func enableableMacDisplayIds() -> [CGDirectDisplayID] {
+    return allMacDisplayIds().filter(isMacDisplayEnableCandidate)
+  }
+
   private func unmirrorMacDisplays(_ displayIds: [CGDirectDisplayID]) -> Bool {
     var config: CGDisplayConfigRef?
     let beginError = CGBeginDisplayConfiguration(&config)
@@ -587,13 +651,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return true
     }
 
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(unmirror) failed: \(macCGErrorDescription(completeError))"
-      )
-    }
-    return true
+    return completeMacDisplayConfiguration(config, reason: "unmirror")
   }
 
   private func configureMacDisplayEnabled(
@@ -628,18 +686,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(enable) failed: \(macCGErrorDescription(completeError))"
-      )
-    }
-    return true
+    return completeMacDisplayConfiguration(config, reason: "enable")
   }
 
   private func setMacExtendMode() -> Bool {
     clearMacDisplayError()
-    let displayIds = allMacDisplayIds()
+    let displayIds = enableableMacDisplayIds()
     guard !displayIds.isEmpty else {
       return setMacDisplayError("No displays found for extend mode")
     }
@@ -682,11 +734,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       nextX += Int32(bounds.width.rounded())
     }
 
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(extend) failed: \(macCGErrorDescription(completeError))"
-      )
+    guard completeMacDisplayConfiguration(config, reason: "extend") else {
+      return false
     }
     macDisplayConfigurationBackup = nil
     return true
@@ -694,7 +743,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func setMacDuplicateMode() -> Bool {
     clearMacDisplayError()
-    let displayIds = allMacDisplayIds()
+    let displayIds = enableableMacDisplayIds()
     guard displayIds.count >= 2 else {
       return setMacDisplayError("Duplicate mode needs at least two displays")
     }
@@ -731,11 +780,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(duplicate) failed: \(macCGErrorDescription(completeError))"
-      )
+    guard completeMacDisplayConfiguration(config, reason: "duplicate") else {
+      return false
     }
     guard waitForMacDuplicateTopology(primary, expectedDisplayIds: activeIds) else {
       let mirrors = enabledMacDisplayIds().map {
@@ -751,7 +797,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func setMacSingleDisplayMode(at index: Int) -> Bool {
     clearMacDisplayError()
-    let displayIds = allMacDisplayIds()
+    let displayIds = enableableMacDisplayIds()
     guard displayIds.indices.contains(index) else {
       return setMacDisplayError("Display index \(index) is unavailable")
     }
@@ -906,11 +952,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    let completeError = CGCompleteDisplayConfiguration(config, .permanently)
-    guard completeError == .success else {
-      return setMacDisplayError(
-        "CGCompleteDisplayConfiguration(primary) failed: \(macCGErrorDescription(completeError))"
-      )
+    guard completeMacDisplayConfiguration(config, reason: "primary") else {
+      return false
     }
     guard waitForMacMainDisplay(targetDisplayId) else {
       return setMacDisplayError(
@@ -941,14 +984,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     let targetDisplayId = CGDirectDisplayID(displayId)
-    let displayIds = allMacDisplayIds()
+    let displayIds = enableableMacDisplayIds()
     guard displayIds.contains(targetDisplayId) else {
       return setMacDisplayError("Target display \(targetDisplayId) is unavailable")
     }
 
     guard
       (macDisplayConfigurationBackup != nil ||
-        saveMacDisplayConfiguration(displayIds: displayIds))
+        saveMacDisplayConfiguration(displayIds: displayIds.filter(isMacDisplayEnabled)))
     else {
       rollbackMacDisplayConfiguration()
       return false
@@ -1001,6 +1044,42 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return true
   }
 
+  private func restoreMacDefaultDisplayConfiguration() -> Bool {
+    let displayIds = enableableMacDisplayIds()
+    guard !displayIds.isEmpty else {
+      return setMacDisplayError("No displays found for default restore")
+    }
+    guard configureMacDisplayEnabled(displayIds, enabled: { _ in true }) else {
+      return false
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+
+    let activeIds = activeMacDisplayIds()
+    guard !activeIds.isEmpty else {
+      return setMacDisplayError("No active displays after default restore")
+    }
+    guard unmirrorMacDisplays(activeIds) else {
+      return false
+    }
+
+    let virtualDisplayIds = macVirtualDisplayIdsSnapshot()
+    let preferredMainDisplayId: CGDirectDisplayID
+    if let builtInDisplayId = activeIds.first(where: { CGDisplayIsBuiltin($0) != 0 }) {
+      preferredMainDisplayId = builtInDisplayId
+    } else if let physicalDisplayId = activeIds.first(
+      where: { !virtualDisplayIds.contains(Int($0)) }
+    ) {
+      preferredMainDisplayId = physicalDisplayId
+    } else {
+      preferredMainDisplayId = activeIds[0]
+    }
+    guard setMacMainDisplay(preferredMainDisplayId, displayIds: activeIds) else {
+      return false
+    }
+    macDisplayConfigurationBackup = nil
+    return true
+  }
+
   private func restoreMacDisplayConfiguration(
     from backupOverride: [MacDisplayBackupItem]? = nil
   ) -> Bool {
@@ -1008,38 +1087,75 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       clearMacDisplayError()
     }
     guard let backup = backupOverride ?? macDisplayConfigurationBackup else {
-      return true
+      return restoreMacDefaultDisplayConfiguration()
     }
-    let displayIds = backup.map { $0.displayId }
+    let restorableBackup = backup.filter { item in
+      isMacDisplayEnableCandidate(item.displayId)
+    }
+    guard !restorableBackup.isEmpty else {
+      return restoreMacDefaultDisplayConfiguration()
+    }
 
-    guard configureMacDisplayEnabled(displayIds, enabled: { _ in true }) else {
+    let displayIds = restorableBackup.map { $0.displayId }
+    let displayIdSet = Set(displayIds)
+    let restoredMainDisplayId = restorableBackup.first { item in
+      abs(item.origin.x) < 1 && abs(item.origin.y) < 1
+    }?.displayId ?? restorableBackup.first?.displayId
+
+    guard configureMacDisplayEnabled(allMacDisplayIds(), enabled: { id in
+      displayIdSet.contains(id)
+    }) else {
       return false
     }
     Thread.sleep(forTimeInterval: 0.3)
 
-    for item in backup {
+    for item in restorableBackup {
       if let mode = item.mode {
         _ = CGDisplaySetDisplayMode(item.displayId, mode, nil)
       }
     }
 
     var mirrorConfig: CGDisplayConfigRef?
-    if CGBeginDisplayConfiguration(&mirrorConfig) == .success,
-      let mirrorConfig {
-      for item in backup {
-        _ = CGConfigureDisplayMirrorOfDisplay(
-          mirrorConfig,
-          item.displayId,
-          item.mirrorTarget == 0 ? kCGNullDirectDisplay : item.mirrorTarget
-        )
-        _ = CGConfigureDisplayOrigin(
-          mirrorConfig,
-          item.displayId,
-          Int32(item.origin.x.rounded()),
-          Int32(item.origin.y.rounded())
+    let beginError = CGBeginDisplayConfiguration(&mirrorConfig)
+    guard beginError == .success, let mirrorConfig else {
+      return setMacDisplayError(
+        "CGBeginDisplayConfiguration(restore layout) failed: \(macCGErrorDescription(beginError))"
+      )
+    }
+    for item in restorableBackup {
+      let mirrorError = CGConfigureDisplayMirrorOfDisplay(
+        mirrorConfig,
+        item.displayId,
+        item.mirrorTarget == 0 ? kCGNullDirectDisplay : item.mirrorTarget
+      )
+      guard mirrorError == .success else {
+        CGCancelDisplayConfiguration(mirrorConfig)
+        return setMacDisplayError(
+          "CGConfigureDisplayMirrorOfDisplay(restore \(item.displayId)) failed: \(macCGErrorDescription(mirrorError))"
         )
       }
-      _ = CGCompleteDisplayConfiguration(mirrorConfig, .permanently)
+      let originError = CGConfigureDisplayOrigin(
+        mirrorConfig,
+        item.displayId,
+        Int32(item.origin.x.rounded()),
+        Int32(item.origin.y.rounded())
+      )
+      guard originError == .success else {
+        CGCancelDisplayConfiguration(mirrorConfig)
+        return setMacDisplayError(
+          "CGConfigureDisplayOrigin(restore \(item.displayId)) failed: \(macCGErrorDescription(originError))"
+        )
+      }
+    }
+    guard completeMacDisplayConfiguration(mirrorConfig, reason: "restore layout") else {
+      return false
+    }
+
+    if let restoredMainDisplayId,
+      !waitForMacMainDisplay(restoredMainDisplayId, timeout: 1.5) {
+      return setMacDisplayError(
+        "Timed out waiting for restored main display \(restoredMainDisplayId)"
+      )
     }
 
     if backupOverride == nil {
