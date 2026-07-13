@@ -532,14 +532,89 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     ) > 0
   }
 
-  private func setMacMirroring(_ enabled: Bool) -> Bool {
-    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: 32)
+  private func onlineMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
+    var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: limit)
     var displayCount: UInt32 = 0
     guard
-      CGGetActiveDisplayList(UInt32(displayIds.count), &displayIds, &displayCount)
-        == .success,
-      displayCount >= 2
+      CGGetOnlineDisplayList(UInt32(displayIds.count), &displayIds, &displayCount)
+        == .success
     else {
+      return []
+    }
+    return Array(displayIds.prefix(Int(displayCount)))
+  }
+
+  private func unmirrorMacDisplays(_ displayIds: [CGDirectDisplayID]) -> Bool {
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+      return false
+    }
+
+    for id in displayIds {
+      guard
+        CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
+          == .success
+      else {
+        CGCancelDisplayConfiguration(config)
+        return false
+      }
+    }
+    return CGCompleteDisplayConfiguration(config, .forSession) == .success
+  }
+
+  private func configureMacDisplayEnabled(
+    _ displayIds: [CGDirectDisplayID],
+    enabled: (CGDirectDisplayID) -> Bool
+  ) -> Bool {
+    guard let sls = macSLSDisplayConfig else {
+      return false
+    }
+
+    var config: CGDisplayConfigRef?
+    guard sls.begin(&config) == .success, let config else {
+      return false
+    }
+
+    for id in displayIds {
+      let shouldEnable = enabled(id)
+      guard sls.configureEnabled(config, id, shouldEnable) == .success else {
+        CGCancelDisplayConfiguration(config)
+        return false
+      }
+      if shouldEnable {
+        let bounds = CGDisplayBounds(id)
+        guard
+          sls.configureOrigin(
+            config,
+            id,
+            Int32(bounds.origin.x.rounded()),
+            Int32(bounds.origin.y.rounded())
+          ) == .success
+        else {
+          CGCancelDisplayConfiguration(config)
+          return false
+        }
+      }
+    }
+
+    return sls.complete(config, .forSession, 0) == .success
+  }
+
+  private func setMacExtendMode() -> Bool {
+    let displayIds = onlineMacDisplayIds()
+    guard !displayIds.isEmpty else {
+      return false
+    }
+    guard configureMacDisplayEnabled(displayIds, enabled: { _ in true }) else {
+      return false
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+
+    let activeIds = activeMacDisplayIds()
+    guard !activeIds.isEmpty else {
+      return false
+    }
+    guard unmirrorMacDisplays(activeIds) else {
       return false
     }
 
@@ -548,15 +623,99 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
 
-    let primary = displayIds[0]
-    for id in displayIds.prefix(Int(displayCount)).dropFirst() {
-      CGConfigureDisplayMirrorOfDisplay(
-        config,
-        id,
-        enabled ? primary : kCGNullDirectDisplay
-      )
+    let primary = activeIds.contains(CGMainDisplayID())
+      ? CGMainDisplayID()
+      : activeIds[0]
+    let orderedIds = [primary] + activeIds.filter { $0 != primary }
+
+    var nextX: Int32 = 0
+    for id in orderedIds {
+      let bounds = CGDisplayBounds(id)
+      guard CGConfigureDisplayOrigin(config, id, nextX, 0) == .success else {
+        CGCancelDisplayConfiguration(config)
+        return false
+      }
+      nextX += Int32(bounds.width.rounded())
     }
-    return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
+
+    guard CGCompleteDisplayConfiguration(config, .forSession) == .success else {
+      return false
+    }
+    macDisplayConfigurationBackup = nil
+    return true
+  }
+
+  private func setMacDuplicateMode() -> Bool {
+    let displayIds = onlineMacDisplayIds()
+    guard displayIds.count >= 2 else {
+      return false
+    }
+    guard configureMacDisplayEnabled(displayIds, enabled: { _ in true }) else {
+      return false
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+
+    let activeIds = activeMacDisplayIds()
+    guard activeIds.count >= 2 else {
+      return false
+    }
+    let primary = activeIds.contains(CGMainDisplayID())
+      ? CGMainDisplayID()
+      : activeIds[0]
+
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+      return false
+    }
+
+    for id in activeIds where id != primary {
+      guard CGConfigureDisplayMirrorOfDisplay(config, id, primary) == .success
+      else {
+        CGCancelDisplayConfiguration(config)
+        return false
+      }
+    }
+
+    guard CGCompleteDisplayConfiguration(config, .forSession) == .success else {
+      return false
+    }
+    macDisplayConfigurationBackup = nil
+    return true
+  }
+
+  private func setMacSingleDisplayMode(at index: Int) -> Bool {
+    let displayIds = onlineMacDisplayIds()
+    guard displayIds.indices.contains(index) else {
+      return false
+    }
+    return setMacPrimaryDisplayOnly(Int(displayIds[index]))
+  }
+
+  private func getCurrentMacMultiDisplayMode() -> Int {
+    let activeIds = activeMacDisplayIds()
+    let onlineIds = onlineMacDisplayIds()
+    guard !activeIds.isEmpty else {
+      return 4
+    }
+    if activeIds.count <= 1 {
+      guard let activeId = activeIds.first,
+        let index = onlineIds.firstIndex(of: activeId)
+      else {
+        return 1
+      }
+      return index == 1 ? 2 : 1
+    }
+
+    let mirroredCount = activeIds.filter { id in
+      CGDisplayMirrorsDisplay(id) != 0 || CGDisplayIsInMirrorSet(id) != 0
+    }.count
+    if mirroredCount > 0 {
+      return 3
+    }
+    if activeIds.count == onlineIds.count {
+      return 0
+    }
+    return 4
   }
 
   private func activeMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
@@ -571,8 +730,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return Array(displayIds.prefix(Int(displayCount)))
   }
 
-  private func saveMacDisplayConfiguration() -> Bool {
-    let displayIds = activeMacDisplayIds()
+  private func saveMacDisplayConfiguration(
+    displayIds inputDisplayIds: [CGDirectDisplayID]? = nil
+  ) -> Bool {
+    let displayIds = inputDisplayIds ?? activeMacDisplayIds()
     guard !displayIds.isEmpty else {
       return false
     }
@@ -646,30 +807,48 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func setMacPrimaryDisplayOnly(_ displayId: Int) -> Bool {
+    let previousBackup = macDisplayConfigurationBackup
     func rollbackMacDisplayConfiguration() {
-      let backup = macDisplayConfigurationBackup
+      let backup = previousBackup ?? macDisplayConfigurationBackup
       macDisplayConfigurationBackup = nil
       if backup != nil {
         _ = restoreMacDisplayConfiguration(from: backup)
       }
     }
 
-    guard macDisplayConfigurationBackup == nil else {
-      return false
-    }
-    guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
-      return false
-    }
     let targetDisplayId = CGDirectDisplayID(displayId)
-    guard CGDisplayIsActive(targetDisplayId) != 0 else {
+    let displayIds = onlineMacDisplayIds()
+    guard displayIds.contains(targetDisplayId) else {
       return false
     }
-    let displayIds = activeMacDisplayIds()
-    guard saveMacDisplayConfiguration(), let sls = macSLSDisplayConfig else {
+
+    guard
+      (macDisplayConfigurationBackup != nil ||
+        saveMacDisplayConfiguration(displayIds: displayIds)),
+      let sls = macSLSDisplayConfig
+    else {
       rollbackMacDisplayConfiguration()
       return false
     }
-    guard setMacMainDisplay(targetDisplayId, displayIds: displayIds) else {
+
+    guard configureMacDisplayEnabled(displayIds, enabled: { id in
+      id == targetDisplayId || CGDisplayIsActive(id) != 0
+    }) else {
+      rollbackMacDisplayConfiguration()
+      return false
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+
+    let activeIds = activeMacDisplayIds()
+    guard activeIds.contains(targetDisplayId) else {
+      rollbackMacDisplayConfiguration()
+      return false
+    }
+    guard unmirrorMacDisplays(activeIds) else {
+      rollbackMacDisplayConfiguration()
+      return false
+    }
+    guard setMacMainDisplay(targetDisplayId, displayIds: activeIds) else {
       rollbackMacDisplayConfiguration()
       return false
     }
@@ -680,7 +859,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
 
-    for id in displayIds {
+    for id in onlineMacDisplayIds() {
       let enable = id == targetDisplayId
       if sls.configureEnabled(config, id, enable) != .success {
         CGCancelDisplayConfiguration(config)
@@ -1876,25 +2055,24 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "setMultiDisplayMode":
       let args = call.arguments as? [String: Any]
       let mode = args?["mode"] as? Int ?? 4
-      switch mode {
-      case 0:
-        result(setMacMirroring(false))
-      case 3:
-        result(setMacMirroring(true))
-      default:
-        result(false)
+      macVirtualDisplayQueue.async {
+        let ok: Bool
+        switch mode {
+        case 0:
+          ok = self.setMacExtendMode()
+        case 1:
+          ok = self.setMacSingleDisplayMode(at: 0)
+        case 2:
+          ok = self.setMacSingleDisplayMode(at: 1)
+        case 3:
+          ok = self.setMacDuplicateMode()
+        default:
+          ok = false
+        }
+        DispatchQueue.main.async { result(ok) }
       }
     case "getCurrentMultiDisplayMode":
-      let displays = macDisplayList()
-      if displays.count <= 1 {
-        result(1)
-      } else {
-        let anyMirrored = displays.contains { item in
-          guard let uid = item["displayUid"] as? Int else { return false }
-          return CGDisplayMirrorsDisplay(CGDirectDisplayID(uid)) != 0
-        }
-        result(anyMirrored ? 3 : 0)
-      }
+      result(getCurrentMacMultiDisplayMode())
     case "setPrimaryDisplayOnly":
       let args = call.arguments as? [String: Any]
       let displayUid = args?["displayUid"] as? Int ?? -1
