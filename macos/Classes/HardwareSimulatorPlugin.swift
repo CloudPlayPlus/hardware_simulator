@@ -637,6 +637,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return waitForMacMainDisplay(targetDisplayId)
   }
 
+  private func setMacPrimaryDisplay(_ displayId: Int) -> Bool {
+    let targetDisplayId = CGDirectDisplayID(displayId)
+    guard CGDisplayIsActive(targetDisplayId) != 0 else {
+      return false
+    }
+    return setMacMainDisplay(targetDisplayId, displayIds: activeMacDisplayIds())
+  }
+
   private func setMacPrimaryDisplayOnly(_ displayId: Int) -> Bool {
     func rollbackMacDisplayConfiguration() {
       let backup = macDisplayConfigurationBackup
@@ -1858,6 +1866,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       result(false)
     case "getDisplayOrientation":
       result(0)
+    case "setPrimaryDisplay":
+      let args = call.arguments as? [String: Any]
+      let displayUid = args?["displayIndex"] as? Int ?? -1
+      macVirtualDisplayQueue.async {
+        let ok = self.setMacPrimaryDisplay(displayUid)
+        DispatchQueue.main.async { result(ok) }
+      }
     case "setMultiDisplayMode":
       let args = call.arguments as? [String: Any]
       let mode = args?["mode"] as? Int ?? 4
@@ -1922,6 +1937,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       result(false)
     case "getDisplayOrientation":
       result(0)
+    case "setPrimaryDisplay":
+      result(false)
     case "setMultiDisplayMode":
       result(false)
     case "getCurrentMultiDisplayMode":
