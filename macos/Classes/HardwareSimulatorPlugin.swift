@@ -790,11 +790,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func getCurrentMacMultiDisplayMode() -> Int {
     let activeIds = activeMacDisplayIds()
-    let displayIds = allMacDisplayIds()
     guard !activeIds.isEmpty else {
       return 4
     }
     if activeIds.count <= 1 {
+      let displayIds = macDisplayConfigurationBackup?.map { $0.displayId }
+        ?? allMacDisplayIds()
       guard let activeId = activeIds.first,
         let index = displayIds.firstIndex(of: activeId)
       else {
@@ -809,10 +810,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if mirroredCount > 0 {
       return 3
     }
-    if activeIds.count == displayIds.count {
-      return 0
-    }
-    return 4
+    return 0
   }
 
   private func activeMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
@@ -859,6 +857,21 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let deadline = Date().addingTimeInterval(timeout)
     repeat {
       if CGMainDisplayID() == displayId || CGDisplayIsMain(displayId) != 0 {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.1)
+    } while Date() < deadline
+    return false
+  }
+
+  private func waitForMacPrimaryOnlyTopology(
+    _ displayId: CGDirectDisplayID,
+    timeout: TimeInterval = 1.5
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      let activeIds = activeMacDisplayIds()
+      if activeIds.count == 1 && activeIds.first == displayId {
         return true
       }
       Thread.sleep(forTimeInterval: 0.1)
@@ -1016,6 +1029,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       rollbackMacDisplayConfiguration()
       return setMacDisplayError(
         "Timed out waiting for display \(targetDisplayId) to remain main"
+      )
+    }
+    guard waitForMacPrimaryOnlyTopology(targetDisplayId) else {
+      let activeIds = activeMacDisplayIds().map(String.init).joined(separator: ",")
+      rollbackMacDisplayConfiguration()
+      return setMacDisplayError(
+        "Timed out waiting for primary-only topology; active displays: [\(activeIds)]"
       )
     }
     return true
@@ -2206,15 +2226,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "setMultiDisplayMode":
       let args = call.arguments as? [String: Any]
       let mode = args?["mode"] as? Int ?? 4
+      let primaryDisplayId = args?["primaryDisplayId"] as? Int ?? 0
       macVirtualDisplayQueue.async {
         let ok: Bool
         switch mode {
         case 0:
           ok = self.setMacExtendMode()
         case 1:
-          ok = self.setMacSingleDisplayMode(at: 0)
+          ok = primaryDisplayId > 0
+            ? self.setMacPrimaryDisplayOnly(primaryDisplayId)
+            : self.setMacSingleDisplayMode(at: 0)
         case 2:
-          ok = self.setMacSingleDisplayMode(at: 1)
+          ok = primaryDisplayId > 0
+            ? self.setMacPrimaryDisplayOnly(primaryDisplayId)
+            : self.setMacSingleDisplayMode(at: 1)
         case 3:
           ok = self.setMacDuplicateMode()
         default:
