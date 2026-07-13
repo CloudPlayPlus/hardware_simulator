@@ -187,10 +187,16 @@ int main(int argc, const char *argv[]) {
     int height = 0;
     int refreshRate = 0;
     int parentPIDInt = 0;
+    int serialNum = 0x43505601;
     if (!parsePositiveInt(argv[1], &width) ||
         !parsePositiveInt(argv[2], &height) ||
         !parsePositiveInt(argv[3], &refreshRate) ||
         !parsePositiveInt(argv[4], &parentPIDInt)) {
+      fprintf(stdout, "0\n");
+      fflush(stdout);
+      return 1;
+    }
+    if (argc >= 6 && !parsePositiveInt(argv[5], &serialNum)) {
       fprintf(stdout, "0\n");
       fflush(stdout);
       return 1;
@@ -205,7 +211,7 @@ int main(int argc, const char *argv[]) {
     descriptor.name = @"CloudPlayPlus Virtual Display";
     descriptor.vendorID = 0x4350;
     descriptor.productID = 0x5644;
-    descriptor.serialNum = arc4random();
+    descriptor.serialNum = (unsigned int)serialNum;
     descriptor.maxPixelsWide = (unsigned int)width;
     descriptor.maxPixelsHigh = (unsigned int)height;
     descriptor.sizeInMillimeters = CGSizeMake(597, 336);

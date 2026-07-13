@@ -385,6 +385,10 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.hasPendingConfiguration();
   }
 
+  static Future<String?> getLastDisplayError() {
+    return HardwareSimulatorPlatform.instance.getLastDisplayError();
+  }
+
   static Future<void> setDragWindowContents(bool enabled) {
     return HardwareSimulatorPlatform.instance.setDragWindowContents(enabled);
   }

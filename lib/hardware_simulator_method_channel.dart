@@ -573,6 +573,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<String?> getLastDisplayError() async {
+    return await methodChannel.invokeMethod<String>('getLastDisplayError');
+  }
+
+  @override
   Future<bool> putImmersiveModeEnabled(bool enabled) async {
     return await methodChannel.invokeMethod('putImmersiveModeEnabled', {
       'enabled': enabled,

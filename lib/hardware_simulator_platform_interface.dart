@@ -330,6 +330,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
         'hasPendingConfiguration() has not been implemented.');
   }
 
+  Future<String?> getLastDisplayError() async {
+    return null;
+  }
+
   Future<void> setDragWindowContents(bool enabled) async {
     throw UnimplementedError(
         'setDragWindowContents() has not been implemented.');
