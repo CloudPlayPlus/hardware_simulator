@@ -629,9 +629,15 @@ int VirtualDisplayControl::GetAllDisplays() {
 
                 std::unique_ptr<VirtualDisplay> display = std::make_unique<VirtualDisplay>(config, d);
                 if(d.is_virtual) {
+                    // Virtual (VDD) uid = VDD hardware index (0..15); used by VddRemoveDisplay.
                     display->SetDisplayUid(d.display_uid - 256);
-                } else { 
-                    display->SetDisplayUid(d.display_uid);
+                } else {
+                    // Physical uid: offset by 1024 so it never collides with a VDD index.
+                    // (e.g. QXL's target id is UID0, which would otherwise clash with VDD #0.)
+                    // NOTE: this does not guarantee uniqueness between two physical displays
+                    // whose per-adapter target ids happen to match; revisit with a devicePath-
+                    // derived id later.
+                    display->SetDisplayUid(d.display_uid + 1024);
                 }
                 display->SetCurrentOrientation(current_orientation_);
                 display->UpdateDisplayBounds();
