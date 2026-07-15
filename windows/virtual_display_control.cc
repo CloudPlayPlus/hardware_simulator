@@ -329,11 +329,22 @@ static bool HasActiveRdpSession() {
 
 // Reconnect the given session to the physical console via `tscon`.
 static bool RunTscon(DWORD sid) {
-    std::wstring cmdLine = L"cmd.exe /c tscon " + std::to_wstring(sid) + L" /dest:console";
+    // Resolve tscon.exe by its full System32 path and launch it directly (no
+    // cmd.exe shell). Passing lpApplicationName lets the loader skip the CWD in
+    // its search order — that search path is a binary-planting surface for an
+    // admin/SYSTEM process on a headless box.
+    wchar_t sysDir[MAX_PATH] = {};
+    UINT n = GetSystemDirectoryW(sysDir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        std::cout << "[VDD] tscon: GetSystemDirectory failed, error=" << GetLastError() << std::endl;
+        return false;
+    }
+    std::wstring exePath = std::wstring(sysDir) + L"\\tscon.exe";
+    std::wstring cmdLine = L"tscon.exe " + std::to_wstring(sid) + L" /dest:console";
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
+    if (!CreateProcessW(exePath.c_str(), &cmdLine[0], nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         std::cout << "[VDD] tscon: CreateProcess failed, error=" << GetLastError() << std::endl;
         return false;
