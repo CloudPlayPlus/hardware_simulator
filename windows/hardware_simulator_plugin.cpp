@@ -1594,16 +1594,24 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     }).detach();
     return;
   } else if (method_call.method_name().compare("createDisplay") == 0) {
-     if (VirtualDisplayControl::IsInitialized()) {
+     // AddDisplay() retries display enumeration (up to ~2s of Sleep) after
+     // adding the VDD. Run on a worker thread so the platform thread is not
+     // blocked; Dart `await` still receives the real displayId / error.
+     std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
+         std::move(result);
+     std::thread([shared_result]() {
+       if (VirtualDisplayControl::IsInitialized()) {
          int displayId = VirtualDisplayControl::AddDisplay();
          if (displayId >= 0) {
-             result->Success(flutter::EncodableValue(displayId));
+           shared_result->Success(flutter::EncodableValue(displayId));
          } else {
-             result->Error("CREATE_FAILED", "Failed to create display");
+           shared_result->Error("CREATE_FAILED", "Failed to create display");
          }
-     } else {
-         result->Error("NOT_INITIALIZED", "Parsec not initialized");
-     }
+       } else {
+         shared_result->Error("NOT_INITIALIZED", "Parsec not initialized");
+       }
+     }).detach();
+     return;
   } else if (method_call.method_name().compare("removeDisplay") == 0) {
      auto displayId_iter = args->find(flutter::EncodableValue("displayUid"));
      if (displayId_iter == args->end()) {
