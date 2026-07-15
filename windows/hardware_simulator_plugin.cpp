@@ -1576,42 +1576,33 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     }).detach();
     return;
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
-    // Initialize() runs the VDD driver setup, EnsureConsoleForDisplay (up to
-    // ~10s on tscon) and AddDisplay retries. Run on a worker thread so the
-    // Flutter platform thread is not frozen; Dart `await` gets the real result.
-    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
-        std::move(result);
-    std::thread([shared_result]() {
-      if (!VirtualDisplayControl::IsInitialized()) {
-        if (VirtualDisplayControl::Initialize()) {
-          shared_result->Success(flutter::EncodableValue(true));
-        } else {
-          shared_result->Error("INIT_FAILED", "Failed to initialize ParsecVdd");
-        }
+    // Runs synchronously on the platform thread: Initialize() mutates the
+    // shared VDD state (initialized_/vdd_handle_/displays_), which has no lock
+    // and relies on method calls being serialized on the platform thread.
+    // Moving it to a worker thread would race concurrent displays_ access.
+    if (!VirtualDisplayControl::IsInitialized()) {
+      if (VirtualDisplayControl::Initialize()) {
+        result->Success(flutter::EncodableValue(true));
       } else {
-        shared_result->Success(flutter::EncodableValue(true));
+        result->Error("INIT_FAILED", "Failed to initialize ParsecVdd");
       }
-    }).detach();
-    return;
+    } else {
+      result->Success(flutter::EncodableValue(true));
+    }
   } else if (method_call.method_name().compare("createDisplay") == 0) {
-     // AddDisplay() retries display enumeration (up to ~2s of Sleep) after
-     // adding the VDD. Run on a worker thread so the platform thread is not
-     // blocked; Dart `await` still receives the real displayId / error.
-     std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
-         std::move(result);
-     std::thread([shared_result]() {
-       if (VirtualDisplayControl::IsInitialized()) {
+     // Runs synchronously on the platform thread: AddDisplay() rebuilds the
+     // shared displays_ vector (unlocked); serialization on the platform thread
+     // is what keeps it race-free. Do NOT move to a worker thread.
+     if (VirtualDisplayControl::IsInitialized()) {
          int displayId = VirtualDisplayControl::AddDisplay();
          if (displayId >= 0) {
-           shared_result->Success(flutter::EncodableValue(displayId));
+             result->Success(flutter::EncodableValue(displayId));
          } else {
-           shared_result->Error("CREATE_FAILED", "Failed to create display");
+             result->Error("CREATE_FAILED", "Failed to create display");
          }
-       } else {
-         shared_result->Error("NOT_INITIALIZED", "Parsec not initialized");
-       }
-     }).detach();
-     return;
+     } else {
+         result->Error("NOT_INITIALIZED", "Parsec not initialized");
+     }
   } else if (method_call.method_name().compare("removeDisplay") == 0) {
      auto displayId_iter = args->find(flutter::EncodableValue("displayUid"));
      if (displayId_iter == args->end()) {
