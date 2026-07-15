@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 // Used to run win32 service.
 #include <sddl.h>
@@ -1563,18 +1564,35 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         bool success = setPrimaryDisplay(displayIndex);
         result->Success(flutter::EncodableValue(success));
   } else if (method_call.method_name().compare("ensureConsoleForDisplay") == 0) {
-    bool ok = VirtualDisplayControl::EnsureConsoleForDisplay();
-    result->Success(flutter::EncodableValue(ok));
+    // EnsureConsoleForDisplay may block up to ~10s on tscon
+    // (WaitForSingleObject). Run it on a worker thread so the Flutter platform
+    // thread (UI / input / render) is never frozen; the Dart `await` still
+    // receives the real result when the work completes.
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
+        std::move(result);
+    std::thread([shared_result]() {
+      bool ok = VirtualDisplayControl::EnsureConsoleForDisplay();
+      shared_result->Success(flutter::EncodableValue(ok));
+    }).detach();
+    return;
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
-    if (!VirtualDisplayControl::IsInitialized()) {
-      if (VirtualDisplayControl::Initialize()) {
-        result->Success(flutter::EncodableValue(true));
+    // Initialize() runs the VDD driver setup, EnsureConsoleForDisplay (up to
+    // ~10s on tscon) and AddDisplay retries. Run on a worker thread so the
+    // Flutter platform thread is not frozen; Dart `await` gets the real result.
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
+        std::move(result);
+    std::thread([shared_result]() {
+      if (!VirtualDisplayControl::IsInitialized()) {
+        if (VirtualDisplayControl::Initialize()) {
+          shared_result->Success(flutter::EncodableValue(true));
+        } else {
+          shared_result->Error("INIT_FAILED", "Failed to initialize ParsecVdd");
+        }
       } else {
-        result->Error("INIT_FAILED", "Failed to initialize ParsecVdd");
+        shared_result->Success(flutter::EncodableValue(true));
       }
-    } else {
-      result->Success(flutter::EncodableValue(true));
-    }
+    }).detach();
+    return;
   } else if (method_call.method_name().compare("createDisplay") == 0) {
      if (VirtualDisplayControl::IsInitialized()) {
          int displayId = VirtualDisplayControl::AddDisplay();
