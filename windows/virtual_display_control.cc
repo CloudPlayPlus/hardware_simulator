@@ -1,6 +1,7 @@
 #include "virtual_display_control.h"
 #include <iostream>
 #include <thread>
+#include <mutex>
 #include <chrono>
 #include <algorithm>
 #include <cstring>
@@ -370,6 +371,17 @@ static bool RunTscon(DWORD sid) {
 // disconnect an active RDP session. Root cause: a VDD binds to the console
 // session, so a target session that is not on the console has no visible display.
 bool VirtualDisplayControl::EnsureConsoleForDisplay() {
+    // Serialize: at most one tscon console-switch at a time. WTSConnectSession
+    // concurrency is undocumented and the console hosts a single session, so
+    // concurrent callers (e.g. two viewers starting at once) block here; the
+    // HasActiveDisplay() re-check below then returns early once the in-flight
+    // switch has made a display available — no redundant/parallel tscon, and a
+    // `true` return still means the console is ready. This runs on a worker
+    // thread (see the method-channel handler), so blocking here never freezes
+    // the platform thread.
+    static std::mutex switch_mutex;
+    std::lock_guard<std::mutex> lock(switch_mutex);
+
     if (HasActiveDisplay()) {
         std::cout << "[VDD] EnsureConsoleForDisplay: display already available" << std::endl;
         return true;
