@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 // Used to run win32 service.
 #include <sddl.h>
@@ -1562,7 +1563,23 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto displayIndex = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("displayIndex")))->second));
         bool success = setPrimaryDisplay(displayIndex);
         result->Success(flutter::EncodableValue(success));
+  } else if (method_call.method_name().compare("ensureConsoleForDisplay") == 0) {
+    // EnsureConsoleForDisplay may block up to ~10s on tscon
+    // (WaitForSingleObject). Run it on a worker thread so the Flutter platform
+    // thread (UI / input / render) is never frozen; the Dart `await` still
+    // receives the real result when the work completes.
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
+        std::move(result);
+    std::thread([shared_result]() {
+      bool ok = VirtualDisplayControl::EnsureConsoleForDisplay();
+      shared_result->Success(flutter::EncodableValue(ok));
+    }).detach();
+    return;
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
+    // Runs synchronously on the platform thread: Initialize() mutates the
+    // shared VDD state (initialized_/vdd_handle_/displays_), which has no lock
+    // and relies on method calls being serialized on the platform thread.
+    // Moving it to a worker thread would race concurrent displays_ access.
     if (!VirtualDisplayControl::IsInitialized()) {
       if (VirtualDisplayControl::Initialize()) {
         result->Success(flutter::EncodableValue(true));
@@ -1573,6 +1590,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       result->Success(flutter::EncodableValue(true));
     }
   } else if (method_call.method_name().compare("createDisplay") == 0) {
+     // Runs synchronously on the platform thread: AddDisplay() rebuilds the
+     // shared displays_ vector (unlocked); serialization on the platform thread
+     // is what keeps it race-free. Do NOT move to a worker thread.
      if (VirtualDisplayControl::IsInitialized()) {
          int displayId = VirtualDisplayControl::AddDisplay();
          if (displayId >= 0) {
