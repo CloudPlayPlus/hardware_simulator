@@ -1,9 +1,9 @@
 #ifndef GAME_CONTROLLER_MANAGER_H
 #define GAME_CONTROLLER_MANAGER_H
 
-#include <iostream>
-#include <memory>
 #include <array>
+#include <memory>
+#include <string>
 
 #include <ViGEm/Client.h>
 

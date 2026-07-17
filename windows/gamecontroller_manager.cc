@@ -3,6 +3,8 @@
 #include <sstream>
 #include <Xinput.h>
 
+#include "cpp_log_adapter.h"
+
 PVIGEM_CLIENT GameControllerManager::vigem_client = nullptr;
 bool GameControllerManager::initialized = false;
 std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
@@ -10,17 +12,18 @@ std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
 int GameControllerManager::InitializeVigem() {
   vigem_client = vigem_alloc();
   if (vigem_client == nullptr) {
-    std::cerr << "Uh, not enough memory to do that?!" << std::endl;
+    CPPLOG_ERROR("GAMEPAD", "vigem_alloc failed: not enough memory");
     return -1;
   }
 
   const auto retval = vigem_connect(vigem_client);
   if (!VIGEM_SUCCESS(retval)) {
-    std::cerr << "ViGEm Bus connection failed with error code: 0x"
-              << std::hex << retval << std::endl;
+    CPPLOG_ERROR("GAMEPAD", "ViGEm Bus connection failed: 0x%X",
+                 static_cast<unsigned int>(retval));
     return -1;
   }
   initialized = true;
+  CPPLOG_INFO("GAMEPAD", "ViGEm Bus connected");
   return 0;
 }
 
@@ -43,22 +46,22 @@ int GameControllerManager::CreateGameController() {
       // Error handling
       //
       if (!VIGEM_SUCCESS(pir)) {
-        std::cerr << "Target plugin failed with error code: 0x" << std::hex
-                << pir << std::endl;
+        CPPLOG_ERROR("GAMEPAD", "vigem_target_add failed: 0x%X",
+                     static_cast<unsigned int>(pir));
         return -1;
       }
-      std::cout << "GameController created in slot " << i + 1 << std::endl;
+      CPPLOG_INFO("GAMEPAD", "GameController created in slot %d", i + 1);
       return i + 1;
     }
   }
 
-  std::cerr << "No available slot for GameController!" << std::endl;
+  CPPLOG_ERROR("GAMEPAD", "No available slot for GameController");
   return -1;
 }
 
 bool GameControllerManager::RemoveGameController(int id) {
   if (id < 1 || id > 4) {
-    std::cerr << "Invalid slot id: " << id << std::endl;
+    CPPLOG_ERROR("GAMEPAD", "Invalid slot id: %d", id);
     return false;
   }
 
@@ -69,15 +72,15 @@ bool GameControllerManager::RemoveGameController(int id) {
     // Error handling
     //
     if (!VIGEM_SUCCESS(pir)) {
-        std::cerr << "GameController remove failed with error code: 0x" << std::hex
-            << pir << std::endl;
-        return false;
+      CPPLOG_ERROR("GAMEPAD", "vigem_target_remove failed: 0x%X",
+                   static_cast<unsigned int>(pir));
+      return false;
     }
-    std::cout << "GameController removed from slot " << id << std::endl;
+    CPPLOG_INFO("GAMEPAD", "GameController removed from slot %d", id);
     return true;
   }
 
-  std::cerr << "Slot " << id << " is already empty!" << std::endl;
+  CPPLOG_ERROR("GAMEPAD", "Slot %d is already empty", id);
   return false;
 }
 
@@ -103,10 +106,12 @@ bool GameControllerManager::DoControllerAction(int id, std::string& action) {
         *reinterpret_cast<XUSB_REPORT*>(&gamepad));
 
     if (!VIGEM_SUCCESS(pir)) {
-        std::cerr << "GameController remove failed with error code: 0x" << std::hex
-            << pir << std::endl;
+        CPPLOG_ERROR("GAMEPAD", "vigem_target_x360_update failed: 0x%X",
+                     static_cast<unsigned int>(pir));
         return false;
     }
-    std::cout << "GameController removed from slot " << id << std::endl;
+    // Per-input-frame; keep at trace so it does not flood app.log at the
+    // default (info) level.
+    CPPLOG_TRACE("GAMEPAD", "GameController updated slot %d", id);
     return true;
 }

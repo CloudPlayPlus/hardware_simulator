@@ -15,6 +15,13 @@ dependencies:
   web: ^1.0.0
   flutter_web_plugins:
     sdk: flutter
+  # Shared native logging core. On Windows the plugin's C++ diagnostics are
+  # routed into cpp_log (and thus the same app.log as Dart-origin logs). The
+  # native side resolves cpp_log's `cpp_log_emit` at runtime via GetProcAddress,
+  # so this dependency mainly declares the relationship and ensures cpp_log's
+  # C ABI header is available to the plugin build.
+  cpp_log:
+    path: ../cpp_log
   # NOTE: pointer_lock is intentionally removed in cloudplayplus_nova to avoid a git dependency.
   # If you need pointer-lock behavior on Linux, re-add it or implement a local alternative.
 

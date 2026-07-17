@@ -34,6 +34,8 @@ list(APPEND PLUGIN_SOURCES
   "virtual_display_control.h"
   "SmartKeyboardBlocker.cpp"
   "SmartKeyboardBlocker.h"
+  "cpp_log_adapter.cc"
+  "cpp_log_adapter.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
@@ -64,6 +66,16 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
 include_directories(
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/include"
 )
+
+# cpp_log integration: the adapter (cpp_log_adapter.cc) routes this plugin's
+# native diagnostics into the shared cpp_log pipeline. Only cpp_log's C ABI
+# header is needed at build time; the `cpp_log_emit` entrypoint is resolved at
+# runtime via GetProcAddress against the bundled cpp_log.dll, so there is no
+# link-time dependency on the cpp_log target. The path reaches the sibling
+# plugin's src/ through Flutter's .plugin_symlinks layout.
+target_include_directories(${PLUGIN_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/src")
+
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin 

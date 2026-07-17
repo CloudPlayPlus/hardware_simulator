@@ -6,6 +6,7 @@
 #include "notification_window.h"
 #include "virtual_display_control.h"
 #include "SmartKeyboardBlocker.h"
+#include "cpp_log_adapter.h"
 
 // This must be included before many other Windows headers.
 #include <windows.h>
@@ -945,6 +946,12 @@ void setDragWindowContents(bool enable) {
 // static
 void HardwareSimulatorPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows *registrar) {
+  // Startup marker on the shared cpp_log channel. Also the first CPPLOG site,
+  // which lazily resolves cpp_log.dll; useful as an end-to-end check that this
+  // plugin's native logs reach the same app.log as Dart-origin logs.
+  CPPLOG_INFO("HWSIM",
+              "hardware_simulator plugin registered (native logging via cpp_log)");
+
   auto channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           registrar->messenger(), "hardware_simulator",
