@@ -4,11 +4,11 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   hardware_simulator
-  pointer_lock
   url_launcher_linux
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
+  cpp_log
 )
 
 set(PLUGIN_BUNDLED_LIBRARIES)

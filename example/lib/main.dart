@@ -6,13 +6,33 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:hardware_simulator/hardware_simulator.dart';
+import 'package:cpp_log/cpp_log.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'fps_game_example.dart';
 import 'display_manager_page.dart';
 import 'immersive_mode_example.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Demonstrate native logging while debugging this example. cpp_log's drain
+  // thread mirrors every record to stdout + OutputDebugString in a DEBUG build,
+  // so the plugin's C++ diagnostics (tags like VDISPLAY / GAMEPAD / KBLOCK)
+  // appear live in the `flutter run` console. onLogBatch additionally forwards
+  // each batch to a file next to the system temp dir — the same native<->Dart
+  // bridge pattern the host app uses to merge both into one app.log. Both are
+  // best-effort and simply no-op if cpp_log is unavailable.
+  final File logFile =
+      File('${Directory.systemTemp.path}/hardware_simulator_example.log');
+  final IOSink logSink = logFile.openWrite(mode: FileMode.append);
+  await CppLog.instance.start(
+    minLevel: CppLogLevel.debug,
+    onLogBatch: (String batch) => logSink.writeln(batch),
+  );
+  debugPrint(
+      '[hardware_simulator example] native logs -> console + ${logFile.path}');
+
   //SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
   runApp(const MyApp());
 }

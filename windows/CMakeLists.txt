@@ -71,11 +71,26 @@ include_directories(
 # `cpp_log_emit` is resolved at runtime with GetProcAddress against the bundled
 # cpp_log.dll, so there is no link-time dependency on the cpp_log target. The
 # path reaches the sibling cpp_log package through Flutter's .plugin_symlinks
-# layout. This is the single shared implementation — referenced, not copied.
-target_sources(${PLUGIN_NAME} PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/client/cpp_log_client.cc")
-target_include_directories(${PLUGIN_NAME} PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/client")
+# layout whenever the host app (or this plugin's example) depends on cpp_log.
+# This is the single shared implementation — referenced, not copied.
+#
+# When cpp_log is NOT present (a standalone build of this plugin without
+# cpp_log on the include path), fall back to a bundled no-op header so the
+# plugin still compiles; every CPPLOG_* / CPPLOG_STREAM_* site becomes a no-op
+# via CPP_LOG_CLIENT_ENABLED=0.
+set(_cpp_log_client_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/client")
+if(EXISTS "${_cpp_log_client_dir}/cpp_log_client.cc")
+  target_sources(${PLUGIN_NAME} PRIVATE
+    "${_cpp_log_client_dir}/cpp_log_client.cc")
+  target_include_directories(${PLUGIN_NAME} PRIVATE "${_cpp_log_client_dir}")
+else()
+  message(STATUS
+    "hardware_simulator: cpp_log not found at ${_cpp_log_client_dir}; "
+    "native logging compiled out (no-op).")
+  target_include_directories(${PLUGIN_NAME} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp_log_fallback")
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE CPP_LOG_CLIENT_ENABLED=0)
+endif()
 
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")

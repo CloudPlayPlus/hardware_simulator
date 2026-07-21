@@ -26,6 +26,14 @@ dependencies:
     # the parent directory to use the current plugin's version.
     path: ../
 
+  # The example (not the plugin) depends on cpp_log so it can initialize native
+  # logging and demonstrate that the plugin's C++ diagnostics show up in the
+  # console / a file while debugging the example. This also builds+bundles
+  # cpp_log.dll so the plugin's runtime `cpp_log_emit` lookup resolves. Path dep
+  # on the sibling package in the monorepo layout.
+  cpp_log:
+    path: ../../cpp_log
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.2
