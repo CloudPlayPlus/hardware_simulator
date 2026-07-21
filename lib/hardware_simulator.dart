@@ -286,6 +286,10 @@ class HardwareSimulator {
         isInContact: isInContact);
   }
 
+  static void performPenHover(double x, double y, int screenId) {
+    HardwareSimulatorPlatform.instance.performPenHover(x, y, screenId);
+  }
+
   static Future<GameController?> createGameController() {
     return GameController.createGameController();
   }
@@ -299,12 +303,18 @@ class HardwareSimulator {
         .setPrimaryDisplay(displayIndex);
   }
 
+  static Future<bool> ensureConsoleForDisplay() {
+    return HardwareSimulatorPlatform.instance.ensureConsoleForDisplay();
+  }
+
   static Future<bool> initParsecVdd() {
     return HardwareSimulatorPlatform.instance.initParsecVdd();
   }
 
-  static Future<int> createDisplay() {
-    return HardwareSimulatorPlatform.instance.createDisplay();
+  static Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) {
+    return HardwareSimulatorPlatform.instance.createDisplay(configs: configs);
   }
 
   static Future<bool> removeDisplay(int displayUid) {
@@ -381,6 +391,10 @@ class HardwareSimulator {
 
   static Future<bool> hasPendingConfiguration() {
     return HardwareSimulatorPlatform.instance.hasPendingConfiguration();
+  }
+
+  static Future<String?> getLastDisplayError() {
+    return HardwareSimulatorPlatform.instance.getLastDisplayError();
   }
 
   static Future<void> setDragWindowContents(bool enabled) {

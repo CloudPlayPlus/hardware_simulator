@@ -20,6 +20,7 @@ public:
     };
 
     static bool Initialize();
+    static bool EnsureConsoleForDisplay();
     static void Shutdown();
     static int AddDisplay();
     static bool RemoveDisplay(int display_uid);

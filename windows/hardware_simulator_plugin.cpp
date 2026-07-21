@@ -24,7 +24,9 @@
 #include <cmath>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 // Used to run win32 service.
 #include <sddl.h>
@@ -44,7 +46,8 @@ namespace hardware_simulator {
 void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat);
 void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool isDown, bool isRepeat);
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt);
-void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt);
+void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt);
+void performPenHover(int screenId, double x, double y);
 void send_pen_input();
 void clearAllPressedEvents();
 bool setPrimaryDisplay(int displayIndex);
@@ -81,8 +84,10 @@ static std::recursive_mutex g_event_mutex;
 static std::unordered_map<uint16_t, KeyState> g_key_states;
 static uint16_t g_last_known_key_down = 0;
 static std::unordered_map<uint32_t, TouchState> g_touch_states;
-static std::chrono::steady_clock::time_point g_last_pen_event_time;
+static std::chrono::steady_clock::time_point g_last_pen_input_time;
+static std::chrono::steady_clock::time_point g_last_pen_refresh_time;
 constexpr auto PEN_REPEAT_INTERVAL = std::chrono::milliseconds(50);
+constexpr auto PEN_HOVER_IDLE_TIMEOUT = std::chrono::milliseconds(250);
 constexpr auto EDGE_TRIGGERED_POINTER_FLAGS =
     POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED | POINTER_FLAG_UPDATE;
 
@@ -93,6 +98,39 @@ static void clearPenEdgeTriggeredFlags() {
 static bool hasActivePenPointer() {
     return g_penDevice &&
         g_penInfo.penInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE;
+}
+
+static bool hasHoverOnlyPenPointer() {
+    auto flags = g_penInfo.penInfo.pointerInfo.pointerFlags;
+    return (flags & POINTER_FLAG_INRANGE) != 0 &&
+        (flags & POINTER_FLAG_INCONTACT) == 0;
+}
+
+static void clearActivePenPointer() {
+    if (!hasActivePenPointer()) {
+        return;
+    }
+
+    auto& penFlags = g_penInfo.penInfo.pointerInfo.pointerFlags;
+    const bool wasInContact = (penFlags & POINTER_FLAG_INCONTACT) != 0;
+    penFlags &= ~(POINTER_FLAG_INCONTACT | POINTER_FLAG_INRANGE);
+    penFlags |= wasInContact ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE;
+    send_pen_input();
+    clearPenEdgeTriggeredFlags();
+    g_last_pen_input_time = {};
+    g_last_pen_refresh_time = {};
+}
+
+static void recordPenInputAfterSend() {
+    if (!hasActivePenPointer()) {
+        g_last_pen_input_time = {};
+        g_last_pen_refresh_time = {};
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    g_last_pen_input_time = now;
+    g_last_pen_refresh_time = now;
 }
 
 static void EventMonitorThread() {
@@ -126,12 +164,16 @@ static void EventMonitorThread() {
                     }
                 }
 
-                // Keep synthetic pen hover/contact alive. Windows cancels a
-                // synthetic pointer interaction if it is not refreshed.
-                if (hasActivePenPointer() &&
-                    now - g_last_pen_event_time >= PEN_REPEAT_INTERVAL) {
-                    send_pen_input();
-                    g_last_pen_event_time = now;
+                if (hasActivePenPointer()) {
+                    // Keep the current pointer state alive, but do not keep a
+                    // stale hover alive forever after the real pen leaves range.
+                    if (hasHoverOnlyPenPointer() &&
+                        now - g_last_pen_input_time >= PEN_HOVER_IDLE_TIMEOUT) {
+                        clearActivePenPointer();
+                    } else if (now - g_last_pen_refresh_time >= PEN_REPEAT_INTERVAL) {
+                        send_pen_input();
+                        g_last_pen_refresh_time = now;
+                    }
                 }
             }
         }
@@ -351,7 +393,8 @@ void destroyPenDevice() {
         g_penDevice = nullptr;
     }
     g_penInfo = {};
-    g_last_pen_event_time = {};
+    g_last_pen_input_time = {};
+    g_last_pen_refresh_time = {};
 }
 
 bool sendTouchInput() {
@@ -540,6 +583,8 @@ void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
 }
 
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt) {
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
+
     if (!g_penDevice) {
         if (!createPenDevice()) {
             return;
@@ -614,14 +659,16 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
     // Clear edge-triggered flags after sending, leaving IN_RANGE/IN_CONTACT
     // for the monitor thread to refresh while the pen remains active.
     clearPenEdgeTriggeredFlags();
-    g_last_pen_event_time = std::chrono::steady_clock::now();
+    recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
 }
 
-void performPenMove(int screenId, double x, double y, bool hasButton, bool isInContact, double pressure, double rotation, double tilt) {
+void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt) {
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
+
     if (!g_penDevice) {
-        if (!createPenDevice()) {
-            return;
-        }
+        return;
     }
 
     g_penInfo.type = PT_PEN;
@@ -634,10 +681,7 @@ void performPenMove(int screenId, double x, double y, bool hasButton, bool isInC
     penInfo.pointerInfo.ptPixelLocation.x = out_x;
     penInfo.pointerInfo.ptPixelLocation.y = out_y;
 
-    penInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE;
-    if (isInContact) {
-        penInfo.pointerInfo.pointerFlags |= POINTER_FLAG_INCONTACT;
-    }
+    penInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE;
 
     // Windows only supports a single pen button, so send all buttons as the barrel button
     if (hasButton) {
@@ -649,7 +693,7 @@ void performPenMove(int screenId, double x, double y, bool hasButton, bool isInC
     penInfo.penMask = PEN_MASK_NONE;
 
     // Windows doesn't support hover distance, so only pass pressure when the pointer is in contact
-    if (isInContact && pressure > 0.0) {
+    if (pressure > 0.0) {
         penInfo.penMask |= PEN_MASK_PRESSURE;
         // Convert the 0.0..1.0 double to the 0..1024 range that Windows uses
         penInfo.pressure = static_cast<UINT32>(pressure * 1024.0);
@@ -684,9 +728,47 @@ void performPenMove(int screenId, double x, double y, bool hasButton, bool isInC
     send_pen_input();
 
     // Clear edge-triggered flags after sending, leaving IN_RANGE/IN_CONTACT
-    // for the monitor thread to refresh while hover/contact remains active.
+    // for the monitor thread to refresh while the pen remains active.
     clearPenEdgeTriggeredFlags();
-    g_last_pen_event_time = std::chrono::steady_clock::now();
+    recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
+}
+
+void performPenHover(int screenId, double x, double y) {
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
+
+    if (!g_penDevice) {
+        if (!createPenDevice()) {
+            return;
+        }
+    }
+
+    g_penInfo.type = PT_PEN;
+    auto& penInfo = g_penInfo.penInfo;
+    penInfo.pointerInfo.pointerType = PT_PEN;
+    penInfo.pointerInfo.pointerId = 0;
+
+    LONG out_x, out_y;
+    if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
+    penInfo.pointerInfo.ptPixelLocation.x = out_x;
+    penInfo.pointerInfo.ptPixelLocation.y = out_y;
+
+    penInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE;
+    penInfo.penFlags &= ~(PEN_FLAG_BARREL | PEN_FLAG_ERASER);
+    penInfo.penMask = PEN_MASK_NONE;
+    penInfo.pressure = 0;
+    penInfo.rotation = 0;
+    penInfo.tiltX = 0;
+    penInfo.tiltY = 0;
+
+    send_pen_input();
+
+    // Keep IN_RANGE after the update edge is sent so hover can be refreshed.
+    clearPenEdgeTriggeredFlags();
+    recordPenInputAfterSend();
+    lock.unlock();
+    CursorMonitor::syncNow();
 }
 
 BOOL IsRunningAsSystem() {
@@ -1048,7 +1130,8 @@ void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat = false) {
 }
 
 void clearAllPressedEvents() {
-    std::lock_guard<std::recursive_mutex> lock(g_event_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
+    bool shouldSyncCursor = false;
     
     // Clear all pressed keyboard keys
     for (auto& [keyCode, state] : g_key_states) {
@@ -1069,13 +1152,8 @@ void clearAllPressedEvents() {
     
     // Clear pen device if it has an active hover or contact state.
     if (hasActivePenPointer()) {
-        auto& penFlags = g_penInfo.penInfo.pointerInfo.pointerFlags;
-        const bool wasInContact = (penFlags & POINTER_FLAG_INCONTACT) != 0;
-        penFlags &= ~(POINTER_FLAG_INCONTACT | POINTER_FLAG_INRANGE);
-        penFlags |= wasInContact ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE;
-        send_pen_input();
-        clearPenEdgeTriggeredFlags();
-        g_last_pen_event_time = {};
+        clearActivePenPointer();
+        shouldSyncCursor = true;
     }
     
     // Clear mouse buttons (left and right)
@@ -1094,6 +1172,11 @@ void clearAllPressedEvents() {
     }
     if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) {
         performMouseButton(5, true); // XButton2 up
+    }
+
+    lock.unlock();
+    if (shouldSyncCursor) {
+        CursorMonitor::syncNow();
     }
 }
 
@@ -1450,23 +1533,27 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto x = (args->find(flutter::EncodableValue("x")))->second;
         auto y = (args->find(flutter::EncodableValue("y")))->second;
         auto hasButton = (args->find(flutter::EncodableValue("hasButton")))->second;
-        auto isInContactIt = args->find(flutter::EncodableValue("isInContact"));
         auto pressure = (args->find(flutter::EncodableValue("pressure")))->second;
         auto rotation = (args->find(flutter::EncodableValue("rotation")))->second;
         auto tilt = (args->find(flutter::EncodableValue("tilt")))->second;
-        bool isInContact = true;
-        if (isInContactIt != args->end()) {
-            isInContact = static_cast<bool>(std::get<bool>(isInContactIt->second));
-        }
         performPenMove(
             static_cast<int>(std::get<int>((screenId))),
             static_cast<double>(std::get<double>((x))),
             static_cast<double>(std::get<double>((y))),
             static_cast<bool>(std::get<bool>((hasButton))),
-            isInContact,
             static_cast<double>(std::get<double>((pressure))),
             static_cast<double>(std::get<double>((rotation))),
             static_cast<double>(std::get<double>((tilt)))
+        );
+        result->Success(nullptr);
+  } else if (method_call.method_name().compare("penHover") == 0) {
+        auto screenId = (args->find(flutter::EncodableValue("screenId")))->second;
+        auto x = (args->find(flutter::EncodableValue("x")))->second;
+        auto y = (args->find(flutter::EncodableValue("y")))->second;
+        performPenHover(
+            static_cast<int>(std::get<int>((screenId))),
+            static_cast<double>(std::get<double>((x))),
+            static_cast<double>(std::get<double>((y)))
         );
         result->Success(nullptr);
   } else if (method_call.method_name().compare("clearAllPressedEvents") == 0) {
@@ -1476,7 +1563,23 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto displayIndex = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("displayIndex")))->second));
         bool success = setPrimaryDisplay(displayIndex);
         result->Success(flutter::EncodableValue(success));
+  } else if (method_call.method_name().compare("ensureConsoleForDisplay") == 0) {
+    // EnsureConsoleForDisplay may block up to ~10s on tscon
+    // (WaitForSingleObject). Run it on a worker thread so the Flutter platform
+    // thread (UI / input / render) is never frozen; the Dart `await` still
+    // receives the real result when the work completes.
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result =
+        std::move(result);
+    std::thread([shared_result]() {
+      bool ok = VirtualDisplayControl::EnsureConsoleForDisplay();
+      shared_result->Success(flutter::EncodableValue(ok));
+    }).detach();
+    return;
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
+    // Runs synchronously on the platform thread: Initialize() mutates the
+    // shared VDD state (initialized_/vdd_handle_/displays_), which has no lock
+    // and relies on method calls being serialized on the platform thread.
+    // Moving it to a worker thread would race concurrent displays_ access.
     if (!VirtualDisplayControl::IsInitialized()) {
       if (VirtualDisplayControl::Initialize()) {
         result->Success(flutter::EncodableValue(true));
@@ -1487,6 +1590,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       result->Success(flutter::EncodableValue(true));
     }
   } else if (method_call.method_name().compare("createDisplay") == 0) {
+     // Runs synchronously on the platform thread: AddDisplay() rebuilds the
+     // shared displays_ vector (unlocked); serialization on the platform thread
+     // is what keeps it race-free. Do NOT move to a worker thread.
      if (VirtualDisplayControl::IsInitialized()) {
          int displayId = VirtualDisplayControl::AddDisplay();
          if (displayId >= 0) {
@@ -1607,7 +1713,10 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      
      result->Success(flutter::EncodableValue(configList));
   } else if (method_call.method_name().compare("getCustomDisplayConfigs") == 0) {
-     auto configs = VirtualDisplayControl::GetCustomDisplayConfigs();
+     std::vector<VirtualDisplay::DisplayConfig> configs;
+     if (!DesktopServiceInputClient::Instance().GetCustomDisplayConfigs(configs)) {
+         configs = VirtualDisplayControl::GetCustomDisplayConfigs();
+     }
      
      flutter::EncodableList configList;
      for (const auto& config : configs) {
@@ -1645,7 +1754,11 @@ void HardwareSimulatorPlugin::HandleMethodCall(
          }
      }
      
-     bool success = VirtualDisplayControl::SetCustomDisplayConfigs(configs);
+     bool success = false;
+     if (!DesktopServiceInputClient::Instance().SetCustomDisplayConfigs(
+             configs, success)) {
+         success = VirtualDisplayControl::SetCustomDisplayConfigs(configs);
+     }
      result->Success(flutter::EncodableValue(success));
   } else if (method_call.method_name().compare("setDisplayOrientation") == 0) {
      auto display_uid_it = args->find(flutter::EncodableValue("displayUid"));

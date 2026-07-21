@@ -1,6 +1,7 @@
 #include "virtual_display_control.h"
 #include <iostream>
 #include <thread>
+#include <mutex>
 #include <chrono>
 #include <algorithm>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <setupapi.h>
 #include <devpkey.h>    // DEVPKEY_Device_*
 #include <winuser.h>    // DisplayConfig APIs
+#include <wtsapi32.h>   // WTSQuerySessionInformation (linked via CMake)
 
 // Define missing constants for older Windows SDK versions
 #ifndef DISPLAYCONFIG_PATH_PRIMARY_VIEW
@@ -250,12 +252,173 @@ static std::wstring GetDisplayTargetName(LUID adapterId, UINT32 targetId) {
 
 }
 
+namespace {
+
+// True if the current session/desktop has at least one active display adapter.
+// Note: EnumDisplayDevices reflects the calling process's session context, so this
+// is meaningful only when the process runs in the target (console) session — which
+// is the Phase 1 assumption (plugin runs in the session-1 GUI process).
+static bool HasActiveDisplay() {
+    DISPLAY_DEVICEW dd = {};
+    dd.cb = sizeof(dd);
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
+        if (dd.StateFlags & DISPLAY_DEVICE_ACTIVE) return true;
+    }
+    return false;
+}
+
+// The interactive session we want on the console: sid > 0 with a logged-in user.
+// Prefer a Disconnected session (the common post-RDP-disconnect case); otherwise
+// fall back to the first user session found. Returns 0 if none.
+static DWORD FindTargetSession() {
+    WTS_SESSION_INFOW* sessions = nullptr;
+    DWORD count = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
+        return 0;
+
+    DWORD chosen = 0, firstUser = 0;
+    for (DWORD i = 0; i < count; ++i) {
+        DWORD sid = sessions[i].SessionId;
+        if (sid == 0) continue;  // skip services session
+
+        LPWSTR user = nullptr;
+        DWORD bytes = 0;
+        bool hasUser = false;
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
+                                        WTSUserName, &user, &bytes)) {
+            hasUser = (user && user[0] != L'\0');
+            WTSFreeMemory(user);
+        }
+        if (!hasUser) continue;
+
+        if (firstUser == 0) firstUser = sid;
+        if (sessions[i].State == WTSDisconnected) { chosen = sid; break; }
+    }
+    WTSFreeMemory(sessions);
+    return chosen ? chosen : firstUser;
+}
+
+// True if an RDP session is currently active. tscon /dest:console would disconnect
+// it, so we must yield when one is present. Primary check: client protocol type ==
+// RDP (2); fallback: WinStation name prefix "RDP-".
+static bool HasActiveRdpSession() {
+    WTS_SESSION_INFOW* sessions = nullptr;
+    DWORD count = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
+        return false;
+
+    bool found = false;
+    for (DWORD i = 0; i < count && !found; ++i) {
+        if (sessions[i].State != WTSActive) continue;
+
+        USHORT* pProto = nullptr;
+        DWORD bytes = 0;
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessions[i].SessionId,
+                                        WTSClientProtocolType,
+                                        reinterpret_cast<LPWSTR*>(&pProto), &bytes)) {
+            if (pProto && *pProto == 2) found = true;  // WTS_PROTOCOL_TYPE_RDP
+            WTSFreeMemory(pProto);
+        }
+        if (!found && sessions[i].pWinStationName &&
+            wcsncmp(sessions[i].pWinStationName, L"RDP-", 4) == 0) {
+            found = true;
+        }
+    }
+    WTSFreeMemory(sessions);
+    return found;
+}
+
+// Reconnect the given session to the physical console via `tscon`.
+static bool RunTscon(DWORD sid) {
+    // Resolve tscon.exe by its full System32 path and launch it directly (no
+    // cmd.exe shell). Passing lpApplicationName lets the loader skip the CWD in
+    // its search order — that search path is a binary-planting surface for an
+    // admin/SYSTEM process on a headless box.
+    wchar_t sysDir[MAX_PATH] = {};
+    UINT n = GetSystemDirectoryW(sysDir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        std::cout << "[VDD] tscon: GetSystemDirectory failed, error=" << GetLastError() << std::endl;
+        return false;
+    }
+    std::wstring exePath = std::wstring(sysDir) + L"\\tscon.exe";
+    std::wstring cmdLine = L"tscon.exe " + std::to_wstring(sid) + L" /dest:console";
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(exePath.c_str(), &cmdLine[0], nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        std::cout << "[VDD] tscon: CreateProcess failed, error=" << GetLastError() << std::endl;
+        return false;
+    }
+    WaitForSingleObject(pi.hProcess, 10000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (exitCode != 0) {
+        std::cout << "[VDD] tscon exited with code " << exitCode
+                  << " (may need admin privileges)" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+// Ensure the target interactive session is on the console so its VDD display is
+// visible. The existing Initialize()/AddDisplay() flow is unchanged; this only
+// switches the console when there is no display available AND doing so won't
+// disconnect an active RDP session. Root cause: a VDD binds to the console
+// session, so a target session that is not on the console has no visible display.
+bool VirtualDisplayControl::EnsureConsoleForDisplay() {
+    // Serialize: at most one tscon console-switch at a time. WTSConnectSession
+    // concurrency is undocumented and the console hosts a single session, so
+    // concurrent callers (e.g. two viewers starting at once) block here; the
+    // HasActiveDisplay() re-check below then returns early once the in-flight
+    // switch has made a display available — no redundant/parallel tscon, and a
+    // `true` return still means the console is ready. This runs on a worker
+    // thread (see the method-channel handler), so blocking here never freezes
+    // the platform thread.
+    static std::mutex switch_mutex;
+    std::lock_guard<std::mutex> lock(switch_mutex);
+
+    if (HasActiveDisplay()) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: display already available" << std::endl;
+        return true;
+    }
+
+    DWORD target = FindTargetSession();
+    if (target == 0) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: no interactive user session" << std::endl;
+        return false;
+    }
+
+    DWORD console = WTSGetActiveConsoleSessionId();
+    if (console == target) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: target session " << target
+                  << " already on console; leaving display to AddDisplay" << std::endl;
+        return true;
+    }
+
+    if (HasActiveRdpSession()) {
+        std::cout << "[VDD] EnsureConsoleForDisplay: active RDP session present, "
+                     "yielding (skip tscon)" << std::endl;
+        return false;
+    }
+
+    std::cout << "[VDD] EnsureConsoleForDisplay: switching session " << target
+              << " to console (was " << console << ")" << std::endl;
+    return RunTscon(target);
+}
+
 bool VirtualDisplayControl::Initialize() {
     if (initialized_) {
         std::cout << "VirtualDisplayControl already initialized" << std::endl;
         return true;
     }
-    
+
+    EnsureConsoleForDisplay();
+
     parsec_vdd::DeviceStatus status = parsec_vdd::QueryDeviceStatus(&parsec_vdd::VDD_CLASS_GUID, parsec_vdd::VDD_HARDWARE_ID);
     
     //TODOXU:return value to check?
@@ -323,11 +486,27 @@ int VirtualDisplayControl::AddDisplay() {
         std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
         return -1;
     }
-    
+
     int vdd_index = parsec_vdd::VddAddDisplay(vdd_handle_);
     if (vdd_index >= 0) {
         std::cout << "Virtual display added: " << vdd_index << std::endl;
-        std::ignore = VirtualDisplayControl::GetAllDisplays();
+        // The virtual display may take a moment to be enumerated by the OS,
+        // especially on headless servers. Retry until it becomes visible.
+        int prev_count = static_cast<int>(displays_.size());
+        int new_count = prev_count;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (attempt > 0) {
+                Sleep(500);
+            }
+            new_count = VirtualDisplayControl::GetAllDisplays();
+            if (new_count > prev_count) {
+                break;
+            }
+        }
+        if (new_count <= prev_count) {
+            std::cout << "Warning: added display index=" << vdd_index
+                      << " but it was never enumerated" << std::endl;
+        }
         return vdd_index;
     } else {
         std::cout << "Error: Failed to add display to VDD" << std::endl;
@@ -421,7 +600,7 @@ int VirtualDisplayControl::GetAllDisplays() {
                     break;
                 }
             }
-            if (path_idx < 0) 
+            if (path_idx < 0)
                 continue;
 
 
@@ -473,9 +652,15 @@ int VirtualDisplayControl::GetAllDisplays() {
 
                 std::unique_ptr<VirtualDisplay> display = std::make_unique<VirtualDisplay>(config, d);
                 if(d.is_virtual) {
+                    // Virtual (VDD) uid = VDD hardware index (0..15); used by VddRemoveDisplay.
                     display->SetDisplayUid(d.display_uid - 256);
-                } else { 
-                    display->SetDisplayUid(d.display_uid);
+                } else {
+                    // Physical uid: offset by 1024 so it never collides with a VDD index.
+                    // (e.g. QXL's target id is UID0, which would otherwise clash with VDD #0.)
+                    // NOTE: this does not guarantee uniqueness between two physical displays
+                    // whose per-adapter target ids happen to match; revisit with a devicePath-
+                    // derived id later.
+                    display->SetDisplayUid(d.display_uid + 1024);
                 }
                 display->SetCurrentOrientation(current_orientation_);
                 display->UpdateDisplayBounds();

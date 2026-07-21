@@ -233,6 +233,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performPenMove() has not been implemented.');
   }
 
+  Future<void> performPenHover(double x, double y, int screenId) async {
+    throw UnimplementedError('performPenHover() has not been implemented.');
+  }
+
   Future<int> createGameController() async {
     throw UnimplementedError(
         'createGameController() has not been implemented.');
@@ -248,11 +252,17 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
         'removeGameController() has not been implemented.');
   }
 
+  Future<bool> ensureConsoleForDisplay() {
+    throw UnimplementedError('ensureConsoleForDisplay() has not been implemented.');
+  }
+
   Future<bool> initParsecVdd() {
     throw UnimplementedError('initParsecVdd() has not been implemented.');
   }
 
-  Future<int> createDisplay() {
+  Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) {
     throw UnimplementedError('createDisplay() has not been implemented.');
   }
 
@@ -323,6 +333,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   Future<bool> hasPendingConfiguration() {
     throw UnimplementedError(
         'hasPendingConfiguration() has not been implemented.');
+  }
+
+  Future<String?> getLastDisplayError() async {
+    return null;
   }
 
   Future<void> setDragWindowContents(bool enabled) async {

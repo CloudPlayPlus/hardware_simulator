@@ -27,7 +27,7 @@ void main() {
     expect(await platform.getPlatformVersion(), '42');
   });
 
-  test('performPenMove forwards contact state', () async {
+  test('performPenHover sends penHover method call', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
@@ -38,19 +38,14 @@ void main() {
       },
     );
 
-    await platform.performPenMove(
-      0.2,
-      0.8,
-      true,
-      0.0,
-      45.0,
-      20.0,
-      3,
-      isInContact: false,
-    );
+    await platform.performPenHover(0.25, 0.75, 2);
 
     expect(calls, hasLength(1));
-    expect(calls.single.method, 'penMove');
-    expect(calls.single.arguments, containsPair('isInContact', false));
+    expect(calls.single.method, 'penHover');
+    expect(calls.single.arguments, {
+      'x': 0.25,
+      'y': 0.75,
+      'screenId': 2,
+    });
   });
 }

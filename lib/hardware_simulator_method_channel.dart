@@ -419,6 +419,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<void> performPenHover(double x, double y, int screenId) async {
+    await methodChannel.invokeMethod('penHover', {
+      'x': x,
+      'y': y,
+      'screenId': screenId,
+    });
+  }
+
+  @override
   Future<int> createGameController() async {
     if (!Platform.isWindows) return -1;
     final gamepadId =
@@ -442,13 +451,22 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<bool> ensureConsoleForDisplay() async {
+    return await methodChannel.invokeMethod('ensureConsoleForDisplay') ?? false;
+  }
+
+  @override
   Future<bool> initParsecVdd() async {
     return await methodChannel.invokeMethod('initParsecVdd');
   }
 
   @override
-  Future<int> createDisplay() async {
-    return await methodChannel.invokeMethod('createDisplay');
+  Future<int> createDisplay({
+    List<Map<String, dynamic>>? configs,
+  }) async {
+    return await methodChannel.invokeMethod('createDisplay', {
+      if (configs != null) 'configs': configs,
+    });
   }
 
   @override
@@ -563,6 +581,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @override
   Future<bool> hasPendingConfiguration() async {
     return await methodChannel.invokeMethod('hasPendingConfiguration');
+  }
+
+  @override
+  Future<String?> getLastDisplayError() async {
+    return await methodChannel.invokeMethod<String>('getLastDisplayError');
   }
 
   @override
