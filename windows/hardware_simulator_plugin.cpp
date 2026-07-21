@@ -96,8 +96,7 @@ static void clearPenEdgeTriggeredFlags() {
 }
 
 static bool hasActivePenPointer() {
-    return g_penDevice &&
-        g_penInfo.penInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE;
+    return g_penInfo.penInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE;
 }
 
 static bool hasHoverOnlyPenPointer() {
@@ -398,7 +397,15 @@ void destroyPenDevice() {
 }
 
 bool sendTouchInput() {
-    if (!g_touchDevice || !fnInjectSyntheticPointerInput) {
+    if (DesktopServiceInputClient::Instance().SendTouchInput(
+            g_touchInfo, g_activeTouchSlots)) {
+        return true;
+    }
+
+    if (!g_touchDevice && !createTouchDevice()) {
+        return false;
+    }
+    if (!fnInjectSyntheticPointerInput) {
         return false;
     }
 
@@ -436,7 +443,14 @@ void send_touch_input() {
 }
 
 bool sendPenInput() {
-    if (!g_penDevice || !fnInjectSyntheticPointerInput) {
+    if (DesktopServiceInputClient::Instance().SendPenInput(g_penInfo)) {
+        return true;
+    }
+
+    if (!g_penDevice && !createPenDevice()) {
+        return false;
+    }
+    if (!fnInjectSyntheticPointerInput) {
         return false;
     }
 
@@ -474,12 +488,6 @@ void send_pen_input() {
 }
 
 void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool isDown, bool isRepeat = false) {
-    if (!g_touchDevice) {
-        if (!createTouchDevice()) {
-            return;
-        }
-    }
-
     POINTER_TYPE_INFO* pointer = nullptr;
     for (UINT32 i = 0; i < ARRAYSIZE(g_touchInfo); i++) {
         if (g_touchInfo[i].touchInfo.pointerInfo.pointerId == touchId) {
@@ -541,10 +549,6 @@ void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool 
 }
 
 void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
-    if (!g_touchDevice) {
-        return;
-    }
-
     POINTER_TYPE_INFO* pointer = nullptr;
     for (UINT32 i = 0; i < ARRAYSIZE(g_touchInfo); i++) {
         if (g_touchInfo[i].touchInfo.pointerInfo.pointerId == touchId) {
@@ -584,12 +588,6 @@ void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
 
 void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButton, double pressure, double rotation, double tilt) {
     std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
-
-    if (!g_penDevice) {
-        if (!createPenDevice()) {
-            return;
-        }
-    }
 
     g_penInfo.type = PT_PEN;
     auto& penInfo = g_penInfo.penInfo;
@@ -667,7 +665,7 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
 void performPenMove(int screenId, double x, double y, bool hasButton, double pressure, double rotation, double tilt) {
     std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
 
-    if (!g_penDevice) {
+    if (g_penInfo.penInfo.pointerInfo.pointerFlags == POINTER_FLAG_NONE) {
         return;
     }
 
@@ -737,12 +735,6 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
 
 void performPenHover(int screenId, double x, double y) {
     std::unique_lock<std::recursive_mutex> lock(g_event_mutex);
-
-    if (!g_penDevice) {
-        if (!createPenDevice()) {
-            return;
-        }
-    }
 
     g_penInfo.type = PT_PEN;
     auto& penInfo = g_penInfo.penInfo;

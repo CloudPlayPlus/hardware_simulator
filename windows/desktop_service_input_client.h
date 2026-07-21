@@ -19,6 +19,8 @@ class DesktopServiceInputClient {
 
   void SetServiceAvailable(bool available);
   bool SendInputMessage(const INPUT& input);
+  bool SendTouchInput(const POINTER_TYPE_INFO* pointers, uint32_t count);
+  bool SendPenInput(const POINTER_TYPE_INFO& pointer);
   bool GetCustomDisplayConfigs(
       std::vector<VirtualDisplay::DisplayConfig>& configs);
   bool SetCustomDisplayConfigs(

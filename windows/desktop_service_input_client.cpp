@@ -11,11 +11,14 @@ constexpr uint32_t kMsgKeyInput = 0x02;
 constexpr uint32_t kMsgMouseInput = 0x03;
 constexpr uint32_t kMsgGetCustomDisplayConfigs = 0x04;
 constexpr uint32_t kMsgSetCustomDisplayConfigs = 0x05;
+constexpr uint32_t kMsgTouchInput = 0x06;
+constexpr uint32_t kMsgPenInput = 0x07;
 constexpr uint32_t kMsgCustomDisplayConfigsResp = 0x84;
 constexpr uint32_t kMsgBoolResp = 0x85;
 constexpr uint32_t kMsgErrorResp = 0xFF;
 constexpr uint32_t kMaxMessageSize = 4096;
 constexpr uint32_t kMaxCustomDisplayConfigs = 5;
+constexpr uint32_t kMaxTouchContacts = 10;
 constexpr DWORD kConnectBusyWaitMs = 2;
 constexpr DWORD kWriteTimeoutMs = 20;
 constexpr DWORD kControlTimeoutMs = 1000;
@@ -40,6 +43,39 @@ struct MouseInputPayload {
   int32_t data;
 };
 
+struct TouchContactPayload {
+  uint32_t pointer_id;
+  uint32_t pointer_flags;
+  int32_t x;
+  int32_t y;
+  uint32_t touch_flags;
+  uint32_t touch_mask;
+  int32_t contact_left;
+  int32_t contact_top;
+  int32_t contact_right;
+  int32_t contact_bottom;
+  uint32_t orientation;
+  uint32_t pressure;
+};
+
+struct TouchInputPayload {
+  uint32_t count;
+  TouchContactPayload contacts[kMaxTouchContacts];
+};
+
+struct PenInputPayload {
+  uint32_t pointer_id;
+  uint32_t pointer_flags;
+  int32_t x;
+  int32_t y;
+  uint32_t pen_flags;
+  uint32_t pen_mask;
+  uint32_t pressure;
+  int32_t rotation;
+  int32_t tilt_x;
+  int32_t tilt_y;
+};
+
 struct CustomDisplayConfigPayload {
   uint32_t width;
   uint32_t height;
@@ -61,6 +97,12 @@ static_assert(sizeof(KeyboardInputPayload) == 8,
               "KeyboardInput size must match service IPC");
 static_assert(sizeof(MouseInputPayload) == 16,
               "MouseInput size must match service IPC");
+static_assert(sizeof(TouchContactPayload) == 48,
+              "TouchContact size must match service IPC");
+static_assert(sizeof(TouchInputPayload) == 484,
+              "TouchInput size must match service IPC");
+static_assert(sizeof(PenInputPayload) == 40,
+              "PenInput size must match service IPC");
 static_assert(sizeof(CustomDisplayConfigPayload) == 12,
               "CustomDisplayConfig size must match service IPC");
 static_assert(sizeof(CustomDisplayConfigListPayload) == 64,
@@ -108,6 +150,82 @@ bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
     default:
       return false;
   }
+}
+
+bool DesktopServiceInputClient::SendTouchInput(
+    const POINTER_TYPE_INFO* pointers,
+    uint32_t count) {
+  if (!pointers || count == 0 || count > kMaxTouchContacts) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (pipe_ == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  TouchInputPayload payload = {};
+  payload.count = count;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (pointers[i].type != PT_TOUCH) {
+      return false;
+    }
+    const auto& source = pointers[i].touchInfo;
+    auto& target = payload.contacts[i];
+    target.pointer_id = source.pointerInfo.pointerId;
+    target.pointer_flags = source.pointerInfo.pointerFlags;
+    target.x = source.pointerInfo.ptPixelLocation.x;
+    target.y = source.pointerInfo.ptPixelLocation.y;
+    target.touch_flags = source.touchFlags;
+    target.touch_mask = source.touchMask;
+    target.contact_left = source.rcContact.left;
+    target.contact_top = source.rcContact.top;
+    target.contact_right = source.rcContact.right;
+    target.contact_bottom = source.rcContact.bottom;
+    target.orientation = source.orientation;
+    target.pressure = source.pressure;
+  }
+
+  uint8_t buffer[sizeof(MsgHeader) + sizeof(TouchInputPayload)] = {};
+  MsgHeader header = {};
+  header.type = kMsgTouchInput;
+  header.payload_size = sizeof(TouchInputPayload);
+  memcpy(buffer, &header, sizeof(header));
+  memcpy(buffer + sizeof(header), &payload, sizeof(payload));
+  return SendRawLocked(buffer, sizeof(buffer));
+}
+
+bool DesktopServiceInputClient::SendPenInput(
+    const POINTER_TYPE_INFO& pointer) {
+  if (pointer.type != PT_PEN) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (pipe_ == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  const auto& source = pointer.penInfo;
+  PenInputPayload payload = {};
+  payload.pointer_id = source.pointerInfo.pointerId;
+  payload.pointer_flags = source.pointerInfo.pointerFlags;
+  payload.x = source.pointerInfo.ptPixelLocation.x;
+  payload.y = source.pointerInfo.ptPixelLocation.y;
+  payload.pen_flags = source.penFlags;
+  payload.pen_mask = source.penMask;
+  payload.pressure = source.pressure;
+  payload.rotation = source.rotation;
+  payload.tilt_x = source.tiltX;
+  payload.tilt_y = source.tiltY;
+
+  uint8_t buffer[sizeof(MsgHeader) + sizeof(PenInputPayload)] = {};
+  MsgHeader header = {};
+  header.type = kMsgPenInput;
+  header.payload_size = sizeof(PenInputPayload);
+  memcpy(buffer, &header, sizeof(header));
+  memcpy(buffer + sizeof(header), &payload, sizeof(payload));
+  return SendRawLocked(buffer, sizeof(buffer));
 }
 
 bool DesktopServiceInputClient::GetCustomDisplayConfigs(
