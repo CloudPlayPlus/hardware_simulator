@@ -1,6 +1,7 @@
 #include "SmartKeyboardBlocker.h"
-#include <iostream>
 #include <chrono>
+
+#include "cpp_log_client.h"  // CPPLOG_STREAM_* -> shared app.log
 
 #pragma comment(lib, "imm32.lib")
 
@@ -25,7 +26,7 @@ bool SmartKeyboardBlocker::StartBlocking(HWND target_window, BlockedKeyCallback 
     }
 
     if (!target_window_) {
-        std::cerr << "Error: No target window found!" << std::endl;
+        CPPLOG_STREAM_ERROR("KBLOCK") << "Error: No target window found!";
         return false;
     }
 
@@ -36,11 +37,11 @@ bool SmartKeyboardBlocker::StartBlocking(HWND target_window, BlockedKeyCallback 
 
     if (!hook_handle_) {
         DWORD error = GetLastError();
-        std::cerr << "Failed to install keyboard hook. Error: " << error << std::endl;
+        CPPLOG_STREAM_ERROR("KBLOCK") << "Failed to install keyboard hook. Error: " << error;
         return false;
     }
 
-    std::cout << "Smart keyboard blocking started - Will only block when your app has focus!" << std::endl;
+    CPPLOG_STREAM_INFO("KBLOCK") << "Smart keyboard blocking started - Will only block when your app has focus!";
     return true;
 }
 
@@ -54,7 +55,7 @@ void SmartKeyboardBlocker::StopBlocking() {
         target_window_ = nullptr;
         callback_ = nullptr;
         key_states_.clear(); // Clear key states
-        std::cout << "Keyboard blocking stopped." << std::endl;
+        CPPLOG_STREAM_INFO("KBLOCK") << "Keyboard blocking stopped.";
     }
 }
 

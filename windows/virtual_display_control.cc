@@ -1,10 +1,11 @@
 #include "virtual_display_control.h"
-#include <iostream>
 #include <thread>
 #include <chrono>
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+
+#include "cpp_log_client.h"  // CPPLOG_STREAM_* -> shared app.log
 
 #define INITGUID
 #include <windows.h>
@@ -111,7 +112,7 @@ static int ParseDisplayAddress(const std::string& path) {
                 std::string numberStr = uidStr.substr(0, endPos);
                 return std::stoi(numberStr);
             } catch(const std::exception& e) {
-                std::cout << "ParseDisplayAddress: Error parsing number: " << e.what() << std::endl;
+                CPPLOG_STREAM_WARN("VDISPLAY") << "ParseDisplayAddress: Error parsing number: " << e.what();
             }
         }
     }
@@ -252,7 +253,7 @@ static std::wstring GetDisplayTargetName(LUID adapterId, UINT32 targetId) {
 
 bool VirtualDisplayControl::Initialize() {
     if (initialized_) {
-        std::cout << "VirtualDisplayControl already initialized" << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "VirtualDisplayControl already initialized";
         return true;
     }
     
@@ -275,15 +276,15 @@ bool VirtualDisplayControl::Initialize() {
     vdd_handle_ = parsec_vdd::OpenDeviceHandle(&parsec_vdd::VDD_ADAPTER_GUID);
     
     if (vdd_handle_ == NULL || vdd_handle_ == INVALID_HANDLE_VALUE) {
-        std::cout << "Error: Failed to open Parsec VDD device handle" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Failed to open Parsec VDD device handle";
         return false;
     }
     
     int version = parsec_vdd::VddVersion(vdd_handle_);
     if (version >= 0) {
-        std::cout << "Parsec VDD initialized successfully, version: " << version << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Parsec VDD initialized successfully, version: " << version;
     } else {
-        std::cout << "Warning: Failed to get VDD version" << std::endl;
+        CPPLOG_STREAM_WARN("VDISPLAY") << "Warning: Failed to get VDD version";
     }
     
     initialized_ = true;
@@ -320,28 +321,28 @@ void VirtualDisplayControl::Shutdown() {
 
 int VirtualDisplayControl::AddDisplay() {
     if (!initialized_ || vdd_handle_ == INVALID_HANDLE_VALUE) {
-        std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: VirtualDisplayControl not initialized";
         return -1;
     }
     
     int vdd_index = parsec_vdd::VddAddDisplay(vdd_handle_);
     if (vdd_index >= 0) {
-        std::cout << "Virtual display added: " << vdd_index << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Virtual display added: " << vdd_index;
         std::ignore = VirtualDisplayControl::GetAllDisplays();
         return vdd_index;
     } else {
-        std::cout << "Error: Failed to add display to VDD" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Failed to add display to VDD";
         return -1;
     }
 }
 
 bool VirtualDisplayControl::RemoveDisplay(int display_uid) {
     if (!initialized_ || vdd_handle_ == INVALID_HANDLE_VALUE) {
-        std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: VirtualDisplayControl not initialized";
         return false;
     }
 
-    std::cout << "get remove call with id" << display_uid << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "get remove call with id" << display_uid;
     
     auto it = std::find_if(displays_.begin(), displays_.end(), 
         [display_uid](const std::unique_ptr<VirtualDisplay>& display) {
@@ -349,18 +350,18 @@ bool VirtualDisplayControl::RemoveDisplay(int display_uid) {
         });
     
     if (it == displays_.end()) {
-        std::cout << "Error: Display not found" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Display not found";
         return false;
     }
 
     if(it->get()->GetDisplayInfo().is_virtual == false) {
-        std::cout << "Error: Cannot remove non-virtual display" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Cannot remove non-virtual display";
         return false;
     }
     
     parsec_vdd::VddRemoveDisplay(vdd_handle_, display_uid);
     displays_.erase(it);
-    std::cout << "Virtual display removed: " << display_uid << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Virtual display removed: " << display_uid;
     return true;
 }
 
@@ -449,7 +450,7 @@ int VirtualDisplayControl::GetAllDisplays() {
                     GetDeviceLastArrival(dev_inst, d.last_arrival);
                     GetDeviceDescription(dev_inst, d.device_description);
                 }else{
-                    std::cout << "Failed to get device instance for: " << device_id << "\n";
+                    CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to get device instance for: " << device_id;
                 }
 
 
@@ -465,10 +466,10 @@ int VirtualDisplayControl::GetAllDisplays() {
                     config.refresh_rate = dm.dmDisplayFrequency;
                     current_orientation_ = static_cast<VirtualDisplay::Orientation>(dm.dmDisplayOrientation);
                     
-                    std::cout << "Device: " << WideStringToString(ddAdapter.DeviceName) 
+                    CPPLOG_STREAM_INFO("VDISPLAY") << "Device: " << WideStringToString(ddAdapter.DeviceName) 
                               << ", Raw orientation: " << dm.dmDisplayOrientation 
                               << ", Casted orientation: " << static_cast<int>(current_orientation_)
-                              << ", Resolution: " << dm.dmPelsWidth << "x" << dm.dmPelsHeight << std::endl;
+                              << ", Resolution: " << dm.dmPelsWidth << "x" << dm.dmPelsHeight;
                 } 
 
                 std::unique_ptr<VirtualDisplay> display = std::make_unique<VirtualDisplay>(config, d);
@@ -528,7 +529,7 @@ int VirtualDisplayControl::GetAllDisplays() {
         displays_.push_back(std::move(pair.second));
     }
     
-    std::cout << "Total displays loaded: " << displays_.size() << " (sorted by arrival time)\n";
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Total displays loaded: " << displays_.size() << " (sorted by arrival time)\n";
     return static_cast<int>(displays_.size());
 }
 
@@ -544,22 +545,22 @@ bool VirtualDisplayControl::ChangeDisplaySettings(int display_uid, const Virtual
         });
 
     if (it == displays_.end()) {
-        std::cout << "Error: Invalid display UID:" << display_uid << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Invalid display UID:" << display_uid;
         return false;
     }
 
     auto& display = *it;
     if (!display) {
-        std::cout << "Error: Display not found" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Display not found";
         return false;
     }
     
     if (!display->ChangeDisplaySettings(config)) {
-        std::cout << "Error: Failed to change display settings" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Failed to change display settings";
         return false;
     }
 
-    std::cout << "Display settings changed for UID: " << display_uid << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Display settings changed for UID: " << display_uid;
     return true;
 }
 
@@ -612,11 +613,11 @@ std::vector<VirtualDisplayControl::DetailedDisplayInfo> VirtualDisplayControl::G
             
             result.push_back(info);
         } else {
-            std::cout << "Display[" << i << "]: null pointer" << std::endl;
+            CPPLOG_STREAM_INFO("VDISPLAY") << "Display[" << i << "]: null pointer";
         }
     }
 
-    std::cout << "Returning " << result.size() << " displays" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Returning " << result.size() << " displays";
     return result;
 }
 
@@ -627,13 +628,13 @@ std::vector<VirtualDisplay::DisplayConfig> VirtualDisplayControl::GetDisplayConf
         });
 
     if (it == displays_.end()) {
-        std::cout << "Display not found for UID: " << display_uid << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Display not found for UID: " << display_uid;
         return {};
     }
 
     auto& display = *it;
     if (!display) {
-        std::cout << "Display pointer is null" << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Display pointer is null";
         return {};
     }
 
@@ -651,7 +652,7 @@ std::vector<VirtualDisplay::DisplayConfig> VirtualDisplayControl::GetCustomDispl
                                 &vdd_key);
     
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to open Parsec VDD registry key" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to open Parsec VDD registry key";
         return configs;
     }
     
@@ -691,7 +692,7 @@ std::vector<VirtualDisplay::DisplayConfig> VirtualDisplayControl::GetCustomDispl
     }
     
     RegCloseKey(vdd_key);
-    std::cout << "Retrieved " << configs.size() << " custom display configs from registry" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Retrieved " << configs.size() << " custom display configs from registry";
     return configs;
 }
 
@@ -708,7 +709,7 @@ bool VirtualDisplayControl::SetCustomDisplayConfigs(const std::vector<VirtualDis
                                   nullptr);
     
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to create/open Parsec VDD registry key. Admin rights required." << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to create/open Parsec VDD registry key. Admin rights required.";
         return false;
     }
     
@@ -718,7 +719,7 @@ bool VirtualDisplayControl::SetCustomDisplayConfigs(const std::vector<VirtualDis
         if (i >= static_cast<int>(configs.size())) {
             result = RegDeleteKeyW(vdd_key, subkey_name.c_str());
             if (result == ERROR_SUCCESS) {
-                std::cout << "Deleted registry subkey: " << i << std::endl;
+                CPPLOG_STREAM_INFO("VDISPLAY") << "Deleted registry subkey: " << i;
             }
         } else {
             HKEY index_key;
@@ -745,12 +746,12 @@ bool VirtualDisplayControl::SetCustomDisplayConfigs(const std::vector<VirtualDis
                 RegSetValueExW(index_key, L"hz", 0, REG_DWORD, 
                                reinterpret_cast<const BYTE*>(&hz), sizeof(DWORD));
                 
-                std::cout << "Set custom display config " << i << ": " 
-                          << config.width << "x" << config.height << "@" << config.refresh_rate << "Hz" << std::endl;
+                CPPLOG_STREAM_INFO("VDISPLAY") << "Set custom display config " << i << ": " 
+                          << config.width << "x" << config.height << "@" << config.refresh_rate << "Hz";
                 
                 RegCloseKey(index_key);
             } else {
-                std::cout << "Failed to create registry subkey: " << i << std::endl;
+                CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to create registry subkey: " << i;
                 RegCloseKey(vdd_key);
                 return false;
             }
@@ -758,7 +759,7 @@ bool VirtualDisplayControl::SetCustomDisplayConfigs(const std::vector<VirtualDis
     }
     
     RegCloseKey(vdd_key);
-    std::cout << "Successfully set " << configs.size() << " custom display configs" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Successfully set " << configs.size() << " custom display configs";
     return true;
 }
 
@@ -769,7 +770,7 @@ bool VirtualDisplayControl::SetDisplayOrientation(int display_uid, VirtualDispla
         });
 
     if (it == displays_.end()) {
-        std::cout << "Error: Invalid display UID:" << display_uid << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Invalid display UID:" << display_uid;
         return false;
     }
 
@@ -785,7 +786,7 @@ VirtualDisplay::Orientation VirtualDisplayControl::GetDisplayOrientation(int dis
         });
 
     if (it == displays_.end()) {
-        std::cout << "Error: Invalid display UID:" << display_uid << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: Invalid display UID:" << display_uid;
         return VirtualDisplay::Landscape; // Default orientation
     }
 
@@ -815,36 +816,36 @@ bool VirtualDisplayControl::SetMultiDisplayMode(MultiDisplayMode mode, int prima
             break;
             
         default:
-            std::cout << "Unknown multi-display mode: " << static_cast<int>(mode) << std::endl;
+            CPPLOG_STREAM_ERROR("VDISPLAY") << "Unknown multi-display mode: " << static_cast<int>(mode);
             return false;
     }
     
     LONG result = SetDisplayConfig(0, nullptr, 0, nullptr, flags);
     if (result == ERROR_SUCCESS) {
-        std::cout << "Successfully set multi-display mode: " << static_cast<int>(mode) << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Successfully set multi-display mode: " << static_cast<int>(mode);
         return true;
     } else {
-        std::cout << "Failed to set multi-display mode: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to set multi-display mode: " << result;
         return false;
     }
 }
 
 VirtualDisplayControl::MultiDisplayMode VirtualDisplayControl::GetCurrentMultiDisplayMode() {
-    std::cout << "=== GetCurrentMultiDisplayMode called ===" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "=== GetCurrentMultiDisplayMode called ===";
     
     UINT32 path_count = 0;
     UINT32 mode_count = 0;
     
     LONG result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to get display config buffer sizes: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to get display config buffer sizes: " << result;
         return MultiDisplayMode::Unknown;
     }
     
-    std::cout << "Buffer sizes - paths: " << path_count << ", modes: " << mode_count << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Buffer sizes - paths: " << path_count << ", modes: " << mode_count;
     
     if (path_count == 0) {
-        std::cout << "No display paths found" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "No display paths found";
         return MultiDisplayMode::Unknown;
     }
     
@@ -858,10 +859,10 @@ VirtualDisplayControl::MultiDisplayMode VirtualDisplayControl::GetCurrentMultiDi
         nullptr
     );
     
-    std::cout << "QueryDisplayConfig result: " << result << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "QueryDisplayConfig result: " << result;
     
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to query display config: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to query display config: " << result;
         return MultiDisplayMode::Unknown;
     }
     
@@ -875,45 +876,45 @@ VirtualDisplayControl::MultiDisplayMode VirtualDisplayControl::GetCurrentMultiDi
                                    "_" + std::to_string(path.sourceInfo.adapterId.LowPart) + 
                                    "_" + std::to_string(path.sourceInfo.id);
             unique_sources[source_key]++;
-            std::cout << "Active path: adapter=" << path.sourceInfo.adapterId.HighPart 
+            CPPLOG_STREAM_INFO("VDISPLAY") << "Active path: adapter=" << path.sourceInfo.adapterId.HighPart 
                       << ":" << path.sourceInfo.adapterId.LowPart 
-                      << ", sourceId=" << path.sourceInfo.id << std::endl;
+                      << ", sourceId=" << path.sourceInfo.id;
         }
     }
     
-    std::cout << "Active paths: " << active_paths << ", Unique sources: " << unique_sources.size() << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Active paths: " << active_paths << ", Unique sources: " << unique_sources.size();
     
     if (active_paths <= 1) {
-        std::cout << "Returning: PrimaryOnly (single display)" << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Returning: PrimaryOnly (single display)";
         return MultiDisplayMode::PrimaryOnly;
     }
     
     if (unique_sources.size() == 1 && active_paths > 1) {
-        std::cout << "Returning: Duplicate (one source, multiple targets)" << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Returning: Duplicate (one source, multiple targets)";
         return MultiDisplayMode::Duplicate;
     }
     
     if (unique_sources.size() > 1 && unique_sources.size() == static_cast<size_t>(active_paths)) {
-        std::cout << "Returning: Extend (one-to-one multiple displays)" << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Returning: Extend (one-to-one multiple displays)";
         return MultiDisplayMode::Extend;
     }
     
-    std::cout << "Returning: SecondaryOnly (complex configuration)" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Returning: SecondaryOnly (complex configuration)";
     return MultiDisplayMode::SecondaryOnly;
 }
 
 bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
-    std::cout << "SetPrimaryDisplayOnly called with display_uid: " << display_uid << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "SetPrimaryDisplayOnly called with display_uid: " << display_uid;
     
     // Check if there's already a pending configuration that hasn't been restored
     if (has_backup_) {
-        std::cerr << "Error: A display configuration is already set and not restored. Please call RestoreDisplayConfiguration() first." << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Error: A display configuration is already set and not restored. Please call RestoreDisplayConfiguration() first.";
         return false;
     }
     
     // Save current configuration
     if (!SaveDisplayConfiguration()) {
-        std::cerr << "Failed to save current display configuration" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to save current display configuration";
         return false;
     }
     
@@ -924,7 +925,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
     // Get required buffer sizes
     result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &numPathArrayElements, &numModeInfoArrayElements);
     if (result != ERROR_SUCCESS) {
-        std::cerr << "GetDisplayConfigBufferSizes failed: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "GetDisplayConfigBufferSizes failed: " << result;
         return false;
     }
 
@@ -938,7 +939,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
                                &numModeInfoArrayElements, modeInfoArray.data(), 
                                nullptr);
     if (result != ERROR_SUCCESS) {
-        std::cerr << "QueryDisplayConfig failed: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "QueryDisplayConfig failed: " << result;
         return false;
     }
 
@@ -949,7 +950,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
         });
 
     if (displayIt == displays_.end()) {
-        std::cerr << "Display with UID " << display_uid << " not found in managed displays" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Display with UID " << display_uid << " not found in managed displays";
         return false;
     }
 
@@ -975,7 +976,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
                 
                 if (sourceDeviceName == targetDeviceName) {
                     targetPathIndex = i;
-                    std::wcout << L"Found target display by device name: " << GetDisplayTargetName(pathArray[i].targetInfo.adapterId, pathArray[i].targetInfo.id) << std::endl;
+                    CPPLOG_STREAM_INFO("VDISPLAY") << "Found target display by device name: " << WideStringToString(GetDisplayTargetName(pathArray[i].targetInfo.adapterId, pathArray[i].targetInfo.id));
                     break;
                 }
             }
@@ -991,7 +992,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
             if (pathArray[i].flags & DISPLAYCONFIG_PATH_ACTIVE) {
                 if (activePathCount == displayIndex) {
                     targetPathIndex = i;
-                    std::wcout << L"Found target display by index: " << GetDisplayTargetName(pathArray[i].targetInfo.adapterId, pathArray[i].targetInfo.id) << std::endl;
+                    CPPLOG_STREAM_INFO("VDISPLAY") << "Found target display by index: " << WideStringToString(GetDisplayTargetName(pathArray[i].targetInfo.adapterId, pathArray[i].targetInfo.id));
                     break;
                 }
                 activePathCount++;
@@ -1000,7 +1001,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
     }
 
     if (targetPathIndex == -1) {
-        std::cerr << "No active display found to set as primary" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "No active display found to set as primary";
         return false;
     }
 
@@ -1049,24 +1050,24 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
     );
 
     if (result != ERROR_SUCCESS) {
-        std::cerr << "SetDisplayConfig failed: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "SetDisplayConfig failed: " << result;
         return false;
     }
 
-    std::cout << "Successfully set display " << display_uid << " as primary and disabled other displays" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Successfully set display " << display_uid << " as primary and disabled other displays";
     return true;
 }
 
 bool VirtualDisplayControl::RestoreDisplayConfiguration() {
-    std::cout << "RestoreDisplayConfiguration called" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "RestoreDisplayConfiguration called";
     
     if (!has_backup_) {
-        std::cerr << "No display configuration backup available to restore" << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "No display configuration backup available to restore";
         return true;
     }
 
     if (original_paths_.empty()) {
-        std::cerr << "Original display configuration is empty. No need to restore configuration." << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Original display configuration is empty. No need to restore configuration.";
         has_backup_ = false;
         return true;
     }
@@ -1081,11 +1082,11 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
     );
 
     if (result != ERROR_SUCCESS) {
-        std::cerr << "SetDisplayConfig failed to restore original configuration: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "SetDisplayConfig failed to restore original configuration: " << result;
         return false;
     }
 
-    std::cout << "Successfully restored original display configuration" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Successfully restored original display configuration";
     
     // Clear the backup to prevent accidental double-restore
     has_backup_ = false;
@@ -1107,7 +1108,7 @@ bool VirtualDisplayControl::SaveDisplayConfiguration() {
     // Get required buffer sizes
     result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &numPathArrayElements, &numModeInfoArrayElements);
     if (result != ERROR_SUCCESS) {
-        std::cerr << "GetDisplayConfigBufferSizes failed: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "GetDisplayConfigBufferSizes failed: " << result;
         return false;
     }
 
@@ -1121,12 +1122,12 @@ bool VirtualDisplayControl::SaveDisplayConfiguration() {
                                &numModeInfoArrayElements, original_modes_.data(), 
                                nullptr);
     if (result != ERROR_SUCCESS) {
-        std::cerr << "QueryDisplayConfig failed: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "QueryDisplayConfig failed: " << result;
         return false;
     }
 
     has_backup_ = true;
-    std::cout << "Display configuration saved successfully. Found " << numPathArrayElements << " active displays." << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "Display configuration saved successfully. Found " << numPathArrayElements << " active displays.";
     return true;
 }
 

@@ -939,7 +939,7 @@ void setDragWindowContents(bool enable) {
                          SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
 
   } else {
-    std::cerr << "Failed to open registry key." << std::endl;
+    CPPLOG_STREAM_ERROR("HWSIM") << "Failed to open registry key.";
   }
 }
 

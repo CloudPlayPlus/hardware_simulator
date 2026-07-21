@@ -2,7 +2,8 @@
 #include "parsec-vdd.h"
 #include <cstring>
 #include <cstdio>
-#include <iostream>
+
+#include "cpp_log_client.h"  // CPPLOG_STREAM_* -> shared app.log
 
 #ifndef WINVER
 #define WINVER 0x0600
@@ -21,7 +22,7 @@
 
 
 VirtualDisplay::VirtualDisplay() : display_uid_(-1), current_orientation_(Landscape){
-    std::cout << "VirtualDisplay created" << std::endl;
+    CPPLOG_STREAM_INFO("VDISPLAY") << "VirtualDisplay created";
     config_ = DisplayConfig();
 }
 
@@ -167,10 +168,10 @@ bool VirtualDisplay::SetOrientation(Orientation orientation) {
             current_orientation_ = orientation;
             return true;
         } else {
-            std::cout << "Failed to set orientation. Error code: " << result;
+            CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to set orientation. Error code: " << result;
         }
     } else {
-        std::cout << "Failed to get current display settings for device: " << info_.device_name << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to get current display settings for device: " << info_.device_name;
     }
     return false;
 }
@@ -181,7 +182,7 @@ bool VirtualDisplay::SetSystemDisplayTopology(TopologyMode mode) {
     
     LONG result = GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &path_count, &mode_count);
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to get display config buffer sizes: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to get display config buffer sizes: " << result;
         return false;
     }
     
@@ -191,7 +192,7 @@ bool VirtualDisplay::SetSystemDisplayTopology(TopologyMode mode) {
     result = QueryDisplayConfig(QDC_ALL_PATHS, &path_count, paths.data(), 
                                &mode_count, modes.data(), nullptr);
     if (result != ERROR_SUCCESS) {
-        std::cout << "Failed to query display config: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to query display config: " << result;
         return false;
     }
     
@@ -216,10 +217,10 @@ bool VirtualDisplay::SetSystemDisplayTopology(TopologyMode mode) {
     
     result = SetDisplayConfig(path_count, paths.data(), mode_count, modes.data(), flags);
     if (result == ERROR_SUCCESS) {
-        std::cout << "Successfully set display topology mode: " << mode << std::endl;
+        CPPLOG_STREAM_INFO("VDISPLAY") << "Successfully set display topology mode: " << mode;
         return true;
     } else {
-        std::cout << "Failed to set display topology: " << result << std::endl;
+        CPPLOG_STREAM_ERROR("VDISPLAY") << "Failed to set display topology: " << result;
         return false;
     }
 }
