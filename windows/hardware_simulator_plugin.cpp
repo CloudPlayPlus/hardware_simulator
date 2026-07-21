@@ -6,7 +6,7 @@
 #include "notification_window.h"
 #include "virtual_display_control.h"
 #include "SmartKeyboardBlocker.h"
-#include "cpp_log_adapter.h"
+#include "cpp_log_client.h"
 
 // This must be included before many other Windows headers.
 #include <windows.h>

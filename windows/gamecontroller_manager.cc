@@ -3,7 +3,7 @@
 #include <sstream>
 #include <Xinput.h>
 
-#include "cpp_log_adapter.h"
+#include "cpp_log_client.h"
 
 PVIGEM_CLIENT GameControllerManager::vigem_client = nullptr;
 bool GameControllerManager::initialized = false;

@@ -34,8 +34,6 @@ list(APPEND PLUGIN_SOURCES
   "virtual_display_control.h"
   "SmartKeyboardBlocker.cpp"
   "SmartKeyboardBlocker.h"
-  "cpp_log_adapter.cc"
-  "cpp_log_adapter.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
@@ -67,14 +65,17 @@ include_directories(
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/include"
 )
 
-# cpp_log integration: the adapter (cpp_log_adapter.cc) routes this plugin's
-# native diagnostics into the shared cpp_log pipeline. Only cpp_log's C ABI
-# header is needed at build time; the `cpp_log_emit` entrypoint is resolved at
-# runtime via GetProcAddress against the bundled cpp_log.dll, so there is no
-# link-time dependency on the cpp_log target. The path reaches the sibling
-# plugin's src/ through Flutter's .plugin_symlinks layout.
+# cpp_log integration: route this plugin's native diagnostics into the shared
+# cpp_log pipeline via cpp_log's **shared client adapter** (cpp_log/client). The
+# plugin does NOT reimplement the adapter and does NOT link cpp_log:
+# `cpp_log_emit` is resolved at runtime with GetProcAddress against the bundled
+# cpp_log.dll, so there is no link-time dependency on the cpp_log target. The
+# path reaches the sibling cpp_log package through Flutter's .plugin_symlinks
+# layout. This is the single shared implementation — referenced, not copied.
+target_sources(${PLUGIN_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/client/cpp_log_client.cc")
 target_include_directories(${PLUGIN_NAME} PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/src")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/client")
 
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
