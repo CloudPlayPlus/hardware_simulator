@@ -1,9 +1,9 @@
 #ifndef GAME_CONTROLLER_MANAGER_H
 #define GAME_CONTROLLER_MANAGER_H
 
-#include <iostream>
-#include <memory>
 #include <array>
+#include <memory>
+#include <string>
 
 #include <ViGEm/Client.h>
 
@@ -11,7 +11,7 @@ class GameControllerManager {
 public:
   static int CreateGameController();
   static bool RemoveGameController(int id);
-  static bool DoControllerAction(int id,std::string& action);
+  static bool DoControllerAction(int id, std::string& action);
 
 private:
   static int InitializeVigem();

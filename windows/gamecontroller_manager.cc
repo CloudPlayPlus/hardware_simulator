@@ -1,26 +1,5 @@
 #include "gamecontroller_manager.h"
-
-#if defined(CPP_LOG_AVAILABLE)
-#include <cpp_log/cpp_log.h>
-#else
-#include <cstdarg>
-#include <cstdio>
-
-namespace {
-void FallbackLog(const char* level, const char* tag, const char* format, ...) {
-  std::fprintf(stderr, "[%s] [%s] ", level, tag);
-  va_list args;
-  va_start(args, format);
-  std::vfprintf(stderr, format, args);
-  va_end(args);
-  std::fputc('\n', stderr);
-}
-}  // namespace
-
-#define CPPLOG_INFO(tag, ...) FallbackLog("INFO", (tag), __VA_ARGS__)
-#define CPPLOG_WARN(tag, ...) FallbackLog("WARN", (tag), __VA_ARGS__)
-#define CPPLOG_ERROR(tag, ...) FallbackLog("ERROR", (tag), __VA_ARGS__)
-#endif
+#include "cpp_log_shim.h"
 
 #include <sstream>
 #include <Xinput.h>

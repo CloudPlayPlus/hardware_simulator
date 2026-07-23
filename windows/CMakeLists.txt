@@ -24,6 +24,7 @@ list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.h"
   "cursor_monitor.cc"
   "cursor_monitor.h"
+  "cpp_log_shim.h"
   "gamecontroller_manager.cc"
   "gamecontroller_manager.h"
   "notification_window.cc"
