@@ -49,6 +49,7 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   // Cursor lock management
   void LockCursor();
   void UnlockCursor();
+  void UnlockCursorAndReseed(double window_x_percent, double window_y_percent);
   bool IsCursorLocked() const { return cursor_locked_; }
   
   // Static monitor management
@@ -70,6 +71,7 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   RECT clip_rect_ = {0};
   POINT locked_cursor_pos_ = {0};  // 记录锁定时的鼠标位置
   HWND main_window_ = nullptr;
+  HWND flutter_view_window_ = nullptr;
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
   
   // Raw Input related members

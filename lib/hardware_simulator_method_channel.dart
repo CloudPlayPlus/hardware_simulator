@@ -113,6 +113,17 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<void> unlockCursorAndReseed(
+    double windowXPercent,
+    double windowYPercent,
+  ) async {
+    await methodChannel.invokeMethod('unlockCursorAndReseed', {
+      'x': windowXPercent,
+      'y': windowYPercent,
+    });
+  }
+
+  @override
   Future<int?> getMonitorCount() async {
     if (kIsWeb || Platform.isAndroid || Platform.isIOS) {
       return 1;

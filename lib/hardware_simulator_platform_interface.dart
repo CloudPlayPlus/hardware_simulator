@@ -99,6 +99,13 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     print("unlockCursor called but not supported.");
   }
 
+  Future<void> unlockCursorAndReseed(
+    double windowXPercent,
+    double windowYPercent,
+  ) async {
+    await unlockCursor();
+  }
+
   void addCursorMoved(CursorMovedCallback callback) async {
     print("addCursorMoved called but not supported.");
   }

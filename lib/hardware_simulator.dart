@@ -166,6 +166,22 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.unlockCursor();
   }
 
+  /// Unlocks the local cursor and re-seeds it inside the Flutter window.
+  ///
+  /// Desktop implementations must not report the programmatic cursor movement
+  /// back through the normal pointer-movement input path.
+  static Future<void> unlockCursorAndReseed(
+    double windowXPercent,
+    double windowYPercent,
+  ) async {
+    if (!cursorlocked) return;
+    cursorlocked = false;
+    return HardwareSimulatorPlatform.instance.unlockCursorAndReseed(
+      windowXPercent,
+      windowYPercent,
+    );
+  }
+
   static void addCursorMoved(CursorMovedCallback callback) {
     HardwareSimulatorPlatform.instance.addCursorMoved(callback);
   }

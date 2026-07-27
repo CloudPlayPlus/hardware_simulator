@@ -32,15 +32,39 @@
 #include <sddl.h>
 #include <shellapi.h>
 #include <shlwapi.h>  // PathCombineW, PathRemoveFileSpecW
+#include <commctrl.h>
 #include <string>
 
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "comctl32.lib")
 
 typedef HSYNTHETICPOINTERDEVICE(WINAPI* PFN_CreateSyntheticPointerDevice)(POINTER_INPUT_TYPE pointerType, ULONG maxCount, POINTER_FEEDBACK_MODE mode);
 typedef BOOL(WINAPI* PFN_InjectSyntheticPointerInput)(HSYNTHETICPOINTERDEVICE device, CONST POINTER_TYPE_INFO* pointerInfo, UINT32 count);
 typedef VOID(WINAPI* PFN_DestroySyntheticPointerDevice)(HSYNTHETICPOINTERDEVICE device);
 
 namespace hardware_simulator {
+
+// Marks the one programmatic mouse move used to re-seed the viewer cursor
+// after pointer lock. The Flutter child-window subclass consumes only moves
+// with this tag so Flutter never forwards them to the remote host.
+constexpr ULONG_PTR kCursorReseedExtraInfo =
+    static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
+constexpr UINT_PTR kCursorReseedSubclassId =
+    static_cast<UINT_PTR>(0x43505052);
+
+LRESULT CALLBACK CursorReseedSubclassProc(
+    HWND window,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference_data) {
+  if (message == WM_MOUSEMOVE &&
+      GetMessageExtraInfo() == kCursorReseedExtraInfo) {
+    return 0;
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
+}
 
 // Function declarations
 void performKeyEvent(uint16_t modcode, bool isDown, bool isRepeat);
@@ -948,6 +972,14 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
 
   plugin->channel_ = std::move(channel);
   plugin->registrar_ = registrar;  // Save registrar reference
+  plugin->flutter_view_window_ = registrar->GetView()->GetNativeWindow();
+  if (plugin->flutter_view_window_ != nullptr) {
+    SetWindowSubclass(
+        plugin->flutter_view_window_,
+        CursorReseedSubclassProc,
+        kCursorReseedSubclassId,
+        0);
+  }
 
   plugin->channel_->SetMethodCallHandler(
       [plugin_pointer](const auto &call, auto result) {
@@ -983,6 +1015,13 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 }
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
+    if (flutter_view_window_ != nullptr) {
+        RemoveWindowSubclass(
+            flutter_view_window_,
+            CursorReseedSubclassProc,
+            kCursorReseedSubclassId);
+        flutter_view_window_ = nullptr;
+    }
     DesktopServiceInputClient::Instance().Close();
     StopMonitorThread();
     destroyTouchDevice();
@@ -1235,7 +1274,11 @@ void performMouseMoveAbsl(double x,double y,int screenId){
     send_input(i);
 }
 
-void performMouseMoveToWindowPosition(double percentx, double percenty) {
+void performMouseMoveToWindowPosition(
+    double percentx,
+    double percenty,
+    HWND target_window = nullptr,
+    ULONG_PTR extra_info = 0) {
     //if (!SmartKeyboardBlocker::IsTargetWindowActive()) return;
 
     INPUT i{};
@@ -1244,12 +1287,10 @@ void performMouseMoveToWindowPosition(double percentx, double percenty) {
     auto& mi = i.mi;
 
     // Get the current window handle (Flutter window)
-    HWND hwnd = SmartKeyboardBlocker::target_window_;//GetForegroundWindow();
+    HWND hwnd = target_window != nullptr
+        ? target_window
+        : SmartKeyboardBlocker::target_window_;  // GetForegroundWindow();
     if (!hwnd) return;
-
-    // Get window rectangle (excluding title bar)
-    RECT windowRect;
-    if (!GetWindowRect(hwnd, &windowRect)) return;
 
     // Get client area rectangle (excluding title bar and borders)
     RECT clientRect;
@@ -1260,18 +1301,42 @@ void performMouseMoveToWindowPosition(double percentx, double percenty) {
     if (!ClientToScreen(hwnd, &clientTopLeft)) return;
 
     // Calculate target position based on percentages
-    int targetX = clientTopLeft.x + static_cast<int>(percentx * clientRect.right);
-    int targetY = clientTopLeft.y + static_cast<int>(percenty * clientRect.bottom);
+    const double clamped_x = (std::clamp)(percentx, 0.0, 1.0);
+    const double clamped_y = (std::clamp)(percenty, 0.0, 1.0);
+    const int client_width =
+        (std::max)(1L, clientRect.right - clientRect.left);
+    const int client_height =
+        (std::max)(1L, clientRect.bottom - clientRect.top);
+    const int targetX = clientTopLeft.x +
+        static_cast<int>(std::lround(clamped_x * (client_width - 1)));
+    const int targetY = clientTopLeft.y +
+        static_cast<int>(std::lround(clamped_y * (client_height - 1)));
 
-    // Convert to absolute screen coordinates (0-65535 range)
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    // Convert to absolute virtual-desktop coordinates (0-65535 range).
+    const int virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int virtual_width =
+        (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const int virtual_height =
+        (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
-    mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    mi.dx = (targetX * 65535) / screenWidth;
-    mi.dy = (targetY * 65535) / screenHeight;
+    mi.dwFlags =
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+        MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+    mi.dx =
+        MulDiv(targetX - virtual_x, 65535, (std::max)(1, virtual_width - 1));
+    mi.dy =
+        MulDiv(targetY - virtual_y, 65535, (std::max)(1, virtual_height - 1));
+    mi.dwExtraInfo = extra_info;
 
-    send_input(i);
+    if (extra_info == kCursorReseedExtraInfo) {
+        // This is a viewer-local cursor re-seed. Do not route it through the
+        // privileged desktop-service input path; the tag must reach this
+        // Flutter window's message queue so its delegate can consume it.
+        SendInput(1, &i, sizeof(INPUT));
+    } else {
+        send_input(i);
+    }
 }
 
 void scroll(int distance) {
@@ -1836,6 +1901,13 @@ void HardwareSimulatorPlugin::HandleMethodCall(
   } else if (method_call.method_name().compare("unlockCursor") == 0) {
         UnlockCursor();
         result->Success(flutter::EncodableValue(true));
+  } else if (method_call.method_name().compare("unlockCursorAndReseed") == 0) {
+        auto percentx = (args->find(flutter::EncodableValue("x")))->second;
+        auto percenty = (args->find(flutter::EncodableValue("y")))->second;
+        UnlockCursorAndReseed(
+            static_cast<double>(std::get<double>(percentx)),
+            static_cast<double>(std::get<double>(percenty)));
+        result->Success(flutter::EncodableValue(true));
   } else if (method_call.method_name().compare("updateStaticMonitors") == 0) {
         UpdateStaticMonitors();
         result->Success();
@@ -1928,6 +2000,32 @@ void HardwareSimulatorPlugin::UnlockCursor() {
     UnsubscribeFromRawInputData();
     
     cursor_locked_ = false;
+    ShowCursor(!cursor_locked_);
+    main_window_ = nullptr;
+}
+
+void HardwareSimulatorPlugin::UnlockCursorAndReseed(
+    double window_x_percent,
+    double window_y_percent) {
+    if (!cursor_locked_) {
+        return;
+    }
+
+    HWND target_window = main_window_;
+
+    ClipCursor(nullptr);
+    UnsubscribeFromRawInputData();
+    cursor_locked_ = false;
+
+    // SendInput moves the physical cursor, while dwExtraInfo lets the window
+    // procedure consume this exact synthetic WM_MOUSEMOVE before Flutter sees
+    // it. No coordinate comparison or timing window is involved.
+    performMouseMoveToWindowPosition(
+        window_x_percent,
+        window_y_percent,
+        target_window,
+        kCursorReseedExtraInfo);
+
     ShowCursor(!cursor_locked_);
     main_window_ = nullptr;
 }

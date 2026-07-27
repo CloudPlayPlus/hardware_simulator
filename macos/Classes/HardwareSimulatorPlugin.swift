@@ -1896,6 +1896,33 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       moveEvent?.post(tap: .cghidEventTap)
   }
 
+  private func cursorLocationInQuartzCoordinates(
+      windowXPercent: Double,
+      windowYPercent: Double
+  ) -> CGPoint? {
+      guard let mainWindow = NSApplication.shared.mainWindow ??
+              NSApplication.shared.windows.first,
+            let contentView = mainWindow.contentView,
+            let mainScreen = NSScreen.screens.first else {
+          return nil
+      }
+
+      let bounds = contentView.bounds
+      let localPoint = CGPoint(
+          x: bounds.minX + min(max(windowXPercent, 0.0), 1.0) * bounds.width,
+          y: bounds.maxY - min(max(windowYPercent, 0.0), 1.0) * bounds.height
+      )
+      let windowPoint = contentView.convert(localPoint, to: nil)
+      let appKitScreenPoint = mainWindow.convertPoint(toScreen: windowPoint)
+
+      // AppKit's global Y axis points up from the main display's bottom-left;
+      // Quartz cursor coordinates point down from its top-left.
+      return CGPoint(
+          x: appKitScreenPoint.x,
+          y: mainScreen.frame.maxY - appKitScreenPoint.y
+      )
+  }
+
   var monitor: Any?
     
   // 监听鼠标移动并解耦鼠标和光标
@@ -2562,6 +2589,30 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       CGAssociateMouseAndMouseCursorPosition(1)
       NSCursor.unhide()
       stopTrackingMouse()
+      result(nil)
+    case "unlockCursorAndReseed":
+      guard let args = call.arguments as? [String: Any],
+            let windowXPercent = args["x"] as? Double,
+            let windowYPercent = args["y"] as? Double else {
+        result(FlutterError(
+          code: "BAD_ARGS",
+          message: "Missing cursor re-seed position",
+          details: nil
+        ))
+        return
+      }
+
+      stopTrackingMouse()
+      if let location = cursorLocationInQuartzCoordinates(
+          windowXPercent: windowXPercent,
+          windowYPercent: windowYPercent
+      ) {
+        // CGWarpMouseCursorPosition changes the physical cursor location
+        // without posting a mouse event, so the move cannot echo remotely.
+        CGWarpMouseCursorPosition(location)
+      }
+      CGAssociateMouseAndMouseCursorPosition(1)
+      NSCursor.unhide()
       result(nil)
     case "hookCursorImage":
       if let args = call.arguments as? [String: Any],

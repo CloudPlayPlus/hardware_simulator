@@ -48,4 +48,22 @@ void main() {
       'screenId': 2,
     });
   });
+
+  test('unlockCursorAndReseed sends normalized window position', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.unlockCursorAndReseed(0.25, 0.75);
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'unlockCursorAndReseed');
+    expect(calls.single.arguments, {'x': 0.25, 'y': 0.75});
+  });
 }
