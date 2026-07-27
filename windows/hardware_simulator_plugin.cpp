@@ -972,13 +972,15 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
 
   plugin->channel_ = std::move(channel);
   plugin->registrar_ = registrar;  // Save registrar reference
-  plugin->flutter_view_window_ = registrar->GetView()->GetNativeWindow();
-  if (plugin->flutter_view_window_ != nullptr) {
-    SetWindowSubclass(
-        plugin->flutter_view_window_,
-        CursorReseedSubclassProc,
-        kCursorReseedSubclassId,
-        0);
+  if (auto *view = registrar->GetView()) {
+    plugin->flutter_view_window_ = view->GetNativeWindow();
+    if (plugin->flutter_view_window_ != nullptr) {
+      SetWindowSubclass(
+          plugin->flutter_view_window_,
+          CursorReseedSubclassProc,
+          kCursorReseedSubclassId,
+          0);
+    }
   }
 
   plugin->channel_->SetMethodCallHandler(
