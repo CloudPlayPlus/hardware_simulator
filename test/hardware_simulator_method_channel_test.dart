@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hardware_simulator/hardware_simulator.dart';
 import 'package:hardware_simulator/hardware_simulator_method_channel.dart';
 
 void main() {
@@ -47,5 +48,40 @@ void main() {
       'y': 0.75,
       'screenId': 2,
     });
+  });
+
+  test('unlockCursorAndReseed sends normalized window position', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.unlockCursorAndReseed(0.25, 0.75);
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'unlockCursorAndReseed');
+    expect(calls.single.arguments, {'x': 0.25, 'y': 0.75});
+  });
+
+  test('unlockCursorAndReseed does not call channel while unlocked', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+    HardwareSimulator.cursorlocked = false;
+
+    await HardwareSimulator.unlockCursorAndReseed(0.25, 0.75);
+
+    expect(calls, isEmpty);
   });
 }
