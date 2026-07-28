@@ -1,7 +1,9 @@
 #include "cursor_monitor.h"
+#include "cpp_log_shim.h"
 #include "hardware_simulator_plugin.h"
 
 #include <windows.h>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <cstring>
@@ -20,7 +22,6 @@ static bool hasLastCursorVisible = false;
 
 // Position monitoring callbacks and state
 static std::map<long long, CursorPositionCallback> positionCallbacks;
-static HHOOK positionHook = nullptr;
 static POINT lastCursorPos = {0, 0};
 
 bool HasAlphaChannel(const uint32_t* data, int stride, int width, int height) {
@@ -389,6 +390,9 @@ std::vector<uint8_t> ConvertUint32ToUint8(const uint32_t* inputArray,
 static HCURSOR lastHCursor = nullptr;
 
 void SyncCursorImage() {
+    if (callbacks.empty()) {
+        return;
+    }
     CURSORINFO ci = { sizeof(ci) };
     GetCursorInfo(&ci);
     if (ci.hCursor == lastHCursor) return;
@@ -492,29 +496,6 @@ MousePosition GetMousePositionAndScreenId() {
     //yPercent = std::max(0.0f, std::min(1.0f, yPercent));
     
     return {screenId, xPercent, yPercent};
-}
-
-// Low-level mouse hook procedure for position monitoring
-LRESULT CALLBACK MousePositionHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0 && wParam == WM_MOUSEMOVE) {
-        POINT currentPos;
-        GetCursorPos(&currentPos);
-        
-        // Check if position has changed
-        if (currentPos.x != lastCursorPos.x || currentPos.y != lastCursorPos.y) {
-            lastCursorPos = currentPos;
-            
-            // Get mouse position and screen info
-            MousePosition mousePos = GetMousePositionAndScreenId();
-            
-            // Notify all position callbacks with direct double values
-            for (auto& callback : positionCallbacks) {
-                callback.second(CPP_CURSOR_POSITION_CHANGED, mousePos.screenId, mousePos.xPercent, mousePos.yPercent);
-            }
-        }
-    }
-    
-    return CallNextHookEx(positionHook, nCode, wParam, lParam);
 }
 
 uint16_t EncodeUnitU16(float value) {
@@ -641,13 +622,33 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
     }
 }
 
-void CursorMonitor::startHook(CursorChangedCallback callback, long long callback_id, bool hookAll) {
-    if (callbacks.empty()) {
-        Global_HOOK = SetWinEventHook(
-            EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE,
-            nullptr, CursorChangedEventProc, 0, 0,
-            WINEVENT_OUTOFCONTEXT);
+static void EnsureCursorEventHook() {
+    if (CursorMonitor::Global_HOOK != nullptr) {
+        return;
     }
+    CursorMonitor::Global_HOOK = SetWinEventHook(
+        EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE,
+        nullptr, CursorChangedEventProc, 0, 0,
+        WINEVENT_OUTOFCONTEXT);
+    if (CursorMonitor::Global_HOOK == nullptr) {
+        CPPLOG_ERROR(
+            "CURSOR",
+            "SetWinEventHook failed: error=%lu",
+            GetLastError());
+    }
+}
+
+static void ReleaseCursorEventHookIfUnused() {
+    if (!callbacks.empty() || !positionCallbacks.empty() ||
+        CursorMonitor::Global_HOOK == nullptr) {
+        return;
+    }
+    UnhookWinEvent(CursorMonitor::Global_HOOK);
+    CursorMonitor::Global_HOOK = nullptr;
+}
+
+void CursorMonitor::startHook(CursorChangedCallback callback, long long callback_id, bool hookAll) {
+    EnsureCursorEventHook();
     callbacks[callback_id] = callback;
     hookAllCursorImage[callback_id] = hookAll;
     cachedcursors[callback_id] = {};
@@ -676,109 +677,25 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
 }
 
 void CursorMonitor::endHook(long long callback_id) {
-    callbacks.erase(callbacks.find(callback_id));
-    hookAllCursorImage.erase(hookAllCursorImage.find(callback_id));
-    cachedcursors.erase(cachedcursors.find(callback_id));
-    if (callbacks.empty()) {
-        UnhookWinEvent(Global_HOOK);
-    }
+    callbacks.erase(callback_id);
+    hookAllCursorImage.erase(callback_id);
+    cachedcursors.erase(callback_id);
+    ReleaseCursorEventHookIfUnused();
 }
 
 void CursorMonitor::startPositionHook(CursorPositionCallback callback, long long callback_id) {
+    const bool wasEmpty = positionCallbacks.empty();
     positionCallbacks[callback_id] = callback;
-    
-    /* old implementation of system wide cursor hook.
-    // Start hook thread if this is the first position callback
-    // We have to do this: https://www.soinside.com/question/hP9qqHrPWatdNm68nNtFfd
-    if (positionCallbacks.size() == 1) {
-        startHookThread();
+    EnsureCursorEventHook();
+    if (wasEmpty) {
         GetCursorPos(&lastCursorPos);
     }
-    
-    // Send initial position
+
     MousePosition mousePos = GetMousePositionAndScreenId();
     callback(CPP_CURSOR_POSITION_CHANGED, mousePos.screenId, mousePos.xPercent, mousePos.yPercent);
-    */
 }
 
 void CursorMonitor::endPositionHook(long long callback_id) {
-    positionCallbacks.erase(positionCallbacks.find(callback_id));
-    
-    // Stop hook thread if no more position callbacks
-    /*if (positionCallbacks.empty()) {
-        stopHookThread();
-    }*/
-}
-
-// Static member definitions for thread management
-std::unique_ptr<std::thread> CursorMonitor::hookThread = nullptr;
-std::atomic<bool> CursorMonitor::shouldStopHookThread{false};
-std::atomic<bool> CursorMonitor::hookThreadRunning{false};
-
-void CursorMonitor::startHookThread() {
-    if (hookThreadRunning.load()) {
-        return; // Thread already running
-    }
-    
-    shouldStopHookThread.store(false);
-    hookThread = std::make_unique<std::thread>(hookThreadFunction);
-}
-
-void CursorMonitor::stopHookThread() {
-    if (!hookThreadRunning.load()) {
-        return; // Thread not running
-    }
-    
-    shouldStopHookThread.store(true);
-
-    // Post a quit message to wake up the message loop
-    DWORD threadId = GetThreadId(hookThread->native_handle());
-    if (threadId != 0) {
-        PostThreadMessage(threadId, WM_QUIT, 0, 0);
-    }
-
-    if (hookThread && hookThread->joinable()) {
-        hookThread->join();
-    }
-    
-    hookThread.reset();
-    hookThreadRunning.store(false);
-}
-
-void CursorMonitor::hookThreadFunction() {
-    hookThreadRunning.store(true);
-    
-    // Install the hook in this thread
-    positionHook = SetWindowsHookEx(WH_MOUSE_LL, MousePositionHookProc, GetModuleHandle(nullptr), 0);
-    
-    if (positionHook == nullptr) {
-        hookThreadRunning.store(false);
-        return;
-    }
-    
-    // Message loop for the hook thread
-    MSG msg;
-    while (!shouldStopHookThread.load()) {
-        // Use GetMessage - PostThreadMessage will wake it up when stopping
-        BOOL result = GetMessage(&msg, nullptr, 0, 0);
-        
-        if (result == 0) {
-            // WM_QUIT received
-            break;
-        } else if (result == -1) {
-            // Error occurred
-            break;
-        }
-        
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-
-    // Clean up hook
-    if (positionHook != nullptr) {
-        UnhookWindowsHookEx(positionHook);
-        positionHook = nullptr;
-    }
-    
-    hookThreadRunning.store(false);
+    positionCallbacks.erase(callback_id);
+    ReleaseCursorEventHookIfUnused();
 }
