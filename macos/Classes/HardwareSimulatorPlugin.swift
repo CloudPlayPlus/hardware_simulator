@@ -1838,12 +1838,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
   }
 
+  private func nativeWheelDelta(_ logicalDelta: Double) -> Int32? {
+      guard logicalDelta.isFinite else { return nil }
+      let rounded = (-logicalDelta).rounded()
+      let clamped = min(
+          max(rounded, Double(Int32.min)),
+          Double(Int32.max)
+      )
+      return Int32(clamped)
+  }
+
   func performMouseScroll(dx: Double, dy: Double) {
       let eventSource = CGEventSource(stateID: .hidSystemState)
 
-      if dx != 0 || dy != 0 {
-          let wheelCount: UInt32 = dx != 0 ? 2 : 1
-          if let scrollEvent = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: wheelCount, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) {
+      guard
+          let verticalWheel = nativeWheelDelta(dy),
+          let horizontalWheel = nativeWheelDelta(dx)
+      else {
+          return
+      }
+
+      if horizontalWheel != 0 || verticalWheel != 0 {
+          let wheelCount: UInt32 = horizontalWheel != 0 ? 2 : 1
+          // RD_MOUSE_SCROLL uses logical page direction (+x right, +y down).
+          // CoreGraphics wheel1/wheel2 use physical direction (+up/+left).
+          if let scrollEvent = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: wheelCount, wheel1: verticalWheel, wheel2: horizontalWheel, wheel3: 0) {
               scrollEvent.post(tap: .cghidEventTap)
           }
       }

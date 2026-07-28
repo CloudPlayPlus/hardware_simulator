@@ -51,6 +51,23 @@ constexpr ULONG_PTR kCursorReseedExtraInfo =
     static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
 constexpr UINT_PTR kCursorReseedSubclassId =
     static_cast<UINT_PTR>(0x43505052);
+// Empirical tuning: maps Flutter page-scroll deltas to the desired Win32
+// wheel speed while preserving the logical protocol value on the wire.
+constexpr double kWindowsWheelSensitivity = 1.5;
+constexpr double kMaxWindowsWheelDistance =
+    static_cast<double>(WHEEL_DELTA) * 100.0;
+
+int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
+  if (!std::isfinite(logical_distance)) {
+    return 0;
+  }
+  const double direction = invert ? -1.0 : 1.0;
+  const double scaled =
+      logical_distance * direction * kWindowsWheelSensitivity;
+  const double clamped = (std::clamp)(
+      scaled, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
+  return static_cast<int>(std::lround(clamped));
+}
 
 LRESULT CALLBACK CursorReseedSubclassProc(
     HWND window,
@@ -1365,6 +1382,21 @@ void hscroll(int distance) {
     send_input(i);
 }
 
+void performMouseScroll(double dx, double dy) {
+    // RD_MOUSE_SCROLL uses logical page direction: +x right, +y down.
+    // Win32 horizontal wheel uses the same sign, while vertical wheel uses
+    // the physical wheel direction (+ is forward/page-up), so y is inverted.
+    const int horizontal_distance = logicalScrollToWindowsWheel(dx, false);
+    const int vertical_distance = logicalScrollToWindowsWheel(dy, true);
+
+    if (horizontal_distance != 0) {
+        hscroll(horizontal_distance);
+    }
+    if (vertical_distance != 0) {
+        scroll(vertical_distance);
+    }
+}
+
 std::wstring stringToWstring(const std::string& str) {
     int wideCharLen = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
     if (wideCharLen <= 0) return L"";
@@ -1433,14 +1465,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
   } else if (method_call.method_name().compare("mouseScroll") == 0) {
         auto dx = (args->find(flutter::EncodableValue("dx")))->second;
         auto dy = (args->find(flutter::EncodableValue("dy")))->second;
-        int deltax = static_cast<double>(std::get<double>((dx)));
-        int deltay = static_cast<double>(std::get<double>((dy)));
-        if (deltax!=0){
-          hscroll(deltax * 2);
-        }
-        if (deltay!=0){
-          scroll(deltay * 2);
-        }
+        performMouseScroll(
+            std::get<double>(dx),
+            std::get<double>(dy));
         result->Success(nullptr);
   } else if (method_call.method_name().compare("hookCursorImage") == 0) {
         auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));

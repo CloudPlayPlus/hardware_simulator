@@ -2,6 +2,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "include/hardware_simulator/hardware_simulator_plugin.h"
 #include "hardware_simulator_plugin_private.h"
 
@@ -25,6 +27,19 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
   ASSERT_EQ(fl_value_get_type(result), FL_VALUE_TYPE_STRING);
   // The full string varies, so just validate that it has the right format.
   EXPECT_THAT(fl_value_get_string(result), testing::StartsWith("Linux "));
+}
+
+TEST(HardwareSimulatorPlugin, ConvertsLogicalScrollToLinuxWheel) {
+  EXPECT_EQ(logical_scroll_to_linux_wheel(-80.0, true), 80);
+  EXPECT_EQ(logical_scroll_to_linux_wheel(80.0, true), -80);
+  EXPECT_EQ(logical_scroll_to_linux_wheel(0.0, true), 0);
+  EXPECT_EQ(logical_scroll_to_linux_wheel(-1e100, true), 12000);
+  EXPECT_EQ(logical_scroll_to_linux_wheel(80.0, false), 80);
+  EXPECT_EQ(logical_scroll_to_linux_wheel(-1e100, false), -12000);
+  EXPECT_EQ(
+      logical_scroll_to_linux_wheel(
+          std::numeric_limits<double>::infinity(), false),
+      0);
 }
 
 }  // namespace test

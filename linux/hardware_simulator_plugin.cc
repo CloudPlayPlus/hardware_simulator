@@ -56,6 +56,8 @@ int g_last_abs_x = 0;
 int g_last_abs_y = 0;
 int g_last_abs_width = 1;
 int g_last_abs_height = 1;
+// About 100 conventional wheel notches at 120 units per notch.
+constexpr double kMaxLinuxWheelDistance = 12000.0;
 
 FlMethodResponse* success_null() {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
@@ -479,8 +481,8 @@ FlMethodResponse* perform_mouse_scroll(FlValue* args) {
     return linux_mouse_error();
   }
 
-  int vertical_distance = static_cast<int>(std::round(dy));
-  int horizontal_distance = static_cast<int>(std::round(dx));
+  int vertical_distance = logical_scroll_to_linux_wheel(dy, true);
+  int horizontal_distance = logical_scroll_to_linux_wheel(dx, false);
   if (vertical_distance != 0) {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     mouse->vertical_scroll(vertical_distance);
@@ -555,6 +557,16 @@ FlMethodResponse* clear_all_pressed_events() {
 }
 
 }  // namespace
+
+int logical_scroll_to_linux_wheel(double delta, bool invert) {
+  if (!std::isfinite(delta)) {
+    return 0;
+  }
+  const double direction = invert ? -1.0 : 1.0;
+  const double native_distance = (std::clamp)(
+      delta * direction, -kMaxLinuxWheelDistance, kMaxLinuxWheelDistance);
+  return static_cast<int>(std::lround(native_distance));
+}
 
 // Called when a method call is received from Flutter.
 static void hardware_simulator_plugin_handle_method_call(
