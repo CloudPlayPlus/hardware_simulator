@@ -1843,7 +1843,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
       if dx != 0 || dy != 0 {
           let wheelCount: UInt32 = dx != 0 ? 2 : 1
-          if let scrollEvent = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: wheelCount, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) {
+          // RD_MOUSE_SCROLL uses logical page direction (+x right, +y down).
+          // CoreGraphics wheel deltas use the opposite physical direction.
+          let verticalWheel = Int32((-dy).rounded())
+          let horizontalWheel = Int32((-dx).rounded())
+          if let scrollEvent = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: wheelCount, wheel1: verticalWheel, wheel2: horizontalWheel, wheel3: 0) {
               scrollEvent.post(tap: .cghidEventTap)
           }
       }

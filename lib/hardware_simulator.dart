@@ -62,6 +62,10 @@ class HWMouse {
     HardwareSimulatorPlatform.instance.performMouseClick(buttonId, isDown);
   }
 
+  /// Injects a canonical logical scroll delta.
+  ///
+  /// Positive x scrolls right and positive y scrolls down. Platform
+  /// implementations convert these values to their native wheel conventions.
   void performMouseScroll(double dx, double dy) {
     HardwareSimulatorPlatform.instance.performMouseScroll(dx, dy);
   }

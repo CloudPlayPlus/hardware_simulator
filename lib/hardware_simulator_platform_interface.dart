@@ -215,6 +215,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performMouseClick() has not been implemented.');
   }
 
+  /// Injects logical scroll: positive x is right, positive y is down.
   Future<void> performMouseScroll(double dx, double dy) async {
     throw UnimplementedError('performMouseScroll() has not been implemented.');
   }
