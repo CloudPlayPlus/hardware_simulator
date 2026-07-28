@@ -27,5 +27,11 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
   EXPECT_THAT(fl_value_get_string(result), testing::StartsWith("Linux "));
 }
 
+TEST(HardwareSimulatorPlugin, ConvertsLogicalVerticalScrollToLinuxWheel) {
+  EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(-80.0), 80);
+  EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(80.0), -80);
+  EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(0.0), 0);
+}
+
 }  // namespace test
 }  // namespace hardware_simulator

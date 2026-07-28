@@ -479,7 +479,7 @@ FlMethodResponse* perform_mouse_scroll(FlValue* args) {
     return linux_mouse_error();
   }
 
-  int vertical_distance = static_cast<int>(std::round(dy));
+  int vertical_distance = logical_vertical_scroll_to_linux_wheel(dy);
   int horizontal_distance = static_cast<int>(std::round(dx));
   if (vertical_distance != 0) {
     std::lock_guard<std::mutex> lock(g_input_mutex);
@@ -555,6 +555,10 @@ FlMethodResponse* clear_all_pressed_events() {
 }
 
 }  // namespace
+
+int logical_vertical_scroll_to_linux_wheel(double dy) {
+  return static_cast<int>(std::round(-dy));
+}
 
 // Called when a method call is received from Flutter.
 static void hardware_simulator_plugin_handle_method_call(
