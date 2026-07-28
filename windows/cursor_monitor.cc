@@ -610,7 +610,9 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
             break;
         case EVENT_OBJECT_NAMECHANGE:
         {
-            SyncCursorImage();
+            if (!callbacks.empty()) {
+                SyncCursorImage();
+            }
             break;
         }
         case EVENT_OBJECT_LOCATIONCHANGE:
@@ -632,7 +634,9 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
                     }
                 }
             }
-            SyncCursorImage();
+            if (!callbacks.empty()) {
+                SyncCursorImage();
+            }
             break;
         }
         default:
@@ -641,13 +645,27 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
     }
 }
 
-void CursorMonitor::startHook(CursorChangedCallback callback, long long callback_id, bool hookAll) {
-    if (callbacks.empty()) {
-        Global_HOOK = SetWinEventHook(
-            EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE,
-            nullptr, CursorChangedEventProc, 0, 0,
-            WINEVENT_OUTOFCONTEXT);
+void EnsureCursorEventHook() {
+    if (CursorMonitor::Global_HOOK != nullptr) {
+        return;
     }
+    CursorMonitor::Global_HOOK = SetWinEventHook(
+        EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE,
+        nullptr, CursorChangedEventProc, 0, 0,
+        WINEVENT_OUTOFCONTEXT);
+}
+
+void ReleaseCursorEventHookIfUnused() {
+    if (!callbacks.empty() || !positionCallbacks.empty() ||
+        CursorMonitor::Global_HOOK == nullptr) {
+        return;
+    }
+    UnhookWinEvent(CursorMonitor::Global_HOOK);
+    CursorMonitor::Global_HOOK = nullptr;
+}
+
+void CursorMonitor::startHook(CursorChangedCallback callback, long long callback_id, bool hookAll) {
+    EnsureCursorEventHook();
     callbacks[callback_id] = callback;
     hookAllCursorImage[callback_id] = hookAll;
     cachedcursors[callback_id] = {};
@@ -676,38 +694,27 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
 }
 
 void CursorMonitor::endHook(long long callback_id) {
-    callbacks.erase(callbacks.find(callback_id));
-    hookAllCursorImage.erase(hookAllCursorImage.find(callback_id));
-    cachedcursors.erase(cachedcursors.find(callback_id));
-    if (callbacks.empty()) {
-        UnhookWinEvent(Global_HOOK);
-    }
+    callbacks.erase(callback_id);
+    hookAllCursorImage.erase(callback_id);
+    cachedcursors.erase(callback_id);
+    ReleaseCursorEventHookIfUnused();
 }
 
 void CursorMonitor::startPositionHook(CursorPositionCallback callback, long long callback_id) {
+    const bool wasEmpty = positionCallbacks.empty();
     positionCallbacks[callback_id] = callback;
-    
-    /* old implementation of system wide cursor hook.
-    // Start hook thread if this is the first position callback
-    // We have to do this: https://www.soinside.com/question/hP9qqHrPWatdNm68nNtFfd
-    if (positionCallbacks.size() == 1) {
-        startHookThread();
+    EnsureCursorEventHook();
+    if (wasEmpty) {
         GetCursorPos(&lastCursorPos);
     }
-    
-    // Send initial position
+
     MousePosition mousePos = GetMousePositionAndScreenId();
     callback(CPP_CURSOR_POSITION_CHANGED, mousePos.screenId, mousePos.xPercent, mousePos.yPercent);
-    */
 }
 
 void CursorMonitor::endPositionHook(long long callback_id) {
-    positionCallbacks.erase(positionCallbacks.find(callback_id));
-    
-    // Stop hook thread if no more position callbacks
-    /*if (positionCallbacks.empty()) {
-        stopHookThread();
-    }*/
+    positionCallbacks.erase(callback_id);
+    ReleaseCursorEventHookIfUnused();
 }
 
 // Static member definitions for thread management
