@@ -51,7 +51,22 @@ constexpr ULONG_PTR kCursorReseedExtraInfo =
     static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
 constexpr UINT_PTR kCursorReseedSubclassId =
     static_cast<UINT_PTR>(0x43505052);
-constexpr double kWindowsWheelUnitsPerLogicalScrollUnit = 1.5;
+// Empirical Windows scroll-speed tuning requested by the product.
+constexpr double kWindowsWheelSensitivity = 1.5;
+constexpr double kMaxWindowsWheelDistance =
+    static_cast<double>(WHEEL_DELTA) * 100.0;
+
+int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
+  if (!std::isfinite(logical_distance)) {
+    return 0;
+  }
+  const double direction = invert ? -1.0 : 1.0;
+  const double scaled =
+      logical_distance * direction * kWindowsWheelSensitivity;
+  const double clamped = (std::clamp)(
+      scaled, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
+  return static_cast<int>(std::lround(clamped));
+}
 
 LRESULT CALLBACK CursorReseedSubclassProc(
     HWND window,
@@ -1370,10 +1385,8 @@ void performMouseScroll(double dx, double dy) {
     // RD_MOUSE_SCROLL uses logical page direction: +x right, +y down.
     // Win32 horizontal wheel uses the same sign, while vertical wheel uses
     // the physical wheel direction (+ is forward/page-up), so y is inverted.
-    const int horizontal_distance = static_cast<int>(
-        std::lround(dx * kWindowsWheelUnitsPerLogicalScrollUnit));
-    const int vertical_distance = static_cast<int>(
-        std::lround(-dy * kWindowsWheelUnitsPerLogicalScrollUnit));
+    const int horizontal_distance = logicalScrollToWindowsWheel(dx, false);
+    const int vertical_distance = logicalScrollToWindowsWheel(dy, true);
 
     if (horizontal_distance != 0) {
         hscroll(horizontal_distance);

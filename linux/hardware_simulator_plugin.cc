@@ -56,6 +56,7 @@ int g_last_abs_x = 0;
 int g_last_abs_y = 0;
 int g_last_abs_width = 1;
 int g_last_abs_height = 1;
+constexpr double kMaxLinuxWheelDistance = 12000.0;
 
 FlMethodResponse* success_null() {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
@@ -557,7 +558,12 @@ FlMethodResponse* clear_all_pressed_events() {
 }  // namespace
 
 int logical_vertical_scroll_to_linux_wheel(double dy) {
-  return static_cast<int>(std::round(-dy));
+  if (!std::isfinite(dy)) {
+    return 0;
+  }
+  const double native_distance = (std::clamp)(
+      -dy, -kMaxLinuxWheelDistance, kMaxLinuxWheelDistance);
+  return static_cast<int>(std::lround(native_distance));
 }
 
 // Called when a method call is received from Flutter.

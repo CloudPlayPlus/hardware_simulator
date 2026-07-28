@@ -2,6 +2,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "include/hardware_simulator/hardware_simulator_plugin.h"
 #include "hardware_simulator_plugin_private.h"
 
@@ -31,6 +33,11 @@ TEST(HardwareSimulatorPlugin, ConvertsLogicalVerticalScrollToLinuxWheel) {
   EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(-80.0), 80);
   EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(80.0), -80);
   EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(0.0), 0);
+  EXPECT_EQ(logical_vertical_scroll_to_linux_wheel(-1e100), 12000);
+  EXPECT_EQ(
+      logical_vertical_scroll_to_linux_wheel(
+          std::numeric_limits<double>::infinity()),
+      0);
 }
 
 }  // namespace test
