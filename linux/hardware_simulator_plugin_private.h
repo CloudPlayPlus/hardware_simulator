@@ -9,6 +9,7 @@
 // Handles the getPlatformVersion method call.
 FlMethodResponse *get_platform_version();
 
-// Converts canonical logical vertical scroll (+ is page-down) to Linux
-// REL_WHEEL direction (+ is wheel-up/page-up).
-int logical_vertical_scroll_to_linux_wheel(double dy);
+// Converts a canonical logical scroll delta to Linux wheel units. Set invert
+// for the vertical REL_WHEEL axis (+ is wheel-up/page-up); horizontal
+// REL_HWHEEL already matches the logical +right direction.
+int logical_scroll_to_linux_wheel(double delta, bool invert);

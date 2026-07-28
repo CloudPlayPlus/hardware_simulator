@@ -51,7 +51,8 @@ constexpr ULONG_PTR kCursorReseedExtraInfo =
     static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
 constexpr UINT_PTR kCursorReseedSubclassId =
     static_cast<UINT_PTR>(0x43505052);
-// Empirical Windows scroll-speed tuning requested by the product.
+// Empirical tuning: maps Flutter page-scroll deltas to the desired Win32
+// wheel speed while preserving the logical protocol value on the wire.
 constexpr double kWindowsWheelSensitivity = 1.5;
 constexpr double kMaxWindowsWheelDistance =
     static_cast<double>(WHEEL_DELTA) * 100.0;
