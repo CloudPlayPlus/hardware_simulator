@@ -94,9 +94,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func stopTrackpadScrollCapture() {
-    guard let trackpadScrollMonitor else { return }
-    NSEvent.removeMonitor(trackpadScrollMonitor)
+    if let trackpadScrollMonitor {
+      NSEvent.removeMonitor(trackpadScrollMonitor)
+    }
     self.trackpadScrollMonitor = nil
+    flutterView = nil
   }
 
   private func handleTrackpadScroll(_ event: NSEvent) {
