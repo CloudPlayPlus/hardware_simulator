@@ -51,9 +51,8 @@ constexpr ULONG_PTR kCursorReseedExtraInfo =
     static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
 constexpr UINT_PTR kCursorReseedSubclassId =
     static_cast<UINT_PTR>(0x43505052);
-// Empirical tuning: maps Flutter page-scroll deltas to the desired Win32
-// wheel speed while preserving the logical protocol value on the wire.
-constexpr double kWindowsWheelSensitivity = 1.5;
+// Dart normalizes platform-specific scroll magnitudes. The native adapter only
+// converts the logical page direction and clamps it to a safe Win32 range.
 constexpr double kMaxWindowsWheelDistance =
     static_cast<double>(WHEEL_DELTA) * 100.0;
 
@@ -62,8 +61,7 @@ int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
     return 0;
   }
   const double direction = invert ? -1.0 : 1.0;
-  const double scaled =
-      logical_distance * direction * kWindowsWheelSensitivity;
+  const double scaled = logical_distance * direction;
   const double clamped = (std::clamp)(
       scaled, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
   return static_cast<int>(std::lround(clamped));

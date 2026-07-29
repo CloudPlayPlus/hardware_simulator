@@ -2,7 +2,8 @@
 
 * Define a cross-platform logical scroll contract and convert it at each
   native host boundary.
-* Reduce the empirical Windows scroll sensitivity from 2.0 to 1.5.
+* Move Windows scroll magnitude normalization to the Dart host layer; the
+  native adapter now applies direction and safety clamping only.
 
 ## 0.0.1
 
