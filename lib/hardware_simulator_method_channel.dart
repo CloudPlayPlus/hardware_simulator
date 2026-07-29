@@ -45,7 +45,9 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
             phase: _trackpadScrollPhase(arguments['phase']),
             isMomentum: arguments['isMomentum'] == true,
           );
-          for (var callback in trackpadScrollCallbacks) {
+          for (final callback in List<TrackpadScrollCallback>.of(
+            trackpadScrollCallbacks,
+          )) {
             callback(event);
           }
         }
@@ -263,6 +265,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @override
   void addTrackpadScroll(TrackpadScrollCallback callback) {
     if (!isinitialized) init();
+    if (trackpadScrollCallbacks.contains(callback)) return;
     final shouldStartCapture = trackpadScrollCallbacks.isEmpty;
     trackpadScrollCallbacks.add(callback);
     if (shouldStartCapture) {

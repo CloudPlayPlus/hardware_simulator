@@ -99,6 +99,7 @@ void main() {
     void firstListener(TrackpadScrollEvent _) {}
     void secondListener(TrackpadScrollEvent _) {}
     platform.addTrackpadScroll(firstListener);
+    platform.addTrackpadScroll(firstListener);
     platform.addTrackpadScroll(secondListener);
     await Future<void>.delayed(Duration.zero);
     platform.removeTrackpadScroll(firstListener);
@@ -116,7 +117,12 @@ void main() {
 
   test('decodes native trackpad scroll events', () async {
     TrackpadScrollEvent? received;
-    platform.addTrackpadScroll((event) => received = event);
+    late TrackpadScrollCallback listener;
+    listener = (event) {
+      received = event;
+      platform.removeTrackpadScroll(listener);
+    };
+    platform.addTrackpadScroll(listener);
 
     await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .handlePlatformMessage(
@@ -141,5 +147,6 @@ void main() {
     expect(received!.deltaY, -4);
     expect(received!.phase, TrackpadScrollPhase.changed);
     expect(received!.isMomentum, isTrue);
+    await Future<void>.delayed(Duration.zero);
   });
 }

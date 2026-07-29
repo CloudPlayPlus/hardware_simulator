@@ -33,7 +33,9 @@ enum TrackpadScrollPhase {
 ///
 /// [x] and [y] use Flutter view coordinates. Deltas use page direction:
 /// positive x scrolls right and positive y scrolls down. Every platform
-/// implementation normalizes its native convention to this contract.
+/// implementation normalizes its native convention to this contract. The
+/// resulting page direction follows the user's platform scroll-direction
+/// preference.
 @immutable
 class TrackpadScrollEvent {
   const TrackpadScrollEvent({
@@ -191,6 +193,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Registers for native precision trackpad scrolling when implemented.
   void addTrackpadScroll(TrackpadScrollCallback callback) {}
 
+  /// Removes a previously registered precision trackpad listener.
   void removeTrackpadScroll(TrackpadScrollCallback callback) {}
 
   /// Starts native precision trackpad capture.
@@ -200,6 +203,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     return false;
   }
 
+  /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
 
   void addCursorImageUpdated(

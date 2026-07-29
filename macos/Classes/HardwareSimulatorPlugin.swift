@@ -15,6 +15,7 @@ class CursorConstants {
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var methodChannel: FlutterMethodChannel?
+  private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
@@ -59,7 +60,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
     instance.methodChannel = channel
-    instance.flutterView = registrar.view
+    instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
@@ -77,14 +78,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 #endif
   }
 
-  private func startTrackpadScrollCapture() {
-    guard trackpadScrollMonitor == nil else { return }
+  private func startTrackpadScrollCapture() -> Bool {
+    if trackpadScrollMonitor != nil {
+      return flutterView != nil
+    }
+    flutterView = registrar?.view ?? registrar?.viewController?.view
+    guard flutterView != nil else { return false }
     trackpadScrollMonitor = NSEvent.addLocalMonitorForEvents(
       matching: .scrollWheel
     ) { [weak self] event in
       self?.handleTrackpadScroll(event)
       return event
     }
+    return true
   }
 
   private func stopTrackpadScrollCapture() {
@@ -95,6 +101,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func handleTrackpadScroll(_ event: NSEvent) {
     guard event.hasPreciseScrollingDeltas else { return }
+    if flutterView?.window !== event.window {
+      flutterView = registrar?.view ?? registrar?.viewController?.view
+    }
     guard let flutterView, event.window === flutterView.window else { return }
 
     let isMomentum = event.momentumPhase.rawValue != 0
@@ -2362,8 +2371,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "getPlatformVersion":
       result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
     case "startTrackpadScrollCapture":
-      startTrackpadScrollCapture()
-      result(true)
+      result(startTrackpadScrollCapture())
     case "stopTrackpadScrollCapture":
       stopTrackpadScrollCapture()
       result(nil)
