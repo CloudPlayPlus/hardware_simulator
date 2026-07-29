@@ -84,4 +84,62 @@ void main() {
 
     expect(calls, isEmpty);
   });
+
+  test('first and last trackpad listeners manage native capture', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return methodCall.method == 'startTrackpadScrollCapture';
+      },
+    );
+
+    void firstListener(TrackpadScrollEvent _) {}
+    void secondListener(TrackpadScrollEvent _) {}
+    platform.addTrackpadScroll(firstListener);
+    platform.addTrackpadScroll(secondListener);
+    await Future<void>.delayed(Duration.zero);
+    platform.removeTrackpadScroll(firstListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.map((call) => call.method), ['startTrackpadScrollCapture']);
+
+    platform.removeTrackpadScroll(secondListener);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      calls.map((call) => call.method),
+      ['startTrackpadScrollCapture', 'stopTrackpadScrollCapture'],
+    );
+  });
+
+  test('decodes native trackpad scroll events', () async {
+    TrackpadScrollEvent? received;
+    platform.addTrackpadScroll((event) => received = event);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onTrackpadScroll', <String, dynamic>{
+          'x': 125,
+          'y': 250.5,
+          'dx': 1.25,
+          'dy': -4,
+          'phase': 'changed',
+          'isMomentum': true,
+        }),
+      ),
+      null,
+    );
+
+    expect(received, isNotNull);
+    expect(received!.x, 125);
+    expect(received!.y, 250.5);
+    expect(received!.deltaX, 1.25);
+    expect(received!.deltaY, -4);
+    expect(received!.phase, TrackpadScrollPhase.changed);
+    expect(received!.isMomentum, isTrue);
+  });
 }

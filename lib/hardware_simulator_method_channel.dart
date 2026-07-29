@@ -34,6 +34,21 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         for (var callback in cursorWheelCallbacks) {
           callback(call.arguments['dx'], call.arguments['dy']);
         }
+      } else if (call.method == "onTrackpadScroll") {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          final event = TrackpadScrollEvent(
+            x: _asDouble(arguments['x']),
+            y: _asDouble(arguments['y']),
+            deltaX: _asDouble(arguments['dx']),
+            deltaY: _asDouble(arguments['dy']),
+            phase: _trackpadScrollPhase(arguments['phase']),
+            isMomentum: arguments['isMomentum'] == true,
+          );
+          for (var callback in trackpadScrollCallbacks) {
+            callback(event);
+          }
+        }
       } else if (call.method == "onCursorImageMessage") {
         int callbackID = call.arguments['callbackID'];
         if (cursorImageCallbacks.containsKey(callbackID)) {
@@ -243,6 +258,46 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     cursorWheelCallbacks.remove(callback);
   }
 
+  final List<TrackpadScrollCallback> trackpadScrollCallbacks = [];
+
+  @override
+  void addTrackpadScroll(TrackpadScrollCallback callback) {
+    if (!isinitialized) init();
+    final shouldStartCapture = trackpadScrollCallbacks.isEmpty;
+    trackpadScrollCallbacks.add(callback);
+    if (shouldStartCapture) {
+      unawaited(startTrackpadScrollCapture());
+    }
+  }
+
+  @override
+  void removeTrackpadScroll(TrackpadScrollCallback callback) {
+    final removed = trackpadScrollCallbacks.remove(callback);
+    if (removed && trackpadScrollCallbacks.isEmpty) {
+      unawaited(stopTrackpadScrollCapture());
+    }
+  }
+
+  @override
+  Future<bool> startTrackpadScrollCapture() async {
+    try {
+      final supported = await methodChannel
+          .invokeMethod<Object?>('startTrackpadScrollCapture');
+      return supported == true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> stopTrackpadScrollCapture() async {
+    try {
+      await methodChannel.invokeMethod<void>('stopTrackpadScrollCapture');
+    } on MissingPluginException {
+      return;
+    }
+  }
+
   final Map<int, CursorImageUpdatedCallback> cursorImageCallbacks = {};
   final Map<int, CursorPositionUpdatedCallback> cursorPositionCallbacks = {};
   final Map<int, DisplayCountChangedCallback> displayCountCallbacks = {};
@@ -373,6 +428,22 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       'dx': dx,
       'dy': dy,
     });
+  }
+
+  static double _asDouble(Object? value) {
+    return value is num ? value.toDouble() : 0;
+  }
+
+  static TrackpadScrollPhase _trackpadScrollPhase(Object? value) {
+    return switch (value) {
+      'mayBegin' => TrackpadScrollPhase.mayBegin,
+      'began' => TrackpadScrollPhase.began,
+      'changed' => TrackpadScrollPhase.changed,
+      'stationary' => TrackpadScrollPhase.stationary,
+      'ended' => TrackpadScrollPhase.ended,
+      'cancelled' => TrackpadScrollPhase.cancelled,
+      _ => TrackpadScrollPhase.none,
+    };
   }
 
   @override

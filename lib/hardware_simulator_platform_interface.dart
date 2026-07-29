@@ -11,11 +11,47 @@ typedef CursorPressedCallback = void Function(int button, bool isDown);
 typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
+typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
 typedef CursorImageUpdatedCallback = void Function(
     int message, int messageInfo, Uint8List cursorImage);
 typedef CursorPositionUpdatedCallback = void Function(
     int message, int screenId, double xPercent, double yPercent);
 typedef DisplayCountChangedCallback = void Function(int displayCount);
+
+/// Platform-independent lifecycle for a native precision trackpad gesture.
+enum TrackpadScrollPhase {
+  none,
+  mayBegin,
+  began,
+  changed,
+  stationary,
+  ended,
+  cancelled,
+}
+
+/// A precision trackpad scroll event captured by the platform embedder.
+///
+/// [x] and [y] use Flutter view coordinates. Deltas use page direction:
+/// positive x scrolls right and positive y scrolls down. Every platform
+/// implementation normalizes its native convention to this contract.
+@immutable
+class TrackpadScrollEvent {
+  const TrackpadScrollEvent({
+    required this.x,
+    required this.y,
+    required this.deltaX,
+    required this.deltaY,
+    required this.phase,
+    required this.isMomentum,
+  });
+
+  final double x;
+  final double y;
+  final double deltaX;
+  final double deltaY;
+  final TrackpadScrollPhase phase;
+  final bool isMomentum;
+}
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Constructs a HardwareSimulatorPlatform.
@@ -152,6 +188,20 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('removeCursorWheel() has not been implemented.');
   }
 
+  /// Registers for native precision trackpad scrolling when implemented.
+  void addTrackpadScroll(TrackpadScrollCallback callback) {}
+
+  void removeTrackpadScroll(TrackpadScrollCallback callback) {}
+
+  /// Starts native precision trackpad capture.
+  ///
+  /// Returns false on platforms that have not implemented the unified source.
+  Future<bool> startTrackpadScrollCapture() async {
+    return false;
+  }
+
+  Future<void> stopTrackpadScrollCapture() async {}
+
   void addCursorImageUpdated(
       CursorImageUpdatedCallback callback, int callbackId, bool hookAll) {
     throw UnimplementedError(
@@ -262,7 +312,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<bool> ensureConsoleForDisplay() {
-    throw UnimplementedError('ensureConsoleForDisplay() has not been implemented.');
+    throw UnimplementedError(
+        'ensureConsoleForDisplay() has not been implemented.');
   }
 
   Future<bool> initParsecVdd() {

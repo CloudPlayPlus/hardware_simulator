@@ -1,6 +1,10 @@
 import 'hardware_simulator_platform_interface.dart';
 export 'hardware_simulator_platform_interface.dart'
-    show DisplayCountChangedCallback;
+    show
+        DisplayCountChangedCallback,
+        TrackpadScrollCallback,
+        TrackpadScrollEvent,
+        TrackpadScrollPhase;
 import 'display_data.dart';
 
 /// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
@@ -224,6 +228,16 @@ class HardwareSimulator {
 
   static void removeCursorWheel(CursorWheelCallback callback) {
     HardwareSimulatorPlatform.instance.removeCursorWheel(callback);
+  }
+
+  /// Registers for precision trackpad scrolling captured by the native
+  /// platform embedder.
+  static void addTrackpadScroll(TrackpadScrollCallback callback) {
+    HardwareSimulatorPlatform.instance.addTrackpadScroll(callback);
+  }
+
+  static void removeTrackpadScroll(TrackpadScrollCallback callback) {
+    HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
   }
 
   // ignore: constant_identifier_names

@@ -15,6 +15,8 @@ class CursorConstants {
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var methodChannel: FlutterMethodChannel?
+  private weak var flutterView: NSView?
+  private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
   private var currentScreenId: Int = 0
   private var lastMouseClickButtonId: Int?
@@ -57,6 +59,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
     instance.methodChannel = channel
+    instance.flutterView = registrar.view
     instance.defaultCursorHasher = CursorHasher()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
@@ -65,12 +68,65 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   deinit {
+    stopTrackpadScrollCapture()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     if let macTerminationObserver {
       NotificationCenter.default.removeObserver(macTerminationObserver)
     }
     restoreMacDisplaysBeforeExit()
 #endif
+  }
+
+  private func startTrackpadScrollCapture() {
+    guard trackpadScrollMonitor == nil else { return }
+    trackpadScrollMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: .scrollWheel
+    ) { [weak self] event in
+      self?.handleTrackpadScroll(event)
+      return event
+    }
+  }
+
+  private func stopTrackpadScrollCapture() {
+    guard let trackpadScrollMonitor else { return }
+    NSEvent.removeMonitor(trackpadScrollMonitor)
+    self.trackpadScrollMonitor = nil
+  }
+
+  private func handleTrackpadScroll(_ event: NSEvent) {
+    guard event.hasPreciseScrollingDeltas else { return }
+    guard let flutterView, event.window === flutterView.window else { return }
+
+    let isMomentum = event.momentumPhase.rawValue != 0
+    let eventPhase = isMomentum ? event.momentumPhase : event.phase
+    guard eventPhase.rawValue != 0 else { return }
+
+    let point = flutterView.convert(event.locationInWindow, from: nil)
+    let flutterY = flutterView.isFlipped
+      ? point.y
+      : flutterView.bounds.height - point.y
+    methodChannel?.invokeMethod(
+      "onTrackpadScroll",
+      arguments: [
+        "x": point.x,
+        "y": flutterY,
+        // AppKit reports gesture direction; the plugin API uses page direction.
+        "dx": -event.scrollingDeltaX,
+        "dy": -event.scrollingDeltaY,
+        "phase": trackpadScrollPhaseName(eventPhase),
+        "isMomentum": isMomentum,
+      ]
+    )
+  }
+
+  private func trackpadScrollPhaseName(_ phase: NSEvent.Phase) -> String {
+    if phase.contains(.cancelled) { return "cancelled" }
+    if phase.contains(.ended) { return "ended" }
+    if phase.contains(.began) { return "began" }
+    if phase.contains(.mayBegin) { return "mayBegin" }
+    if phase.contains(.stationary) { return "stationary" }
+    if phase.contains(.changed) { return "changed" }
+    return "none"
   }
 
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
@@ -2305,6 +2361,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     switch call.method {
     case "getPlatformVersion":
       result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
+    case "startTrackpadScrollCapture":
+      startTrackpadScrollCapture()
+      result(true)
+    case "stopTrackpadScrollCapture":
+      stopTrackpadScrollCapture()
+      result(nil)
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)
