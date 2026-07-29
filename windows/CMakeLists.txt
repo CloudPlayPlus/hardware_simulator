@@ -29,6 +29,7 @@ list(APPEND PLUGIN_SOURCES
   "gamecontroller_manager.h"
   "notification_window.cc"
   "notification_window.h"
+  "trackpad_scroll_accumulator.h"
   "virtual_display.cc"
   "virtual_display.h"
   "virtual_display_control.cc"

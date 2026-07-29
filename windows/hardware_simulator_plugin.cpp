@@ -4,6 +4,7 @@
 #include "desktop_service_input_client.h"
 #include "gamecontroller_manager.h"
 #include "notification_window.h"
+#include "trackpad_scroll_accumulator.h"
 #include "virtual_display_control.h"
 #include "SmartKeyboardBlocker.h"
 
@@ -55,6 +56,11 @@ constexpr UINT_PTR kCursorReseedSubclassId =
 // converts the logical page direction and clamps it to a safe Win32 range.
 constexpr double kMaxWindowsWheelDistance =
     static_cast<double>(WHEEL_DELTA) * 100.0;
+// Chromium's legacy Windows wheel path maps one 120-unit detent to 100 CSS
+// pixels with the default three-line setting. Convert native macOS trackpad
+// pixels into that Win32 unit space so cumulative page movement stays 1:1.
+constexpr double kWindowsTrackpadWheelUnitsPerPixel =
+    static_cast<double>(WHEEL_DELTA) / 100.0;
 
 int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
   if (!std::isfinite(logical_distance)) {
@@ -65,22 +71,6 @@ int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
   const double clamped = (std::clamp)(
       scaled, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
   return static_cast<int>(std::lround(clamped));
-}
-
-int logicalTrackpadScrollToWindowsWheel(
-    double logical_distance,
-    bool invert) {
-  if (!std::isfinite(logical_distance)) {
-    return 0;
-  }
-  const double direction = invert ? -1.0 : 1.0;
-  const double converted = logical_distance * direction;
-  const double clamped = (std::clamp)(
-      converted, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
-  // Win32 MOUSEINPUT::mouseData is integral. The trackpad path deliberately
-  // sends the canonical 1x delta directly at that API boundary: no mouse-wheel
-  // sensitivity multiplier, fractional accumulator, or nearest-value rounding.
-  return static_cast<int>(clamped);
 }
 
 LRESULT CALLBACK CursorReseedSubclassProc(
@@ -1413,12 +1403,17 @@ void performMouseScroll(double dx, double dy) {
 
 void performTrackpadScroll(double dx, double dy) {
     // Windows 10 has no public precision-touchpad injection API. Replay each
-    // native trackpad frame as an ordinary high-resolution wheel event while
-    // preserving the canonical 1x magnitude.
+    // native trackpad frame as an ordinary high-resolution wheel event. The
+    // legacy API is integral, so each axis carries its fractional wheel-unit
+    // remainder forward to preserve cumulative page distance.
+    thread_local TrackpadScrollAccumulator horizontal_accumulator(
+        kWindowsTrackpadWheelUnitsPerPixel, kMaxWindowsWheelDistance);
+    thread_local TrackpadScrollAccumulator vertical_accumulator(
+        kWindowsTrackpadWheelUnitsPerPixel, kMaxWindowsWheelDistance);
     const int horizontal_distance =
-        logicalTrackpadScrollToWindowsWheel(dx, false);
+        horizontal_accumulator.Convert(dx, false);
     const int vertical_distance =
-        logicalTrackpadScrollToWindowsWheel(dy, true);
+        vertical_accumulator.Convert(dy, true);
 
     if (horizontal_distance != 0) {
         hscroll(horizontal_distance);
