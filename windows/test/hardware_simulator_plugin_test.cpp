@@ -40,21 +40,21 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
   EXPECT_TRUE(result_string.rfind("Windows ", 0) == 0);
 }
 
-TEST(TrackpadScrollAccumulator, PreservesCumulativeBrowserPixelDistance) {
-  TrackpadScrollAccumulator accumulator(1.2, 12000);
+TEST(TrackpadScrollAccumulator, PreservesIntegralInputDistance) {
+  TrackpadScrollAccumulator accumulator(12000);
 
   EXPECT_EQ(accumulator.Convert(1, false), 1);
   EXPECT_EQ(accumulator.Convert(1, false), 1);
   EXPECT_EQ(accumulator.Convert(1, false), 1);
   EXPECT_EQ(accumulator.Convert(1, false), 1);
-  EXPECT_EQ(accumulator.Convert(1, false), 2);
+  EXPECT_EQ(accumulator.Convert(1, false), 1);
 }
 
 TEST(TrackpadScrollAccumulator, CarriesSubunitFramesPerAxis) {
-  TrackpadScrollAccumulator horizontal(1.2, 12000);
-  TrackpadScrollAccumulator vertical(1.2, 12000);
+  TrackpadScrollAccumulator horizontal(12000);
+  TrackpadScrollAccumulator vertical(12000);
 
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < 9; ++i) {
     EXPECT_EQ(horizontal.Convert(0.1, false), 0);
   }
   EXPECT_EQ(horizontal.Convert(0.1, false), 1);
@@ -62,7 +62,7 @@ TEST(TrackpadScrollAccumulator, CarriesSubunitFramesPerAxis) {
   EXPECT_EQ(vertical.Convert(1, true), -1);
   EXPECT_EQ(vertical.Convert(1, true), -1);
   EXPECT_EQ(vertical.Convert(1, true), -1);
-  EXPECT_EQ(vertical.Convert(1, true), -2);
+  EXPECT_EQ(vertical.Convert(1, true), -1);
 }
 
 }  // namespace test

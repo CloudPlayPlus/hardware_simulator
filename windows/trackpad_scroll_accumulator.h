@@ -11,10 +11,8 @@ namespace hardware_simulator {
 // distance without rounding every frame away from zero.
 class TrackpadScrollAccumulator {
 public:
-  TrackpadScrollAccumulator(double output_units_per_input_unit,
-                            double max_output_distance)
-      : output_units_per_input_unit_(output_units_per_input_unit),
-        max_output_distance_(max_output_distance) {}
+  explicit TrackpadScrollAccumulator(double max_output_distance)
+      : max_output_distance_(max_output_distance) {}
 
   int Convert(double logical_distance, bool invert) {
     if (!std::isfinite(logical_distance)) {
@@ -22,14 +20,13 @@ public:
     }
 
     const double direction = invert ? -1.0 : 1.0;
-    const double converted =
-        logical_distance * direction * output_units_per_input_unit_ + residual_;
+    const double converted = logical_distance * direction + residual_;
     const double clamped =
         (std::clamp)(converted, -max_output_distance_, max_output_distance_);
 
     // Keep truncation as the only integer conversion. The tiny tolerance only
-    // prevents exact rational totals such as 5 * 1.2 from landing immediately
-    // below an integer because of binary floating-point representation.
+    // prevents exact decimal totals from landing immediately below an integer
+    // because of binary floating-point representation.
     constexpr double kIntegerBoundaryTolerance = 1e-9;
     const double adjusted =
         clamped + std::copysign(kIntegerBoundaryTolerance, clamped);
@@ -43,7 +40,6 @@ public:
   }
 
  private:
-  double output_units_per_input_unit_;
   double max_output_distance_;
   double residual_ = 0;
 };
