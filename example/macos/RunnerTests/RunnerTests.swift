@@ -24,4 +24,13 @@ class RunnerTests: XCTestCase {
     waitForExpectations(timeout: 1)
   }
 
+  func testTrackpadPointDeltaUsesLogicalInverseAtOneToOneScale() {
+    XCTAssertEqual(HardwareSimulatorPlugin.nativeTrackpadPointDelta(-30), 30)
+    XCTAssertEqual(HardwareSimulatorPlugin.nativeTrackpadPointDelta(30), -30)
+    XCTAssertEqual(HardwareSimulatorPlugin.nativeTrackpadPointDelta(-0.1), 1)
+    XCTAssertEqual(HardwareSimulatorPlugin.nativeTrackpadPointDelta(0.1), -1)
+    XCTAssertEqual(HardwareSimulatorPlugin.nativeTrackpadPointDelta(0), 0)
+    XCTAssertNil(HardwareSimulatorPlugin.nativeTrackpadPointDelta(.nan))
+  }
+
 }

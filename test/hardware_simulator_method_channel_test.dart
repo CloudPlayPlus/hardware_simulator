@@ -78,6 +78,33 @@ void main() {
     });
   });
 
+  test('performTrackpadScroll falls back when native method is missing',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        if (methodCall.method == 'trackpadScroll') {
+          throw MissingPluginException();
+        }
+        return null;
+      },
+    );
+
+    await platform.performTrackpadScroll(0.125, -0.375);
+
+    expect(calls.map((call) => call.method), [
+      'trackpadScroll',
+      'mouseScroll',
+    ]);
+    expect(calls.last.arguments, {
+      'dx': 0.125,
+      'dy': -0.375,
+    });
+  });
+
   test('unlockCursorAndReseed sends normalized window position', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

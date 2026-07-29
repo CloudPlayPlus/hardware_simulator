@@ -1935,16 +1935,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
   }
 
-  private func nativeTrackpadPointDelta(_ logicalDelta: Double) -> Int32? {
+  static func nativeTrackpadPointDelta(_ logicalDelta: Double) -> Int32? {
       guard logicalDelta.isFinite else { return nil }
       if logicalDelta == 0 { return 0 }
 
-      // A local macOS event measured as scrollingDelta=0.1 carries a
-      // wheel/point axis of one and a 16.16 fixed-point delta of 0.1.
-      // Rebuild both representations instead of rounding the precise value.
-      var rounded = (logicalDelta * 10).rounded()
+      // CoreGraphics wheel/point axes use the opposite sign from our logical
+      // page direction. Preserve their 1:1 magnitude for whole pixels; only
+      // clamp a non-zero subpixel delta to the smallest representable integer.
+      var rounded = (-logicalDelta).rounded()
       if rounded == 0 {
-          rounded = logicalDelta.isLess(than: 0) ? -1 : 1
+          rounded = logicalDelta.isLess(than: 0) ? 1 : -1
       }
       let clamped = min(
           max(rounded, Double(Int32.min)),
@@ -1990,8 +1990,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       isMomentum: Bool
   ) {
       guard
-          let horizontalPoint = nativeTrackpadPointDelta(dx),
-          let verticalPoint = nativeTrackpadPointDelta(dy)
+          let horizontalPoint = Self.nativeTrackpadPointDelta(dx),
+          let verticalPoint = Self.nativeTrackpadPointDelta(dy)
       else {
           return
       }
@@ -2009,9 +2009,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           return
       }
 
-      // RD trackpad deltas use logical page direction. A native macOS precise
-      // event carries the opposite gesture-direction value in its 16.16
-      // fixed-point fields, while wheel/point axes retain page direction.
+      // RD trackpad deltas use logical page direction. CoreGraphics fields use
+      // the opposite gesture/device direction. Fixed-point preserves the exact
+      // fraction; point/wheel fields provide the closest non-zero integer.
       scrollEvent.setDoubleValueField(
           .scrollWheelEventFixedPtDeltaAxis1,
           value: -dy

@@ -440,12 +440,16 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     TrackpadScrollPhase phase = TrackpadScrollPhase.none,
     bool isMomentum = false,
   }) async {
-    await methodChannel.invokeMethod('trackpadScroll', {
-      'dx': dx,
-      'dy': dy,
-      'phase': phase.name,
-      'isMomentum': isMomentum,
-    });
+    try {
+      await methodChannel.invokeMethod('trackpadScroll', {
+        'dx': dx,
+        'dy': dy,
+        'phase': phase.name,
+        'isMomentum': isMomentum,
+      });
+    } on MissingPluginException {
+      await performMouseScroll(dx, dy);
+    }
   }
 
   static double _asDouble(Object? value) {
