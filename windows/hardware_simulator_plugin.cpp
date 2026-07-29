@@ -67,6 +67,22 @@ int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
   return static_cast<int>(std::lround(clamped));
 }
 
+int logicalTrackpadScrollToWindowsWheel(
+    double logical_distance,
+    bool invert) {
+  if (!std::isfinite(logical_distance)) {
+    return 0;
+  }
+  const double direction = invert ? -1.0 : 1.0;
+  const double converted = logical_distance * direction;
+  const double clamped = (std::clamp)(
+      converted, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
+  // Win32 MOUSEINPUT::mouseData is integral. The trackpad path deliberately
+  // sends the canonical 1x delta directly at that API boundary: no mouse-wheel
+  // sensitivity multiplier, fractional accumulator, or nearest-value rounding.
+  return static_cast<int>(clamped);
+}
+
 LRESULT CALLBACK CursorReseedSubclassProc(
     HWND window,
     UINT message,
@@ -1395,6 +1411,23 @@ void performMouseScroll(double dx, double dy) {
     }
 }
 
+void performTrackpadScroll(double dx, double dy) {
+    // Windows 10 has no public precision-touchpad injection API. Replay each
+    // native trackpad frame as an ordinary high-resolution wheel event while
+    // preserving the canonical 1x magnitude.
+    const int horizontal_distance =
+        logicalTrackpadScrollToWindowsWheel(dx, false);
+    const int vertical_distance =
+        logicalTrackpadScrollToWindowsWheel(dy, true);
+
+    if (horizontal_distance != 0) {
+        hscroll(horizontal_distance);
+    }
+    if (vertical_distance != 0) {
+        scroll(vertical_distance);
+    }
+}
+
 std::wstring stringToWstring(const std::string& str) {
     int wideCharLen = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
     if (wideCharLen <= 0) return L"";
@@ -1464,6 +1497,13 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto dx = (args->find(flutter::EncodableValue("dx")))->second;
         auto dy = (args->find(flutter::EncodableValue("dy")))->second;
         performMouseScroll(
+            std::get<double>(dx),
+            std::get<double>(dy));
+        result->Success(nullptr);
+  } else if (method_call.method_name().compare("trackpadScroll") == 0) {
+        auto dx = (args->find(flutter::EncodableValue("dx")))->second;
+        auto dy = (args->find(flutter::EncodableValue("dy")))->second;
+        performTrackpadScroll(
             std::get<double>(dx),
             std::get<double>(dy));
         result->Success(nullptr);
