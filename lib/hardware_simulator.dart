@@ -73,6 +73,25 @@ class HWMouse {
   void performMouseScroll(double dx, double dy) {
     HardwareSimulatorPlatform.instance.performMouseScroll(dx, dy);
   }
+
+  /// Injects a continuous precision-trackpad delta without discarding
+  /// fractional pixels.
+  ///
+  /// Positive x scrolls right and positive y scrolls down. Platforms without
+  /// a native precise path may fall back to ordinary scroll injection.
+  void performTrackpadScroll(
+    double dx,
+    double dy, {
+    TrackpadScrollPhase phase = TrackpadScrollPhase.none,
+    bool isMomentum = false,
+  }) {
+    HardwareSimulatorPlatform.instance.performTrackpadScroll(
+      dx,
+      dy,
+      phase: phase,
+      isMomentum: isMomentum,
+    );
+  }
 }
 
 class GameController {

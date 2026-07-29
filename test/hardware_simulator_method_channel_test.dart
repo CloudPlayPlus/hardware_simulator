@@ -50,6 +50,34 @@ void main() {
     });
   });
 
+  test('performTrackpadScroll preserves fractional deltas', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performTrackpadScroll(
+      0.125,
+      -0.375,
+      phase: TrackpadScrollPhase.changed,
+      isMomentum: true,
+    );
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'trackpadScroll');
+    expect(calls.single.arguments, {
+      'dx': 0.125,
+      'dy': -0.375,
+      'phase': 'changed',
+      'isMomentum': true,
+    });
+  });
+
   test('unlockCursorAndReseed sends normalized window position', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

@@ -274,6 +274,17 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performMouseScroll() has not been implemented.');
   }
 
+  /// Injects logical continuous trackpad scrolling while preserving
+  /// fractional pixels.
+  Future<void> performTrackpadScroll(
+    double dx,
+    double dy, {
+    TrackpadScrollPhase phase = TrackpadScrollPhase.none,
+    bool isMomentum = false,
+  }) {
+    return performMouseScroll(dx, dy);
+  }
+
   // Touch event simulation
   Future<void> performTouchEvent(
       double x, double y, int touchId, bool isDown, int screenId) async {

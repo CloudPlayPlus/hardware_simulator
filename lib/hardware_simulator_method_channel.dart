@@ -433,6 +433,21 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     });
   }
 
+  @override
+  Future<void> performTrackpadScroll(
+    double dx,
+    double dy, {
+    TrackpadScrollPhase phase = TrackpadScrollPhase.none,
+    bool isMomentum = false,
+  }) async {
+    await methodChannel.invokeMethod('trackpadScroll', {
+      'dx': dx,
+      'dy': dy,
+      'phase': phase.name,
+      'isMomentum': isMomentum,
+    });
+  }
+
   static double _asDouble(Object? value) {
     return value is num ? value.toDouble() : 0;
   }
