@@ -50,6 +50,61 @@ void main() {
     });
   });
 
+  test('performTrackpadScroll preserves fractional deltas', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performTrackpadScroll(
+      0.125,
+      -0.375,
+      phase: TrackpadScrollPhase.changed,
+      isMomentum: true,
+    );
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'trackpadScroll');
+    expect(calls.single.arguments, {
+      'dx': 0.125,
+      'dy': -0.375,
+      'phase': 'changed',
+      'isMomentum': true,
+    });
+  });
+
+  test('performTrackpadScroll falls back when native method is missing',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        if (methodCall.method == 'trackpadScroll') {
+          throw MissingPluginException();
+        }
+        return null;
+      },
+    );
+
+    await platform.performTrackpadScroll(0.125, -0.375);
+
+    expect(calls.map((call) => call.method), [
+      'trackpadScroll',
+      'mouseScroll',
+    ]);
+    expect(calls.last.arguments, {
+      'dx': 0.125,
+      'dy': -0.375,
+    });
+  });
+
   test('unlockCursorAndReseed sends normalized window position', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -83,5 +138,70 @@ void main() {
     await HardwareSimulator.unlockCursorAndReseed(0.25, 0.75);
 
     expect(calls, isEmpty);
+  });
+
+  test('first and last trackpad listeners manage native capture', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return methodCall.method == 'startTrackpadScrollCapture';
+      },
+    );
+
+    void firstListener(TrackpadScrollEvent _) {}
+    void secondListener(TrackpadScrollEvent _) {}
+    platform.addTrackpadScroll(firstListener);
+    platform.addTrackpadScroll(firstListener);
+    platform.addTrackpadScroll(secondListener);
+    await Future<void>.delayed(Duration.zero);
+    platform.removeTrackpadScroll(firstListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.map((call) => call.method), ['startTrackpadScrollCapture']);
+
+    platform.removeTrackpadScroll(secondListener);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      calls.map((call) => call.method),
+      ['startTrackpadScrollCapture', 'stopTrackpadScrollCapture'],
+    );
+  });
+
+  test('decodes native trackpad scroll events', () async {
+    TrackpadScrollEvent? received;
+    late TrackpadScrollCallback listener;
+    listener = (event) {
+      received = event;
+      platform.removeTrackpadScroll(listener);
+    };
+    platform.addTrackpadScroll(listener);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onTrackpadScroll', <String, dynamic>{
+          'x': 125,
+          'y': 250.5,
+          'dx': 1.25,
+          'dy': -4,
+          'phase': 'changed',
+          'isMomentum': true,
+        }),
+      ),
+      null,
+    );
+
+    expect(received, isNotNull);
+    expect(received!.x, 125);
+    expect(received!.y, 250.5);
+    expect(received!.deltaX, 1.25);
+    expect(received!.deltaY, -4);
+    expect(received!.phase, TrackpadScrollPhase.changed);
+    expect(received!.isMomentum, isTrue);
+    await Future<void>.delayed(Duration.zero);
   });
 }

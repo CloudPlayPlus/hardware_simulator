@@ -15,6 +15,9 @@ class CursorConstants {
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var methodChannel: FlutterMethodChannel?
+  private weak var registrar: FlutterPluginRegistrar?
+  private weak var flutterView: NSView?
+  private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
   private var currentScreenId: Int = 0
   private var lastMouseClickButtonId: Int?
@@ -57,6 +60,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
     instance.methodChannel = channel
+    instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
@@ -65,12 +69,75 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   deinit {
+    stopTrackpadScrollCapture()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     if let macTerminationObserver {
       NotificationCenter.default.removeObserver(macTerminationObserver)
     }
     restoreMacDisplaysBeforeExit()
 #endif
+  }
+
+  private func startTrackpadScrollCapture() -> Bool {
+    if trackpadScrollMonitor != nil {
+      return flutterView != nil
+    }
+    flutterView = registrar?.view ?? registrar?.viewController?.view
+    guard flutterView != nil else { return false }
+    trackpadScrollMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: .scrollWheel
+    ) { [weak self] event in
+      self?.handleTrackpadScroll(event)
+      return event
+    }
+    return true
+  }
+
+  private func stopTrackpadScrollCapture() {
+    if let trackpadScrollMonitor {
+      NSEvent.removeMonitor(trackpadScrollMonitor)
+    }
+    self.trackpadScrollMonitor = nil
+    flutterView = nil
+  }
+
+  private func handleTrackpadScroll(_ event: NSEvent) {
+    guard event.hasPreciseScrollingDeltas else { return }
+    if flutterView?.window !== event.window {
+      flutterView = registrar?.view ?? registrar?.viewController?.view
+    }
+    guard let flutterView, event.window === flutterView.window else { return }
+
+    let isMomentum = event.momentumPhase.rawValue != 0
+    let eventPhase = isMomentum ? event.momentumPhase : event.phase
+    guard eventPhase.rawValue != 0 else { return }
+
+    let point = flutterView.convert(event.locationInWindow, from: nil)
+    let flutterY = flutterView.isFlipped
+      ? point.y
+      : flutterView.bounds.height - point.y
+    methodChannel?.invokeMethod(
+      "onTrackpadScroll",
+      arguments: [
+        "x": point.x,
+        "y": flutterY,
+        // AppKit reports gesture direction; the plugin API uses page direction.
+        "dx": -event.scrollingDeltaX,
+        "dy": -event.scrollingDeltaY,
+        "phase": trackpadScrollPhaseName(eventPhase),
+        "isMomentum": isMomentum,
+      ]
+    )
+  }
+
+  private func trackpadScrollPhaseName(_ phase: NSEvent.Phase) -> String {
+    if phase.contains(.cancelled) { return "cancelled" }
+    if phase.contains(.ended) { return "ended" }
+    if phase.contains(.began) { return "began" }
+    if phase.contains(.mayBegin) { return "mayBegin" }
+    if phase.contains(.stationary) { return "stationary" }
+    if phase.contains(.changed) { return "changed" }
+    return "none"
   }
 
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
@@ -1868,6 +1935,114 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
   }
 
+  static func nativeTrackpadPointDelta(_ logicalDelta: Double) -> Int32? {
+      guard logicalDelta.isFinite else { return nil }
+      if logicalDelta == 0 { return 0 }
+
+      // CoreGraphics wheel/point axes use the opposite sign from our logical
+      // page direction. Preserve their 1:1 magnitude for whole pixels; only
+      // clamp a non-zero subpixel delta to the smallest representable integer.
+      var rounded = (-logicalDelta).rounded()
+      if rounded == 0 {
+          rounded = logicalDelta.isLess(than: 0) ? 1 : -1
+      }
+      let clamped = min(
+          max(rounded, Double(Int32.min)),
+          Double(Int32.max)
+      )
+      return Int32(clamped)
+  }
+
+  private func nativeTrackpadScrollPhase(_ phase: String) -> Int64 {
+      switch phase {
+      case "mayBegin":
+          return Int64(CGScrollPhase.mayBegin.rawValue)
+      case "began":
+          return Int64(CGScrollPhase.began.rawValue)
+      case "changed", "stationary":
+          return Int64(CGScrollPhase.changed.rawValue)
+      case "ended":
+          return Int64(CGScrollPhase.ended.rawValue)
+      case "cancelled":
+          return Int64(CGScrollPhase.cancelled.rawValue)
+      default:
+          return 0
+      }
+  }
+
+  private func nativeTrackpadMomentumPhase(_ phase: String) -> Int64 {
+      switch phase {
+      case "mayBegin", "began":
+          return Int64(CGMomentumScrollPhase.begin.rawValue)
+      case "changed", "stationary":
+          return Int64(CGMomentumScrollPhase.continuous.rawValue)
+      case "ended", "cancelled":
+          return Int64(CGMomentumScrollPhase.end.rawValue)
+      default:
+          return Int64(CGMomentumScrollPhase.none.rawValue)
+      }
+  }
+
+  func performTrackpadScroll(
+      dx: Double,
+      dy: Double,
+      phase: String,
+      isMomentum: Bool
+  ) {
+      guard
+          let horizontalPoint = Self.nativeTrackpadPointDelta(dx),
+          let verticalPoint = Self.nativeTrackpadPointDelta(dy)
+      else {
+          return
+      }
+
+      let eventSource = CGEventSource(stateID: .hidSystemState)
+      let wheelCount: UInt32 = horizontalPoint != 0 ? 2 : 1
+      guard let scrollEvent = CGEvent(
+          scrollWheelEvent2Source: eventSource,
+          units: .pixel,
+          wheelCount: wheelCount,
+          wheel1: verticalPoint,
+          wheel2: horizontalPoint,
+          wheel3: 0
+      ) else {
+          return
+      }
+
+      // RD trackpad deltas use logical page direction. CoreGraphics fields use
+      // the opposite gesture/device direction. Fixed-point preserves the exact
+      // fraction; point/wheel fields provide the closest non-zero integer.
+      scrollEvent.setDoubleValueField(
+          .scrollWheelEventFixedPtDeltaAxis1,
+          value: -dy
+      )
+      scrollEvent.setDoubleValueField(
+          .scrollWheelEventFixedPtDeltaAxis2,
+          value: -dx
+      )
+      scrollEvent.setIntegerValueField(
+          .scrollWheelEventPointDeltaAxis1,
+          value: Int64(verticalPoint)
+      )
+      scrollEvent.setIntegerValueField(
+          .scrollWheelEventPointDeltaAxis2,
+          value: Int64(horizontalPoint)
+      )
+      scrollEvent.setIntegerValueField(
+          .scrollWheelEventIsContinuous,
+          value: 1
+      )
+      scrollEvent.setIntegerValueField(
+          .scrollWheelEventScrollPhase,
+          value: isMomentum ? 0 : nativeTrackpadScrollPhase(phase)
+      )
+      scrollEvent.setIntegerValueField(
+          .scrollWheelEventMomentumPhase,
+          value: isMomentum ? nativeTrackpadMomentumPhase(phase) : 0
+      )
+      scrollEvent.post(tap: .cghidEventTap)
+  }
+
   func performMouseMoveToWindowPosition(percentx: Double, percenty: Double) {
       // Get the current Flutter app's main window
       guard let mainWindow = NSApplication.shared.mainWindow ?? NSApplication.shared.windows.first else {
@@ -2305,6 +2480,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     switch call.method {
     case "getPlatformVersion":
       result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
+    case "startTrackpadScrollCapture":
+      result(startTrackpadScrollCapture())
+    case "stopTrackpadScrollCapture":
+      stopTrackpadScrollCapture()
+      result(nil)
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)
@@ -2571,6 +2751,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         result(nil) // 表示成功执行，不返回值
       } else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for Mouse Scroll", details: nil))
+      }
+    case "trackpadScroll":
+      if let args = call.arguments as? [String: Any],
+        let dx = args["dx"] as? Double,
+        let dy = args["dy"] as? Double,
+        let phase = args["phase"] as? String,
+        let isMomentum = args["isMomentum"] as? Bool {
+        performTrackpadScroll(
+          dx: dx,
+          dy: dy,
+          phase: phase,
+          isMomentum: isMomentum
+        )
+        result(nil)
+      } else {
+        result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for Trackpad Scroll", details: nil))
       }
     case "mouseMoveToWindowPosition":
       if let args = call.arguments as? [String: Any],

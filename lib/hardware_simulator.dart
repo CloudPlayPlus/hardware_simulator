@@ -1,6 +1,10 @@
 import 'hardware_simulator_platform_interface.dart';
 export 'hardware_simulator_platform_interface.dart'
-    show DisplayCountChangedCallback;
+    show
+        DisplayCountChangedCallback,
+        TrackpadScrollCallback,
+        TrackpadScrollEvent,
+        TrackpadScrollPhase;
 import 'display_data.dart';
 
 /// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
@@ -68,6 +72,25 @@ class HWMouse {
   /// implementations convert these values to their native wheel conventions.
   void performMouseScroll(double dx, double dy) {
     HardwareSimulatorPlatform.instance.performMouseScroll(dx, dy);
+  }
+
+  /// Injects a continuous precision-trackpad delta without discarding
+  /// fractional pixels.
+  ///
+  /// Positive x scrolls right and positive y scrolls down. Platforms without
+  /// a native precise path may fall back to ordinary scroll injection.
+  void performTrackpadScroll(
+    double dx,
+    double dy, {
+    TrackpadScrollPhase phase = TrackpadScrollPhase.none,
+    bool isMomentum = false,
+  }) {
+    HardwareSimulatorPlatform.instance.performTrackpadScroll(
+      dx,
+      dy,
+      phase: phase,
+      isMomentum: isMomentum,
+    );
   }
 }
 
@@ -224,6 +247,16 @@ class HardwareSimulator {
 
   static void removeCursorWheel(CursorWheelCallback callback) {
     HardwareSimulatorPlatform.instance.removeCursorWheel(callback);
+  }
+
+  /// Registers for precision trackpad scrolling captured by the native
+  /// platform embedder.
+  static void addTrackpadScroll(TrackpadScrollCallback callback) {
+    HardwareSimulatorPlatform.instance.addTrackpadScroll(callback);
+  }
+
+  static void removeTrackpadScroll(TrackpadScrollCallback callback) {
+    HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
   }
 
   // ignore: constant_identifier_names
