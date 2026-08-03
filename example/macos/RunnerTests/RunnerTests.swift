@@ -42,6 +42,7 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(plugin.cursorMonitorMask.contains(.rightMouseUp))
     XCTAssertTrue(plugin.cursorMonitorMask.contains(.otherMouseDown))
     XCTAssertTrue(plugin.cursorMonitorMask.contains(.otherMouseUp))
+    XCTAssertEqual(HardwareSimulatorPlugin.cursorTransitionProbeDelaysMs, [16, 50])
   }
 
   func testCursorHotSpotUsesBitmapRepresentationScale() {

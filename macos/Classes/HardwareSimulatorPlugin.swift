@@ -2147,7 +2147,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   var mouseMovedMonitor: Any?
   var cursorPositionMonitor: Any?
-  var previousCursorImage: NSImage?
   var previousCursorImageHashes: String = ""
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
@@ -2166,6 +2165,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     .otherMouseDown,
     .otherMouseUp,
   ]
+  static let cursorTransitionProbeDelaysMs = [16, 50]
 
   func JSHash(buffer: [UInt8], size: Int) -> UInt32 {
     var hash: UInt32 = 1315423911
@@ -2249,7 +2249,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       // Games commonly swap their cursor after handling the button event or
       // on the following render frame. Bounded follow-up probes catch that
       // transition without introducing a permanent high-frequency timer.
-      for delay in [16, 50] {
+      // One-frame and short-hitch probes cover the common transition window.
+      // Changes after 50 ms are picked up by the next mouse event.
+      for delay in Self.cursorTransitionProbeDelaysMs {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) {
           [weak self] in
           self?.checkMouseCursor()
@@ -2389,12 +2391,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if(cursorImageHashes == previousCursorImageHashes){
         return;
     }
-    previousCursorImageHashes = cursorImageHashes
-    previousCursorImage = cursorImage
-
     //system default
     if let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
-        //print("default: \(cursorIndex!)");
+        var updatedAllCallbacks = true
         for callbackID in cursorChangedCallbacks {
             if !(hookAllCursorImage[callbackID] ?? false) {
                 let message: [String: Any] = [
@@ -2410,6 +2409,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                   image: cursorImage,
                   hotSpot: hotSpot
                 ) else {
+                  updatedAllCallbacks = false
                   continue
                 }
                 let messageHash = encoded.hash
@@ -2425,6 +2425,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                 markCursorHashSeen(callbackID, messageHash)
             }
         }
+        if updatedAllCallbacks {
+          previousCursorImageHashes = cursorImageHashes
+        }
         return ;
     }
       
@@ -2436,16 +2439,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
       var fullImageMessage: [String: Any]? = nil
       if cursorChangedCallbacks.contains(where: { !callbackHasCursorHash($0, messageHash) }) {
-        if let encoded = encodeCursorBitmap(
+        guard let encoded = encodeCursorBitmap(
           image: cursorImage,
           hotSpot: hotSpot
-        ) {
-          fullImageMessage = [
-            "message": CursorConstants.cursorUpdatedImage,
-            "msg_info": messageHash,
-            "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
-          ]
+        ) else {
+          return
         }
+        fullImageMessage = [
+          "message": CursorConstants.cursorUpdatedImage,
+          "msg_info": messageHash,
+          "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
+        ]
       }
       for callbackID in cursorChangedCallbacks {
         if callbackHasCursorHash(callbackID, messageHash) {
@@ -2462,6 +2466,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           markCursorHashSeen(callbackID, messageHash)
         }
       }
+      previousCursorImageHashes = cursorImageHashes
       return ;
     }
       
@@ -2484,6 +2489,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
       markCursorHashSeen(callbackID, messageHash)
     }
+    previousCursorImageHashes = cursorImageHashes
   }
   
   var activities: [String: NSObjectProtocol] = [:]
