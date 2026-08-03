@@ -33,4 +33,39 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(HardwareSimulatorPlugin.nativeTrackpadPointDelta(.nan))
   }
 
+  func testCursorMonitorIncludesButtonTransitions() {
+    let plugin = HardwareSimulatorPlugin()
+
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.leftMouseDown))
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.leftMouseUp))
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.rightMouseDown))
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.rightMouseUp))
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.otherMouseDown))
+    XCTAssertTrue(plugin.cursorMonitorMask.contains(.otherMouseUp))
+  }
+
+  func testCursorHotSpotUsesBitmapRepresentationScale() {
+    let hotSpot = HardwareSimulatorPlugin.cursorHotSpotInPixels(
+      NSPoint(x: 7.5, y: 4),
+      pixelWidth: 64,
+      pixelHeight: 48,
+      pointSize: NSSize(width: 32, height: 24)
+    )
+
+    XCTAssertEqual(hotSpot.x, 15)
+    XCTAssertEqual(hotSpot.y, 8)
+  }
+
+  func testCursorHotSpotClampsInvalidCoordinates() {
+    let hotSpot = HardwareSimulatorPlugin.cursorHotSpotInPixels(
+      NSPoint(x: -2, y: CGFloat.nan),
+      pixelWidth: 64,
+      pixelHeight: 64,
+      pointSize: .zero
+    )
+
+    XCTAssertEqual(hotSpot.x, 0)
+    XCTAssertEqual(hotSpot.y, 0)
+  }
+
 }
