@@ -2147,14 +2147,25 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   var mouseMovedMonitor: Any?
   var cursorPositionMonitor: Any?
-  var previousCursorImage: NSImage?
   var previousCursorImageHashes: String = ""
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
   var jsHashWithImageHash = Dictionary<String, UInt32>()
   var cursorHashesByCallback = Dictionary<Int, Set<UInt32>>()
   var hookAllCursorImage = Dictionary<Int, Bool>()
-  let cursorMonitorMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+  let cursorMonitorMask: NSEvent.EventTypeMask = [
+    .mouseMoved,
+    .leftMouseDragged,
+    .rightMouseDragged,
+    .otherMouseDragged,
+    .leftMouseDown,
+    .leftMouseUp,
+    .rightMouseDown,
+    .rightMouseUp,
+    .otherMouseDown,
+    .otherMouseUp,
+  ]
+  static let cursorTransitionProbeDelaysMs = [16, 50]
 
   func JSHash(buffer: [UInt8], size: Int) -> UInt32 {
     var hash: UInt32 = 1315423911
@@ -2162,6 +2173,96 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         hash ^= ((hash << 5) &+ UInt32(buffer[i]) &+ (hash >> 2))
     }
     return hash & 0x7FFFFFFF
+  }
+
+  static func cursorHotSpotInPixels(
+    _ hotSpot: NSPoint,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    pointSize: NSSize
+  ) -> (x: UInt32, y: UInt32) {
+    let scaleX = pointSize.width > 0
+      ? CGFloat(pixelWidth) / pointSize.width
+      : 1
+    let scaleY = pointSize.height > 0
+      ? CGFloat(pixelHeight) / pointSize.height
+      : 1
+
+    return (
+      x: cursorCoordinate(hotSpot.x * scaleX),
+      y: cursorCoordinate(hotSpot.y * scaleY)
+    )
+  }
+
+  private static func cursorCoordinate(_ value: CGFloat) -> UInt32 {
+    guard value.isFinite, value > 0 else { return 0 }
+    return UInt32(min(value.rounded(), CGFloat(UInt32.max)))
+  }
+
+  private func appendUInt32BE(_ value: UInt32, to bytes: inout [UInt8]) {
+    bytes.append(UInt8((value >> 24) & 0xFF))
+    bytes.append(UInt8((value >> 16) & 0xFF))
+    bytes.append(UInt8((value >> 8) & 0xFF))
+    bytes.append(UInt8(value & 0xFF))
+  }
+
+  func encodeCursorBitmap(
+    image: NSImage,
+    hotSpot: NSPoint
+  ) -> (hash: UInt32, payload: Data)? {
+    guard let bitmapRep = image.representations.first(where: {
+      $0 is NSBitmapImageRep
+    }) as? NSBitmapImageRep,
+      let pixels = getBitMapInt8(bitmapRep: bitmapRep) else {
+      return nil
+    }
+
+    let messageHash = JSHash(buffer: pixels, size: pixels.count)
+    // NSCursor.hotSpot is expressed in the NSImage coordinate space. Prefer
+    // the image's logical point size because a raw bitmap rep may report its
+    // pixel dimensions as its size, then fall back to the rep if necessary.
+    let pointSize = image.size.width > 0 && image.size.height > 0
+      ? image.size
+      : bitmapRep.size
+    let hotSpotPixels = Self.cursorHotSpotInPixels(
+      hotSpot,
+      pixelWidth: bitmapRep.pixelsWide,
+      pixelHeight: bitmapRep.pixelsHigh,
+      pointSize: pointSize
+    )
+
+    var bytes: [UInt8] = [9]
+    appendUInt32BE(UInt32(clamping: bitmapRep.pixelsWide), to: &bytes)
+    appendUInt32BE(UInt32(clamping: bitmapRep.pixelsHigh), to: &bytes)
+    appendUInt32BE(hotSpotPixels.x, to: &bytes)
+    appendUInt32BE(hotSpotPixels.y, to: &bytes)
+    appendUInt32BE(messageHash, to: &bytes)
+    bytes.append(contentsOf: pixels)
+    return (messageHash, Data(bytes))
+  }
+
+  private func handleCursorMonitorEvent(_ event: NSEvent) {
+    checkMouseCursor()
+    sendCursorPositionToAll()
+
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp,
+         .rightMouseDown, .rightMouseUp,
+         .otherMouseDown, .otherMouseUp:
+      // Games commonly swap their cursor after handling the button event or
+      // on the following render frame. Bounded follow-up probes catch that
+      // transition without introducing a permanent high-frequency timer.
+      // One-frame and short-hitch probes cover the common transition window.
+      // Changes after 50 ms are picked up by the next mouse event.
+      for delay in Self.cursorTransitionProbeDelaysMs {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) {
+          [weak self] in
+          self?.checkMouseCursor()
+        }
+      }
+    default:
+      break
+    }
   }
 
   func getBitMapInt8(bitmapRep: NSBitmapImageRep) -> [UInt8]?{
@@ -2280,27 +2381,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func checkMouseCursor() {
-   
-    let currentCursor = NSCursor.currentSystem 
-    if(currentCursor == nil){
-        return;
+    guard !cursorChangedCallbacks.isEmpty,
+      let currentCursor = NSCursor.currentSystem else {
+      return
     }
-    
-    let cursorImage = currentCursor?.image
-    let hotSpot = currentCursor?.hotSpot
 
-    let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage!)
+    let cursorImage = currentCursor.image
+    let hotSpot = currentCursor.hotSpot
+
+    let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
 
     if(cursorImageHashes == previousCursorImageHashes){
         return;
     }
-    previousCursorImageHashes = cursorImageHashes
-    previousCursorImage = cursorImage
-
     //system default
-    if defaultCursorHasher?.getHashMap().keys.contains(cursorImageHashes) ?? false {
-      let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes]
-        //print("default: \(cursorIndex!)");
+    if let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
+        var updatedAllCallbacks = true
         for callbackID in cursorChangedCallbacks {
             if !(hookAllCursorImage[callbackID] ?? false) {
                 let message: [String: Any] = [
@@ -2312,30 +2408,28 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                 methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
             } else {
                 // For hookAll=true, treat it as if it's not a default cursor
-                let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
-                let messageHash = JSHash(buffer: imagedataInt8!, size: imagedataInt8!.count)
+                guard let encoded = encodeCursorBitmap(
+                  image: cursorImage,
+                  hotSpot: hotSpot
+                ) else {
+                  updatedAllCallbacks = false
+                  continue
+                }
+                let messageHash = encoded.hash
                 jsHashWithImageHash[cursorImageHashes] = messageHash
-
-                var int8Image:[UInt8] = [9];
-                int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsWide)])
-                int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsHigh)])
-                int8Image.append(contentsOf:[0,0,0,UInt8(hotSpot!.x)])
-                int8Image.append(contentsOf:[0,0,0,UInt8(hotSpot!.y)])
-                int8Image.append(UInt8((messageHash >> 24) & 0xFF))
-                int8Image.append(UInt8((messageHash >> 16) & 0xFF)) 
-                int8Image.append(UInt8((messageHash >> 8) & 0xFF))
-                int8Image.append(UInt8(messageHash & 0xFF))
-                int8Image.append(contentsOf: imagedataInt8!)
 
                 let message: [String: Any] = [
                     "callbackID": callbackID,
                     "message": CursorConstants.cursorUpdatedImage,
                     "msg_info": messageHash,
-                    "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
+                    "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
                 ]
                 methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
                 markCursorHashSeen(callbackID, messageHash)
             }
+        }
+        if updatedAllCallbacks {
+          previousCursorImageHashes = cursorImageHashes
         }
         return ;
     }
@@ -2348,26 +2442,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
       var fullImageMessage: [String: Any]? = nil
       if cursorChangedCallbacks.contains(where: { !callbackHasCursorHash($0, messageHash) }) {
-        let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
-        var int8Image:[UInt8] = [9];
-        int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsWide)])
-        int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsHigh)])
-        let currentScreen = NSScreen.screens[currentScreenId]
-        var scaleFactor = currentScreen.backingScaleFactor
-        if cursorImage!.representations[0].pixelsWide <= 32 && cursorImage!.representations[0].pixelsHigh <= 32 {
-          scaleFactor = 1.0
+        guard let encoded = encodeCursorBitmap(
+          image: cursorImage,
+          hotSpot: hotSpot
+        ) else {
+          return
         }
-        int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.x * scaleFactor))])
-        int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.y * scaleFactor))])
-        int8Image.append(UInt8((messageHash >> 24) & 0xFF))
-        int8Image.append(UInt8((messageHash >> 16) & 0xFF)) 
-        int8Image.append(UInt8((messageHash >> 8) & 0xFF))
-        int8Image.append(UInt8(messageHash & 0xFF))
-        int8Image.append(contentsOf: imagedataInt8!)
         fullImageMessage = [
           "message": CursorConstants.cursorUpdatedImage,
           "msg_info": messageHash,
-          "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
+          "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
         ]
       }
       for callbackID in cursorChangedCallbacks {
@@ -2385,42 +2469,30 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           markCursorHashSeen(callbackID, messageHash)
         }
       }
+      previousCursorImageHashes = cursorImageHashes
       return ;
     }
       
-    let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage!.representations[0] as! NSBitmapImageRep)
-    let messageHash = JSHash(buffer: imagedataInt8!, size: imagedataInt8!.count)
-    jsHashWithImageHash[cursorImageHashes] = messageHash
-
-    //print("[messageHash:\(messageHash)] \n cursorImagepixelsWide:\(cursorImage!.representations[0].pixelsWide) \n  cursorImagepixelsWide: \(cursorImage!.representations[0].pixelsHigh)\n")
-    var int8Image:[UInt8] = [9];
-    int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsWide)])
-    int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage!.representations[0].pixelsHigh)])
-    // 获取当前屏幕的缩放因子
-    let currentScreen = NSScreen.screens[currentScreenId]
-    var scaleFactor = currentScreen.backingScaleFactor
-    if cursorImage!.representations[0].pixelsWide <= 32 && cursorImage!.representations[0].pixelsHigh <= 32 {
-        scaleFactor = 1.0
+    guard let encoded = encodeCursorBitmap(
+      image: cursorImage,
+      hotSpot: hotSpot
+    ) else {
+      return
     }
-    // TODO: 为什么获取到的非系统自带图片的hotSpot不对？暂缓方案
-    int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.x * scaleFactor))])
-    int8Image.append(contentsOf:[0,0,0,UInt8(Int(hotSpot!.y * scaleFactor))])
-    int8Image.append(UInt8((messageHash >> 24) & 0xFF))
-    int8Image.append(UInt8((messageHash >> 16) & 0xFF)) 
-    int8Image.append(UInt8((messageHash >> 8) & 0xFF))
-    int8Image.append(UInt8(messageHash & 0xFF))
-    int8Image.append(contentsOf: imagedataInt8!)
+    let messageHash = encoded.hash
+    jsHashWithImageHash[cursorImageHashes] = messageHash
 
     for callbackID in cursorChangedCallbacks {
       let message: [String: Any] = [
           "callbackID": callbackID,
           "message": CursorConstants.cursorUpdatedImage,
           "msg_info": messageHash,
-          "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
+          "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
       ]
       methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
       markCursorHashSeen(callbackID, messageHash)
     }
+    previousCursorImageHashes = cursorImageHashes
   }
   
   var activities: [String: NSObjectProtocol] = [:]
@@ -2835,8 +2907,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           let hookAll = args["hookAll"] as? Bool {
           if cursorChangedCallbacks.count == 0 {
             mouseMovedMonitor = NSEvent.addGlobalMonitorForEvents(matching: cursorMonitorMask) { [weak self] event in
-              self?.checkMouseCursor()
-              self?.sendCursorPositionToAll()
+              self?.handleCursorMonitorEvent(event)
             }
             if let monitor = cursorPositionMonitor {
               NSEvent.removeMonitor(monitor)
@@ -2850,28 +2921,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           if hookAll {
               let currentCursor = NSCursor.currentSystem
               if let cursorImage = currentCursor?.image,
-                 let hotSpot = currentCursor?.hotSpot {
+                 let hotSpot = currentCursor?.hotSpot,
+                 let encoded = encodeCursorBitmap(
+                   image: cursorImage,
+                   hotSpot: hotSpot
+                 ) {
                   let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
-                  let imagedataInt8 = getBitMapInt8(bitmapRep: cursorImage.representations[0] as! NSBitmapImageRep)
-                  let messageHash = JSHash(buffer: imagedataInt8!, size: imagedataInt8!.count)
+                  let messageHash = encoded.hash
                   jsHashWithImageHash[cursorImageHashes] = messageHash
-
-                  var int8Image:[UInt8] = [9]
-                  int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage.representations[0].pixelsWide)])
-                  int8Image.append(contentsOf:[0,0,0,UInt8(cursorImage.representations[0].pixelsHigh)])
-                  int8Image.append(contentsOf:[0,0,0,UInt8(hotSpot.x)])
-                  int8Image.append(contentsOf:[0,0,0,UInt8(hotSpot.y)])
-                  int8Image.append(UInt8((messageHash >> 24) & 0xFF))
-                  int8Image.append(UInt8((messageHash >> 16) & 0xFF)) 
-                  int8Image.append(UInt8((messageHash >> 8) & 0xFF))
-                  int8Image.append(UInt8(messageHash & 0xFF))
-                  int8Image.append(contentsOf: imagedataInt8!)
 
                   let message: [String: Any] = [
                       "callbackID": callbackID,
                       "message": CursorConstants.cursorUpdatedImage,
                       "msg_info": messageHash,
-                      "cursorImage": FlutterStandardTypedData.init(bytes: Data(int8Image))
+                      "cursorImage": FlutterStandardTypedData.init(bytes: encoded.payload)
                   ]
                   methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
                   markCursorHashSeen(callbackID, messageHash)
@@ -2970,9 +3033,6 @@ class CursorHasher {
       ]
 
       for (cursor,index) in defaultCursors {
-          if(cursor == nil || cursor.image == nil){
-            continue
-          }
           let hash = sha256ForAllBitmapReps(in: cursor.image)
           cursorHashMap[hash] = index
           
