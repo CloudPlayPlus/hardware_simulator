@@ -69,4 +69,41 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(hotSpot.y, 0)
   }
 
+  func testCursorEncodingPrefersImagePointSize() throws {
+    let plugin = HardwareSimulatorPlugin()
+    let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: 64,
+      pixelsHigh: 48,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ))
+    let image = NSImage(size: NSSize(width: 32, height: 24))
+    image.addRepresentation(bitmapRep)
+    bitmapRep.size = NSSize(width: 64, height: 48)
+
+    let encoded = try XCTUnwrap(plugin.encodeCursorBitmap(
+      image: image,
+      hotSpot: NSPoint(x: 7.5, y: 4)
+    ))
+    let bytes = [UInt8](encoded.payload)
+
+    XCTAssertEqual(bytes.count, 21 + 64 * 48 * 4)
+    XCTAssertEqual(bytes[0], 9)
+    XCTAssertEqual(readUInt32BE(bytes, offset: 1), 64)
+    XCTAssertEqual(readUInt32BE(bytes, offset: 5), 48)
+    XCTAssertEqual(readUInt32BE(bytes, offset: 9), 15)
+    XCTAssertEqual(readUInt32BE(bytes, offset: 13), 8)
+    XCTAssertEqual(readUInt32BE(bytes, offset: 17), encoded.hash)
+  }
+
+  private func readUInt32BE(_ bytes: [UInt8], offset: Int) -> UInt32 {
+    bytes[offset..<offset + 4].reduce(0) { ($0 << 8) | UInt32($1) }
+  }
+
 }

@@ -2206,7 +2206,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     bytes.append(UInt8(value & 0xFF))
   }
 
-  private func encodeCursorBitmap(
+  func encodeCursorBitmap(
     image: NSImage,
     hotSpot: NSPoint
   ) -> (hash: UInt32, payload: Data)? {
@@ -2218,9 +2218,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     let messageHash = JSHash(buffer: pixels, size: pixels.count)
-    let pointSize = bitmapRep.size.width > 0 && bitmapRep.size.height > 0
-      ? bitmapRep.size
-      : image.size
+    // NSCursor.hotSpot is expressed in the NSImage coordinate space. Prefer
+    // the image's logical point size because a raw bitmap rep may report its
+    // pixel dimensions as its size, then fall back to the rep if necessary.
+    let pointSize = image.size.width > 0 && image.size.height > 0
+      ? image.size
+      : bitmapRep.size
     let hotSpotPixels = Self.cursorHotSpotInPixels(
       hotSpot,
       pixelWidth: bitmapRep.pixelsWide,
