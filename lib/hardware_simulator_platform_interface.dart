@@ -12,6 +12,9 @@ typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
+typedef WindowsTextInputDecisionCallback = void Function(
+  WindowsTextInputDecision decision,
+);
 typedef CursorImageUpdatedCallback = void Function(
     int message, int messageInfo, Uint8List cursorImage);
 typedef CursorPositionUpdatedCallback = void Function(
@@ -53,6 +56,31 @@ class TrackpadScrollEvent {
   final double deltaY;
   final TrackpadScrollPhase phase;
   final bool isMomentum;
+}
+
+/// 远端左键抬起后，Windows UI Automation 给出的软件盘决策。
+///
+/// [active] 为 true 时应弹出软件盘，否则应收起。[secure] 只在 UIA 明确判断
+/// 当前可编辑控件是否为密码框时取 true 或 false；无法确认或 [active] 为 false
+/// 时为 null。
+@immutable
+class WindowsTextInputDecision {
+  const WindowsTextInputDecision({
+    required this.active,
+    required this.secure,
+  });
+
+  factory WindowsTextInputDecision.fromMap(Map<Object?, Object?> map) {
+    final active = map['active'] == true;
+    final secure = map['secure'];
+    return WindowsTextInputDecision(
+      active: active,
+      secure: active && secure is bool ? secure : null,
+    );
+  }
+
+  final bool active;
+  final bool? secure;
 }
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
@@ -205,6 +233,24 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
+
+  /// 注册 Windows 远端点击后的文本输入决策。
+  void addWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {}
+
+  /// 移除 Windows 软件盘决策监听器。
+  void removeWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {}
+
+  /// 启动 Windows 按需 UI Automation 检查；不支持的平台返回 false。
+  Future<bool> startWindowsTextInputDecisionCapture() async {
+    return false;
+  }
+
+  /// 停止 Windows 按需 UI Automation 检查。
+  Future<void> stopWindowsTextInputDecisionCapture() async {}
 
   void addCursorImageUpdated(
       CursorImageUpdatedCallback callback, int callbackId, bool hookAll) {

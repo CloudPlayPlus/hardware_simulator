@@ -6,6 +6,7 @@
 #include "notification_window.h"
 #include "trackpad_scroll_accumulator.h"
 #include "virtual_display_control.h"
+#include "windows_editing_event_monitor.h"
 #include "SmartKeyboardBlocker.h"
 
 // This must be included before many other Windows headers.
@@ -52,6 +53,8 @@ constexpr ULONG_PTR kCursorReseedExtraInfo =
     static_cast<ULONG_PTR>(0x43505052);  // "CPPR"
 constexpr UINT_PTR kCursorReseedSubclassId =
     static_cast<UINT_PTR>(0x43505052);
+constexpr wchar_t kWindowsTextInputDecisionMessageName[] =
+    L"CloudPlayPlus.HardwareSimulator.WindowsTextInputDecision";
 // Dart normalizes platform-specific scroll magnitudes. The native adapter only
 // converts the logical page direction and clamps it to a safe Win32 range.
 constexpr double kMaxWindowsWheelDistance =
@@ -1032,6 +1035,7 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 }
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
+    StopWindowsEditingEventMonitor();
     if (flutter_view_window_ != nullptr) {
         RemoveWindowSubclass(
             flutter_view_window_,
@@ -1048,6 +1052,116 @@ HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
         registrar_->UnregisterTopLevelWindowProcDelegate(dpi_monitor_proc_id_.value());
         dpi_monitor_proc_id_.reset();
     }
+}
+
+bool HardwareSimulatorPlugin::StartWindowsEditingEventMonitor() {
+  if (windows_editing_event_monitor_ &&
+      windows_editing_event_monitor_->is_running()) {
+    return true;
+  }
+  if (windows_editing_event_monitor_ || windows_editing_proc_id_.has_value()) {
+    StopWindowsEditingEventMonitor();
+  }
+  if (registrar_ == nullptr) {
+    return false;
+  }
+
+  windows_editing_window_ = FindFlutterWindow();
+  windows_editing_message_id_ =
+      RegisterWindowMessageW(kWindowsTextInputDecisionMessageName);
+  if (windows_editing_window_ == nullptr || windows_editing_message_id_ == 0) {
+    StopWindowsEditingEventMonitor();
+    return false;
+  }
+
+  windows_editing_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
+      [this](HWND, UINT message, WPARAM wparam,
+             LPARAM) -> std::optional<LRESULT> {
+        if (message != windows_editing_message_id_ ||
+            wparam != reinterpret_cast<WPARAM>(this)) {
+          return std::nullopt;
+        }
+
+        std::unique_ptr<WindowsTextInputDecision> decision;
+        {
+          std::lock_guard<std::mutex> lock(windows_editing_event_mutex_);
+          decision = std::move(pending_windows_text_input_decision_);
+          windows_editing_message_posted_ = false;
+        }
+        if (decision) {
+          SendWindowsTextInputDecision(*decision);
+        }
+        return 0;
+      });
+
+  windows_editing_event_monitor_ =
+      std::make_unique<WindowsEditingEventMonitor>(
+          [this](const WindowsTextInputDecision& decision) {
+            QueueWindowsTextInputDecision(decision);
+          });
+  if (!windows_editing_event_monitor_->Start()) {
+    StopWindowsEditingEventMonitor();
+    return false;
+  }
+  return true;
+}
+
+void HardwareSimulatorPlugin::StopWindowsEditingEventMonitor() {
+  windows_editing_event_monitor_.reset();
+
+  {
+    std::lock_guard<std::mutex> lock(windows_editing_event_mutex_);
+    pending_windows_text_input_decision_.reset();
+    windows_editing_message_posted_ = false;
+  }
+  if (windows_editing_window_ != nullptr &&
+      windows_editing_message_id_ != 0) {
+    MSG message = {};
+    while (PeekMessageW(&message, windows_editing_window_,
+                        windows_editing_message_id_,
+                        windows_editing_message_id_, PM_REMOVE)) {
+    }
+  }
+  if (registrar_ != nullptr && windows_editing_proc_id_.has_value()) {
+    registrar_->UnregisterTopLevelWindowProcDelegate(
+        windows_editing_proc_id_.value());
+  }
+  windows_editing_proc_id_.reset();
+  windows_editing_window_ = nullptr;
+  windows_editing_message_id_ = 0;
+}
+
+void HardwareSimulatorPlugin::QueueWindowsTextInputDecision(
+    const WindowsTextInputDecision& decision) {
+  std::lock_guard<std::mutex> lock(windows_editing_event_mutex_);
+  pending_windows_text_input_decision_ =
+      std::make_unique<WindowsTextInputDecision>(decision);
+  if (windows_editing_message_posted_) {
+    return;
+  }
+  windows_editing_message_posted_ = true;
+  if (!PostMessageW(windows_editing_window_, windows_editing_message_id_,
+                    reinterpret_cast<WPARAM>(this), 0)) {
+    pending_windows_text_input_decision_.reset();
+    windows_editing_message_posted_ = false;
+  }
+}
+
+void HardwareSimulatorPlugin::SendWindowsTextInputDecision(
+    const WindowsTextInputDecision& decision) {
+  if (!channel_) {
+    return;
+  }
+  flutter::EncodableMap message;
+  message[flutter::EncodableValue("active")] =
+      flutter::EncodableValue(decision.active);
+  message[flutter::EncodableValue("secure")] =
+      decision.secure.has_value()
+          ? flutter::EncodableValue(decision.secure.value())
+          : flutter::EncodableValue();
+  channel_->InvokeMethod(
+      "onWindowsTextInputDecision",
+      std::make_unique<flutter::EncodableValue>(message));
 }
 
 void async_send_input_retry(INPUT& i) {
@@ -1441,6 +1555,14 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       version_stream << "7";
     }
     result->Success(flutter::EncodableValue(version_stream.str()));
+  } else if (method_call.method_name().compare(
+                 "startWindowsTextInputDecisionCapture") == 0) {
+    result->Success(
+        flutter::EncodableValue(StartWindowsEditingEventMonitor()));
+  } else if (method_call.method_name().compare(
+                 "stopWindowsTextInputDecisionCapture") == 0) {
+    StopWindowsEditingEventMonitor();
+    result->Success(nullptr);
   } else if (method_call.method_name().compare("setDesktopServiceAvailable") == 0) {
     bool available = false;
     if (args) {
@@ -1480,7 +1602,12 @@ void HardwareSimulatorPlugin::HandleMethodCall(
   } else if (method_call.method_name().compare("mousePress") == 0) {
         auto buttonid = (args->find(flutter::EncodableValue("buttonId")))->second;
         auto isDown = (args->find(flutter::EncodableValue("isDown")))->second;
-        performMouseButton(static_cast<int>(std::get<int>((buttonid))), !static_cast<bool>(std::get<bool>((isDown))));
+        const int button = static_cast<int>(std::get<int>(buttonid));
+        const bool is_down = static_cast<bool>(std::get<bool>(isDown));
+        performMouseButton(button, !is_down);
+        if (button == 1 && !is_down && windows_editing_event_monitor_) {
+          windows_editing_event_monitor_->InspectAfterRemoteClick();
+        }
         result->Success(nullptr);
   } else if (method_call.method_name().compare("mouseScroll") == 0) {
         auto dx = (args->find(flutter::EncodableValue("dx")))->second;

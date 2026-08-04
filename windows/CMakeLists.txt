@@ -30,6 +30,8 @@ list(APPEND PLUGIN_SOURCES
   "notification_window.cc"
   "notification_window.h"
   "trackpad_scroll_accumulator.h"
+  "windows_editing_event_monitor.cc"
+  "windows_editing_event_monitor.h"
   "virtual_display.cc"
   "virtual_display.h"
   "virtual_display_control.cc"
@@ -81,6 +83,9 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin
   setupapi
   cfgmgr32
   user32
+  ole32
+  oleaut32
+  uiautomationcore
   wtsapi32)
 
 # List of absolute paths to libraries that should be bundled with the plugin.

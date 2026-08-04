@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'fps_game_example.dart';
 import 'display_manager_page.dart';
 import 'immersive_mode_example.dart';
+import 'windows_editing_events_example.dart';
 
 void main() {
   //SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
@@ -379,6 +380,22 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               padding: EdgeInsets.symmetric(horizontal: 32, vertical: 16),
               textStyle: TextStyle(fontSize: 18),
             ),
+          ),
+        if (Platform.isWindows)
+          ElevatedButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const WindowsEditingEventsExample(),
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              padding: EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              textStyle: TextStyle(fontSize: 18),
+            ),
+            child: const Text('Windows 键盘弹出决策'),
           ),
         SizedBox(height: 20),
         // First Row: Absolute Mouse Move

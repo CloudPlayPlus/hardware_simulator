@@ -1,8 +1,9 @@
+#include <windows.h>
+#include <UIAutomation.h>
 #include <flutter/method_call.h>
 #include <flutter/method_result_functions.h>
 #include <flutter/standard_method_codec.h>
 #include <gtest/gtest.h>
-#include <windows.h>
 
 #include <memory>
 #include <string>
@@ -10,6 +11,7 @@
 
 #include "hardware_simulator_plugin.h"
 #include "trackpad_scroll_accumulator.h"
+#include "windows_editing_event_monitor.h"
 
 namespace hardware_simulator {
 namespace test {
@@ -63,6 +65,30 @@ TEST(TrackpadScrollAccumulator, CarriesSubunitFramesPerAxis) {
   EXPECT_EQ(vertical.Convert(1, true), -1);
   EXPECT_EQ(vertical.Convert(1, true), -1);
   EXPECT_EQ(vertical.Convert(1, true), -1);
+}
+
+TEST(WindowsEditingEventMonitor, ClassifiesEditableControls) {
+  EXPECT_TRUE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_EditControlTypeId, false, true, false, false, false, false}));
+  EXPECT_TRUE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_ComboBoxControlTypeId, false, true, false, false, false, false}));
+  EXPECT_FALSE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_ComboBoxControlTypeId, false, false, false, false, false, false}));
+  EXPECT_FALSE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_ButtonControlTypeId, false, false, false, false, false, false}));
+}
+
+TEST(WindowsEditingEventMonitor, FiltersDocumentsAndReadOnlyControls) {
+  EXPECT_TRUE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_DocumentControlTypeId, true, false, false, true, false, false}));
+  EXPECT_TRUE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_DocumentControlTypeId, true, false, false, false, false, true}));
+  EXPECT_FALSE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_DocumentControlTypeId, true, false, false, false, false, false}));
+  EXPECT_FALSE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_EditControlTypeId, false, true, false, false, true, false}));
+  EXPECT_TRUE(IsWindowsTextInputCandidate(WindowsTextInputTraits{
+      UIA_DocumentControlTypeId, true, false, false, true, true, false}));
 }
 
 }  // namespace test
