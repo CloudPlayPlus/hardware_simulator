@@ -1551,9 +1551,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         Array(activeKeyMacCodes.values),
         inheritedFlags: inheritedFlags
       )
-      if Self.isModifierMacKeyCode(macKeyCode) {
-          event?.type = .flagsChanged
-      }
+      // Keep Shift/Control/Option/Command as ordinary keyDown/keyUp events.
+      // Recasting them as flagsChanged can leave the combined session modifier
+      // state latched after key-up (for example, after remote Ctrl+Tab).
       if isDown {
           event?.setIntegerValueField(
             .keyboardEventAutorepeat,
@@ -1595,19 +1595,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           }
       }
       return flags
-  }
-
-  static func isModifierMacKeyCode(_ keyCode: CGKeyCode) -> Bool {
-      switch keyCode {
-      case 0x36, 0x37, // Command
-           0x38, 0x3C, // Shift
-           0x39,       // Caps Lock
-           0x3A, 0x3D, // Option
-           0x3B, 0x3E: // Control
-          return true
-      default:
-          return false
-      }
   }
 
   static func capsLockFlagsForKeyEvent(
