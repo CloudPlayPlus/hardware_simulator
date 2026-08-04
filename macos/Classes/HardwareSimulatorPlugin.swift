@@ -1477,7 +1477,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       
       // 特殊键 - 正确映射
       0x5B: 0x37, // Left Windows/Command
-      0x5C: 0x37, // Right Windows/Command
+      0x5C: 0x36, // Right Windows/Command
       0x5D: 0x6E, // Apps/Context Menu
       0x5F: 0x7F, // Sleep
       
@@ -1546,7 +1546,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         virtualKey: macKeyCode,
         keyDown: isDown
       )
-      event?.flags.remove([.maskSecondaryFn, .maskNumericPad])
+      let inheritedFlags = CGEventSource.flagsState(.combinedSessionState)
+      event?.flags = Self.keyboardFlagsForPressedKeyCodes(
+        Array(activeKeyMacCodes.values),
+        inheritedFlags: inheritedFlags
+      )
+      if Self.isModifierMacKeyCode(macKeyCode) {
+          event?.type = .flagsChanged
+      }
       if isDown {
           event?.setIntegerValueField(
             .keyboardEventAutorepeat,
@@ -1554,6 +1561,53 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           )
       }
       event?.post(tap: .cghidEventTap)
+  }
+
+  static func keyboardFlagsForPressedKeyCodes(
+      _ pressedKeyCodes: [CGKeyCode],
+      inheritedFlags: CGEventFlags
+  ) -> CGEventFlags {
+      var flags = inheritedFlags
+      // Modifier state for injected input must come from our own pressed-key
+      // table. Inheriting the host's physical modifiers makes a remote chord
+      // nondeterministic, while omitting these flags makes Command+A arrive as
+      // a plain A on macOS.
+      flags.remove([
+        .maskShift,
+        .maskControl,
+        .maskAlternate,
+        .maskCommand,
+        .maskSecondaryFn,
+        .maskNumericPad,
+      ])
+      for keyCode in pressedKeyCodes {
+          switch keyCode {
+          case 0x38, 0x3C:
+              flags.insert(.maskShift)
+          case 0x3B, 0x3E:
+              flags.insert(.maskControl)
+          case 0x3A, 0x3D:
+              flags.insert(.maskAlternate)
+          case 0x36, 0x37:
+              flags.insert(.maskCommand)
+          default:
+              break
+          }
+      }
+      return flags
+  }
+
+  static func isModifierMacKeyCode(_ keyCode: CGKeyCode) -> Bool {
+      switch keyCode {
+      case 0x36, 0x37, // Command
+           0x38, 0x3C, // Shift
+           0x39,       // Caps Lock
+           0x3A, 0x3D, // Option
+           0x3B, 0x3E: // Control
+          return true
+      default:
+          return false
+      }
   }
 
   static func capsLockFlagsForKeyEvent(
