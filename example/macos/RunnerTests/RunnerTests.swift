@@ -69,6 +69,43 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(hotSpot.y, 0)
   }
 
+  func testCapsLockDownTogglesAlphaShiftAndSanitizesInheritedFlags() throws {
+    let inheritedFlags: CGEventFlags = [
+      .maskShift,
+      .maskSecondaryFn,
+      .maskNumericPad,
+    ]
+
+    let enabledFlags = try XCTUnwrap(
+      HardwareSimulatorPlugin.capsLockFlagsForKeyEvent(
+        currentFlags: inheritedFlags,
+        isDown: true
+      )
+    )
+    XCTAssertTrue(enabledFlags.contains(.maskAlphaShift))
+    XCTAssertTrue(enabledFlags.contains(.maskShift))
+    XCTAssertFalse(enabledFlags.contains(.maskSecondaryFn))
+    XCTAssertFalse(enabledFlags.contains(.maskNumericPad))
+
+    let disabledFlags = try XCTUnwrap(
+      HardwareSimulatorPlugin.capsLockFlagsForKeyEvent(
+        currentFlags: enabledFlags,
+        isDown: true
+      )
+    )
+    XCTAssertFalse(disabledFlags.contains(.maskAlphaShift))
+    XCTAssertTrue(disabledFlags.contains(.maskShift))
+  }
+
+  func testCapsLockReleaseDoesNotCreateAnotherStateChange() {
+    let flags = HardwareSimulatorPlugin.capsLockFlagsForKeyEvent(
+      currentFlags: [.maskAlphaShift],
+      isDown: false
+    )
+
+    XCTAssertNil(flags)
+  }
+
   func testCursorEncodingPrefersImagePointSize() throws {
     let plugin = HardwareSimulatorPlugin()
     let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
