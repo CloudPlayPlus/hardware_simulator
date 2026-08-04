@@ -1524,6 +1524,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       isDown: Bool,
       isRepeat: Bool
   ) {
+      if macKeyCode == 0x39 {
+          postCapsLockEvent(isDown: isDown)
+          return
+      }
+
       // Create and post the keyboard event.
       //
       // Strip the Fn (secondaryFn) and NumericPad flags before posting.
@@ -1549,6 +1554,47 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           )
       }
       event?.post(tap: .cghidEventTap)
+  }
+
+  static func capsLockFlagsForKeyEvent(
+      currentFlags: CGEventFlags,
+      isDown: Bool
+  ) -> CGEventFlags? {
+      // Caps Lock is a status key on macOS. Its release does not create a
+      // second state change; the next press flips AlphaShift back instead.
+      guard isDown else {
+          return nil
+      }
+
+      var flags = currentFlags
+      flags.remove([.maskSecondaryFn, .maskNumericPad])
+      if flags.contains(.maskAlphaShift) {
+          flags.remove(.maskAlphaShift)
+      } else {
+          flags.insert(.maskAlphaShift)
+      }
+      return flags
+  }
+
+  private func postCapsLockEvent(isDown: Bool) {
+      let currentFlags = CGEventSource.flagsState(.combinedSessionState)
+      guard let flags = Self.capsLockFlagsForKeyEvent(
+        currentFlags: currentFlags,
+        isDown: isDown
+      ) else {
+          return
+      }
+      let capsLockEnabled = flags.contains(.maskAlphaShift)
+      guard let event = CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: 0x39,
+        keyDown: capsLockEnabled
+      ) else {
+          return
+      }
+      event.type = .flagsChanged
+      event.flags = flags
+      event.post(tap: .cghidEventTap)
   }
 
   private func systemKeyboardRepeatDelay() -> DispatchTimeInterval {
