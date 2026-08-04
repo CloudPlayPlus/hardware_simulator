@@ -1,5 +1,7 @@
 ## Unreleased
 
+* Derive injected macOS keyboard flags from remote pressed modifiers so
+  back-to-back shortcuts keep their Command/Control state reliably.
 * Inject macOS Caps Lock as explicit AlphaShift state changes so repeated
   presses can switch input sources in both directions.
 * Define a cross-platform logical scroll contract and convert it at each

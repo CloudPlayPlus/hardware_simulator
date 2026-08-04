@@ -106,6 +106,36 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(flags)
   }
 
+  func testInjectedKeyboardFlagsUseRemoteModifierState() {
+    let flags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
+      [0x36, 0x38, 0x3B],
+      inheritedFlags: [
+        .maskAlphaShift,
+        .maskAlternate,
+        .maskSecondaryFn,
+        .maskNumericPad,
+      ]
+    )
+
+    XCTAssertTrue(flags.contains(.maskAlphaShift))
+    XCTAssertTrue(flags.contains(.maskCommand))
+    XCTAssertTrue(flags.contains(.maskShift))
+    XCTAssertTrue(flags.contains(.maskControl))
+    XCTAssertFalse(flags.contains(.maskAlternate))
+    XCTAssertFalse(flags.contains(.maskSecondaryFn))
+    XCTAssertFalse(flags.contains(.maskNumericPad))
+  }
+
+  func testInjectedKeyboardFlagsClearReleasedRemoteModifiers() {
+    let flags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
+      [],
+      inheritedFlags: [.maskCommand, .maskControl]
+    )
+
+    XCTAssertFalse(flags.contains(.maskCommand))
+    XCTAssertFalse(flags.contains(.maskControl))
+  }
+
   func testCursorEncodingPrefersImagePointSize() throws {
     let plugin = HardwareSimulatorPlugin()
     let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
