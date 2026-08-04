@@ -169,4 +169,15 @@ if(include_${PROJECT_NAME}_tests)
 
   include(GoogleTest)
   gtest_discover_tests(${TEST_RUNNER})
+
+  # The example opts into tests as part of its normal build. Run the registered
+  # cases as well as compiling them so assertion failures fail validation.
+  add_custom_target(${TEST_RUNNER}_run ALL
+    COMMAND ${CMAKE_CTEST_COMMAND}
+      --test-dir "${CMAKE_BINARY_DIR}"
+      --build-config "$<CONFIG>"
+      --output-on-failure
+    DEPENDS ${TEST_RUNNER}
+    USES_TERMINAL
+  )
 endif()
