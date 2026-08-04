@@ -47,27 +47,24 @@ public:
   bool Start();
   void Stop();
   void InspectAfterRemoteClick();
-  bool is_running() const { return running_.load(); }
+  bool is_running() const;
 
 private:
+  struct WorkerState;
+
   struct InspectionRequest {
     POINT point = {};
     std::uint64_t sequence = 0;
   };
 
-  void WorkerMain(std::promise<bool> started);
-  WindowsTextInputDecision Inspect(const InspectionRequest &request);
+  static void WorkerMain(std::shared_ptr<WorkerState> state,
+                         std::promise<bool> started);
+  static WindowsTextInputDecision Inspect(
+      ::IUIAutomation *automation, const InspectionRequest &request);
 
   Callback callback_;
-  std::atomic<bool> running_ = false;
-  std::atomic<DWORD> worker_thread_id_ = 0;
+  std::shared_ptr<WorkerState> state_;
   std::thread worker_thread_;
-  HANDLE stop_event_ = nullptr;
-  HANDLE request_event_ = nullptr;
-  std::mutex request_mutex_;
-  std::optional<InspectionRequest> pending_request_;
-  std::uint64_t next_sequence_ = 0;
-  ::IUIAutomation *automation_ = nullptr;
 };
 
 } // namespace hardware_simulator

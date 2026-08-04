@@ -112,3 +112,61 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   # Link necessary libraries for the example
   target_link_libraries(virtual_display_example PRIVATE)
 endif()
+
+# Build native unit tests only for the example application, which opts in via
+# include_hardware_simulator_tests. Plugin consumers do not fetch or build
+# Google Test.
+if(include_${PROJECT_NAME}_tests)
+  set(TEST_RUNNER "${PROJECT_NAME}_test")
+  enable_testing()
+
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/release-1.11.0.zip
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  add_executable(${TEST_RUNNER}
+    "test/hardware_simulator_plugin_test.cpp"
+    ${PLUGIN_SOURCES}
+  )
+  apply_standard_settings(${TEST_RUNNER})
+  target_compile_options(${TEST_RUNNER} PRIVATE
+    /wd"4245" /wd"4505" /wd"4828" /utf-8)
+  target_include_directories(${TEST_RUNNER} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/include"
+  )
+  if(TARGET cpp_log_plugin)
+    target_compile_definitions(${TEST_RUNNER} PRIVATE CPP_LOG_AVAILABLE=1)
+    target_link_libraries(${TEST_RUNNER} PRIVATE cpp_log_plugin)
+  endif()
+  target_link_libraries(${TEST_RUNNER} PRIVATE
+    flutter
+    flutter_wrapper_plugin
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/lib/x64/ViGEmClient.lib"
+    setupapi
+    cfgmgr32
+    user32
+    ole32
+    oleaut32
+    uiautomationcore
+    wtsapi32
+    gtest_main
+    gmock
+  )
+  add_custom_command(TARGET ${TEST_RUNNER} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${FLUTTER_LIBRARY}"
+      "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vigembus/lib/x64/ViGEmClient.dll"
+      "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
+  )
+
+  include(GoogleTest)
+  gtest_discover_tests(${TEST_RUNNER})
+endif()

@@ -279,7 +279,7 @@ HDESK syncThreadDesktop() {
     return hDesk;
 }
 
-std::optional<int> HardwareSimulatorPlugin::dpi_monitor_proc_id_ = NULL;
+std::optional<int> HardwareSimulatorPlugin::dpi_monitor_proc_id_ = std::nullopt;
 std::vector<MonitorInfo> HardwareSimulatorPlugin::static_monitors_;
 std::map<int, std::function<void(int)>> HardwareSimulatorPlugin::display_count_callbacks_;
 std::mutex HardwareSimulatorPlugin::display_count_callbacks_mutex_;

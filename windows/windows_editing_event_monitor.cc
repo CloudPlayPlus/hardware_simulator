@@ -13,6 +13,7 @@ namespace {
 
 constexpr const char *kLogTag = "EDIT_FOCUS";
 constexpr DWORD kFocusSettleDelayMs = 80;
+constexpr DWORD kWorkerStopWaitMs = 250;
 constexpr LONG kPointerHitTolerancePx = 8;
 constexpr int kMaximumParentDepth = 12;
 
@@ -149,6 +150,34 @@ IUIAutomationCacheRequest *CreateCacheRequest(IUIAutomation *automation) {
 
 } // namespace
 
+struct WindowsEditingEventMonitor::WorkerState {
+  explicit WorkerState(Callback worker_callback)
+      : callback(std::move(worker_callback)) {}
+
+  ~WorkerState() {
+    if (request_event != nullptr) {
+      CloseHandle(request_event);
+    }
+    if (stop_event != nullptr) {
+      CloseHandle(stop_event);
+    }
+    if (finished_event != nullptr) {
+      CloseHandle(finished_event);
+    }
+  }
+
+  Callback callback;
+  std::mutex callback_mutex;
+  std::atomic<bool> running = false;
+  std::atomic<DWORD> worker_thread_id = 0;
+  HANDLE stop_event = nullptr;
+  HANDLE request_event = nullptr;
+  HANDLE finished_event = nullptr;
+  std::mutex request_mutex;
+  std::optional<InspectionRequest> pending_request;
+  std::uint64_t next_sequence = 0;
+};
+
 bool IsWindowsTextInputCandidate(const WindowsTextInputTraits &traits) {
   const bool is_edit = traits.control_type_id == UIA_EditControlTypeId;
   const bool is_combo = traits.control_type_id == UIA_ComboBoxControlTypeId &&
@@ -181,16 +210,19 @@ bool WindowsEditingEventMonitor::Start() {
     return true;
   }
 
-  stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  request_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (stop_event_ == nullptr || request_event_ == nullptr) {
+  state_ = std::make_shared<WorkerState>(callback_);
+  state_->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  state_->request_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  state_->finished_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (state_->stop_event == nullptr || state_->request_event == nullptr ||
+      state_->finished_event == nullptr) {
     Stop();
     return false;
   }
 
   std::promise<bool> started;
   std::future<bool> started_future = started.get_future();
-  worker_thread_ = std::thread(&WindowsEditingEventMonitor::WorkerMain, this,
+  worker_thread_ = std::thread(&WindowsEditingEventMonitor::WorkerMain, state_,
                                std::move(started));
   const bool success = started_future.get();
   if (!success) {
@@ -200,31 +232,46 @@ bool WindowsEditingEventMonitor::Start() {
 }
 
 void WindowsEditingEventMonitor::Stop() {
-  if (stop_event_ != nullptr) {
-    SetEvent(stop_event_);
+  std::shared_ptr<WorkerState> state = state_;
+  if (!state) {
+    return;
   }
-  const DWORD worker_thread_id = worker_thread_id_.load();
+
+  state->running.store(false);
+  {
+    std::lock_guard<std::mutex> lock(state->callback_mutex);
+    state->callback = nullptr;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state->request_mutex);
+    state->pending_request.reset();
+  }
+  SetEvent(state->stop_event);
+  const DWORD worker_thread_id = state->worker_thread_id.load();
   if (worker_thread_id != 0) {
     CoCancelCall(worker_thread_id, 0);
   }
   if (worker_thread_.joinable()) {
-    worker_thread_.join();
+    if (WaitForSingleObject(state->finished_event, kWorkerStopWaitMs) ==
+        WAIT_OBJECT_0) {
+      worker_thread_.join();
+    } else {
+      worker_thread_.detach();
+      CPPLOG_WARN(kLogTag,
+                  "UIA worker did not stop within 250 ms; detaching cleanup");
+    }
   }
-  if (request_event_ != nullptr) {
-    CloseHandle(request_event_);
-    request_event_ = nullptr;
-  }
-  if (stop_event_ != nullptr) {
-    CloseHandle(stop_event_);
-    stop_event_ = nullptr;
-  }
-  std::lock_guard<std::mutex> lock(request_mutex_);
-  pending_request_.reset();
-  running_.store(false);
+  state_.reset();
+}
+
+bool WindowsEditingEventMonitor::is_running() const {
+  const std::shared_ptr<WorkerState> state = state_;
+  return state && state->running.load();
 }
 
 void WindowsEditingEventMonitor::InspectAfterRemoteClick() {
-  if (!is_running() || request_event_ == nullptr) {
+  const std::shared_ptr<WorkerState> state = state_;
+  if (!state || !state->running.load()) {
     return;
   }
   POINT point = {};
@@ -233,41 +280,44 @@ void WindowsEditingEventMonitor::InspectAfterRemoteClick() {
   }
 
   {
-    std::lock_guard<std::mutex> lock(request_mutex_);
-    pending_request_ = InspectionRequest{
+    std::lock_guard<std::mutex> lock(state->request_mutex);
+    state->pending_request = InspectionRequest{
         point,
-        ++next_sequence_,
+        ++state->next_sequence,
     };
   }
-  SetEvent(request_event_);
+  SetEvent(state->request_event);
 }
 
-void WindowsEditingEventMonitor::WorkerMain(std::promise<bool> started) {
-  worker_thread_id_.store(GetCurrentThreadId());
+void WindowsEditingEventMonitor::WorkerMain(std::shared_ptr<WorkerState> state,
+                                            std::promise<bool> started) {
+  state->worker_thread_id.store(GetCurrentThreadId());
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   const bool cancellation_enabled =
       com_initialized && SUCCEEDED(CoEnableCallCancellation(nullptr));
+  IUIAutomation *automation = nullptr;
   if (com_initialized) {
     CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                     IID_PPV_ARGS(&automation_));
+                     IID_PPV_ARGS(&automation));
   }
-  const bool ready = com_initialized && automation_ != nullptr;
-  running_.store(ready);
+  const bool ready = com_initialized && automation != nullptr;
+  state->running.store(ready);
   started.set_value(ready);
   if (!ready) {
     if (cancellation_enabled) {
       CoDisableCallCancellation(nullptr);
     }
-    worker_thread_id_.store(0);
+    state->worker_thread_id.store(0);
     if (com_initialized) {
       CoUninitialize();
     }
+    SetEvent(state->finished_event);
     return;
   }
 
   CPPLOG_INFO(kLogTag, "Remote-click text input inspector started");
-  HANDLE handles[] = {stop_event_, request_event_};
+  HANDLE handles[] = {state->stop_event, state->request_event};
   bool stopping = false;
   while (!stopping) {
     DWORD wait_result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
@@ -295,56 +345,60 @@ void WindowsEditingEventMonitor::WorkerMain(std::promise<bool> started) {
 
       std::optional<InspectionRequest> request;
       {
-        std::lock_guard<std::mutex> lock(request_mutex_);
-        request = pending_request_;
-        pending_request_.reset();
+        std::lock_guard<std::mutex> lock(state->request_mutex);
+        request = state->pending_request;
+        state->pending_request.reset();
       }
       if (request.has_value()) {
-        WindowsTextInputDecision decision = Inspect(request.value());
+        WindowsTextInputDecision decision = Inspect(automation, request.value());
         bool superseded = false;
         {
-          std::lock_guard<std::mutex> lock(request_mutex_);
-          superseded = pending_request_.has_value() &&
-                       pending_request_->sequence > request->sequence;
+          std::lock_guard<std::mutex> lock(state->request_mutex);
+          superseded = state->pending_request.has_value() &&
+                       state->pending_request->sequence > request->sequence;
         }
-        if (!superseded && callback_) {
-          callback_(decision);
+        if (!superseded) {
+          std::lock_guard<std::mutex> lock(state->callback_mutex);
+          if (state->callback) {
+            state->callback(decision);
+          }
         }
       }
       break;
     }
   }
 
-  automation_->Release();
-  automation_ = nullptr;
-  running_.store(false);
+  automation->Release();
+  state->running.store(false);
   CPPLOG_INFO(kLogTag, "Remote-click text input inspector stopped");
   if (cancellation_enabled) {
     CoDisableCallCancellation(nullptr);
   }
-  worker_thread_id_.store(0);
+  state->worker_thread_id.store(0);
   CoUninitialize();
+  SetEvent(state->finished_event);
 }
 
 WindowsTextInputDecision
-WindowsEditingEventMonitor::Inspect(const InspectionRequest &request) {
+WindowsEditingEventMonitor::Inspect(IUIAutomation *automation,
+                                    const InspectionRequest &request) {
   WindowsTextInputDecision decision;
 
-  IUIAutomationCacheRequest *cache = CreateCacheRequest(automation_);
+  IUIAutomationCacheRequest *cache = CreateCacheRequest(automation);
   if (cache == nullptr) {
     return decision;
   }
 
   IUIAutomationElement *element = nullptr;
-  if (FAILED(automation_->ElementFromPointBuildCache(request.point, cache,
-                                                     &element)) ||
+  if (FAILED(automation->ElementFromPointBuildCache(request.point, cache,
+                                                    &element)) ||
       element == nullptr) {
     cache->Release();
     return decision;
   }
 
   IUIAutomationTreeWalker *walker = nullptr;
-  automation_->get_ControlViewWalker(&walker);
+  automation->get_ControlViewWalker(&walker);
   for (int depth = 0; element != nullptr && depth < kMaximumParentDepth;
        ++depth) {
     BOOL enabled = FALSE;
