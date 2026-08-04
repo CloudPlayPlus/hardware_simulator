@@ -204,4 +204,81 @@ void main() {
     expect(received!.isMomentum, isTrue);
     await Future<void>.delayed(Duration.zero);
   });
+
+  test('first and last Windows text input listeners manage native capture',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return methodCall.method == 'startWindowsTextInputDecisionCapture';
+      },
+    );
+
+    void firstListener(WindowsTextInputDecision _) {}
+    void secondListener(WindowsTextInputDecision _) {}
+    platform.addWindowsTextInputDecision(firstListener);
+    platform.addWindowsTextInputDecision(firstListener);
+    platform.addWindowsTextInputDecision(secondListener);
+    await Future<void>.delayed(Duration.zero);
+
+    platform.removeWindowsTextInputDecision(firstListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      calls.map((call) => call.method),
+      ['startWindowsTextInputDecisionCapture'],
+    );
+
+    platform.removeWindowsTextInputDecision(secondListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      calls.map((call) => call.method),
+      [
+        'startWindowsTextInputDecisionCapture',
+        'stopWindowsTextInputDecisionCapture',
+      ],
+    );
+  });
+
+  test('decodes minimal Windows text input decisions', () async {
+    WindowsTextInputDecision? received;
+    late WindowsTextInputDecisionCallback listener;
+    listener = (decision) {
+      received = decision;
+      platform.removeWindowsTextInputDecision(listener);
+    };
+    platform.addWindowsTextInputDecision(listener);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onWindowsTextInputDecision', <String, dynamic>{
+          'active': true,
+          'secure': false,
+        }),
+      ),
+      null,
+    );
+
+    expect(received, isNotNull);
+    expect(received!.active, isTrue);
+    expect(received!.secure, isFalse);
+    await Future<void>.delayed(Duration.zero);
+  });
+
+  test('normalizes unknown and inactive secure state to null', () {
+    expect(
+      WindowsTextInputDecision.fromMap(const {'active': true}).secure,
+      isNull,
+    );
+    expect(
+      WindowsTextInputDecision.fromMap(
+        const {'active': false, 'secure': true},
+      ).secure,
+      isNull,
+    );
+  });
 }

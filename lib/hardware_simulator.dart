@@ -4,7 +4,9 @@ export 'hardware_simulator_platform_interface.dart'
         DisplayCountChangedCallback,
         TrackpadScrollCallback,
         TrackpadScrollEvent,
-        TrackpadScrollPhase;
+        TrackpadScrollPhase,
+        WindowsTextInputDecision,
+        WindowsTextInputDecisionCallback;
 import 'display_data.dart';
 
 /// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
@@ -257,6 +259,19 @@ class HardwareSimulator {
 
   static void removeTrackpadScroll(TrackpadScrollCallback callback) {
     HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
+  }
+
+  /// 注册 Windows 远端点击后的软件盘决策。
+  static void addWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.addWindowsTextInputDecision(callback);
+  }
+
+  static void removeWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.removeWindowsTextInputDecision(callback);
   }
 
   // ignore: constant_identifier_names

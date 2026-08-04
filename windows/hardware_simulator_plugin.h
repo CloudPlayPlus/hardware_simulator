@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <windows.h>
 #include <vector>
@@ -20,6 +21,9 @@ struct MonitorInfo {
 };
 
 namespace hardware_simulator {
+
+class WindowsEditingEventMonitor;
+struct WindowsTextInputDecision;
 
 class HardwareSimulatorPlugin : public flutter::Plugin {
  public:
@@ -64,6 +68,14 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
  private:
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::unique_ptr<std::thread> monitor_thread_;
+  std::unique_ptr<WindowsEditingEventMonitor> windows_editing_event_monitor_;
+  std::mutex windows_editing_event_mutex_;
+  std::unique_ptr<WindowsTextInputDecision>
+      pending_windows_text_input_decision_;
+  bool windows_editing_message_posted_ = false;
+  HWND windows_editing_window_ = nullptr;
+  UINT windows_editing_message_id_ = 0;
+  std::optional<int> windows_editing_proc_id_;
   bool immersive_mode_enabled_ = false;
   
   // Cursor lock related members
@@ -89,6 +101,12 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   
   // Helper methods for cursor lock
   void CleanupCursorLock();
+  bool StartWindowsEditingEventMonitor();
+  void StopWindowsEditingEventMonitor();
+  void QueueWindowsTextInputDecision(
+      const WindowsTextInputDecision& decision);
+  void SendWindowsTextInputDecision(
+      const WindowsTextInputDecision& decision);
   HWND FindFlutterWindow();
   bool SubscribeToRawInputData();
   void UnsubscribeFromRawInputData();

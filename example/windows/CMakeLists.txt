@@ -2,6 +2,11 @@
 cmake_minimum_required(VERSION 3.14)
 project(hardware_simulator_example LANGUAGES CXX)
 
+# Enable the plugin's native tests before adding any subdirectories so CTest
+# can discover them from the top-level Windows build directory.
+set(include_hardware_simulator_tests TRUE)
+enable_testing()
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "hardware_simulator_example")
@@ -51,9 +56,6 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
-
-# Enable the test target.
-set(include_hardware_simulator_tests TRUE)
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
