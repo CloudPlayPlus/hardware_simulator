@@ -286,57 +286,56 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
-  test('first and last Windows text input listeners manage native capture',
-      () async {
+  test('first and last text input listeners manage native capture', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
       channel,
       (MethodCall methodCall) async {
         calls.add(methodCall);
-        return methodCall.method == 'startWindowsTextInputDecisionCapture';
+        return methodCall.method == 'startTextInputDecisionCapture';
       },
     );
 
-    void firstListener(WindowsTextInputDecision _) {}
-    void secondListener(WindowsTextInputDecision _) {}
-    platform.addWindowsTextInputDecision(firstListener);
-    platform.addWindowsTextInputDecision(firstListener);
-    platform.addWindowsTextInputDecision(secondListener);
+    void firstListener(TextInputDecision _) {}
+    void secondListener(TextInputDecision _) {}
+    platform.addTextInputDecision(firstListener);
+    platform.addTextInputDecision(firstListener);
+    platform.addTextInputDecision(secondListener);
     await Future<void>.delayed(Duration.zero);
 
-    platform.removeWindowsTextInputDecision(firstListener);
+    platform.removeTextInputDecision(firstListener);
     await Future<void>.delayed(Duration.zero);
     expect(
       calls.map((call) => call.method),
-      ['startWindowsTextInputDecisionCapture'],
+      ['startTextInputDecisionCapture'],
     );
 
-    platform.removeWindowsTextInputDecision(secondListener);
+    platform.removeTextInputDecision(secondListener);
     await Future<void>.delayed(Duration.zero);
     expect(
       calls.map((call) => call.method),
       [
-        'startWindowsTextInputDecisionCapture',
-        'stopWindowsTextInputDecisionCapture',
+        'startTextInputDecisionCapture',
+        'stopTextInputDecisionCapture',
       ],
     );
   });
 
-  test('decodes minimal Windows text input decisions', () async {
-    WindowsTextInputDecision? received;
-    late WindowsTextInputDecisionCallback listener;
+  test('decodes minimal text input decisions', () async {
+    TextInputDecision? received;
+    late TextInputDecisionCallback listener;
     listener = (decision) {
       received = decision;
-      platform.removeWindowsTextInputDecision(listener);
+      platform.removeTextInputDecision(listener);
     };
-    platform.addWindowsTextInputDecision(listener);
+    platform.addTextInputDecision(listener);
 
     await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .handlePlatformMessage(
       'hardware_simulator',
       const StandardMethodCodec().encodeMethodCall(
-        const MethodCall('onWindowsTextInputDecision', <String, dynamic>{
+        const MethodCall('onTextInputDecision', <String, dynamic>{
           'active': true,
           'secure': false,
           'editFocusRequestId': 42,
@@ -354,11 +353,11 @@ void main() {
 
   test('normalizes unknown and inactive secure state to null', () {
     expect(
-      WindowsTextInputDecision.fromMap(const {'active': true}).secure,
+      TextInputDecision.fromMap(const {'active': true}).secure,
       isNull,
     );
     expect(
-      WindowsTextInputDecision.fromMap(
+      TextInputDecision.fromMap(
         const {'active': false, 'secure': true},
       ).secure,
       isNull,

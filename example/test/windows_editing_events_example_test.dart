@@ -53,7 +53,7 @@ Future<void> _sendDecision(Map<String, dynamic> decision) async {
       .handlePlatformMessage(
     'hardware_simulator',
     const StandardMethodCodec().encodeMethodCall(
-      MethodCall('onWindowsTextInputDecision', decision),
+      MethodCall('onTextInputDecision', decision),
     ),
     null,
   );

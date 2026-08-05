@@ -15,7 +15,7 @@ class _WindowsEditingEventsExampleState
   bool _listening = false;
   bool _injectingTestClick = false;
   bool? _showKeyboard;
-  WindowsTextInputDecision? _lastDecision;
+  TextInputDecision? _lastDecision;
   int _inspectionCount = 0;
   int _decisionChangeCount = 0;
 
@@ -28,20 +28,20 @@ class _WindowsEditingEventsExampleState
   @override
   void dispose() {
     if (_listening) {
-      HardwareSimulator.removeWindowsTextInputDecision(_onDecision);
+      HardwareSimulator.removeTextInputDecision(_onDecision);
     }
     super.dispose();
   }
 
   void _startListening() {
     if (_listening) return;
-    HardwareSimulator.addWindowsTextInputDecision(_onDecision);
+    HardwareSimulator.addTextInputDecision(_onDecision);
     setState(() => _listening = true);
   }
 
   void _stopListening() {
     if (!_listening) return;
-    HardwareSimulator.removeWindowsTextInputDecision(_onDecision);
+    HardwareSimulator.removeTextInputDecision(_onDecision);
     setState(() => _listening = false);
   }
 
@@ -54,7 +54,7 @@ class _WindowsEditingEventsExampleState
     });
   }
 
-  void _onDecision(WindowsTextInputDecision decision) {
+  void _onDecision(TextInputDecision decision) {
     if (!mounted) return;
     setState(() {
       _inspectionCount++;
@@ -157,7 +157,7 @@ class _DecisionPanel extends StatelessWidget {
   });
 
   final bool? showKeyboard;
-  final WindowsTextInputDecision? decision;
+  final TextInputDecision? decision;
 
   @override
   Widget build(BuildContext context) {
@@ -228,7 +228,7 @@ class _DecisionPanel extends StatelessWidget {
     );
   }
 
-  static String _description(WindowsTextInputDecision decision) {
+  static String _description(TextInputDecision decision) {
     return switch ((decision.active, decision.secure)) {
       (true, true) => '检测到密码输入控件；不读取任何文本内容',
       (true, false) => '检测到普通可编辑文本控件',

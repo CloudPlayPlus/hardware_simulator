@@ -13,6 +13,19 @@ class CursorConstants {
   static let cursorPositionChanged = 6
 }
 
+struct MacOSTextInputTraits {
+  let role: String?
+  let subrole: String?
+  let enabled: Bool
+  let editable: Bool?
+  let valueSettable: Bool
+}
+
+struct MacOSTextInputDecision: Equatable {
+  let active: Bool
+  let secure: Bool?
+}
+
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var methodChannel: FlutterMethodChannel?
   private weak var registrar: FlutterPluginRegistrar?
@@ -35,6 +48,21 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var activeKeyRepeatTimer: DispatchSourceTimer?
   private var activeRepeatingWindowsKeyCode: Int?
   private var activeKeyMacCodes: [Int: CGKeyCode] = [:]
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private let macTextInputQueue = DispatchQueue(
+    label: "com.cloudplayplus.hardware-simulator.text-input"
+  )
+  private var macTextInputObserver: AXObserver?
+  private var macTextInputObservedApplication: AXUIElement?
+  private var macTextInputWorkspaceObserver: NSObjectProtocol?
+  private var macTextInputCaptureStarted = false
+  private var macTextInputSnapshot = MacOSTextInputDecision(
+    active: false,
+    secure: nil
+  )
+  private var macTextInputSnapshotKnown = false
+  private var macTextInputRequestSequence: UInt64 = 0
+#endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
   private let macVirtualDisplayQueue = DispatchQueue(
@@ -70,6 +98,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   deinit {
     stopTrackpadScrollCapture()
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    stopMacOSTextInputDecisionCapture()
+#endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     if let macTerminationObserver {
       NotificationCenter.default.removeObserver(macTerminationObserver)
@@ -2584,6 +2615,520 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   
   var activities: [String: NSObjectProtocol] = [:]
 
+  // MARK: - macOS editable-focus observation and committed text
+
+  static let macTextInputNotificationNames = [
+    kAXFocusedUIElementChangedNotification as String
+  ]
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private static let macTextInputObserverCallback: AXObserverCallback = {
+    _, element, notification, refcon in
+    guard
+      notification as String == kAXFocusedUIElementChangedNotification as String,
+      let refcon
+    else {
+      return
+    }
+    let plugin = Unmanaged<HardwareSimulatorPlugin>
+      .fromOpaque(refcon)
+      .takeUnretainedValue()
+    plugin.updateMacTextInputSnapshot(from: element)
+  }
+#endif
+
+  static func macTextInputDecision(
+    for traits: MacOSTextInputTraits
+  ) -> MacOSTextInputDecision {
+    guard traits.enabled, traits.editable != false else {
+      return MacOSTextInputDecision(active: false, secure: nil)
+    }
+    let secure = traits.subrole == kAXSecureTextFieldSubrole as String
+    let knownTextRole = traits.role == kAXTextFieldRole as String
+      || traits.role == kAXTextAreaRole as String
+      || traits.role == kAXComboBoxRole as String
+    let active = secure
+      || traits.editable == true
+      || (knownTextRole && traits.valueSettable)
+    return MacOSTextInputDecision(
+      active: active,
+      secure: active ? secure : nil
+    )
+  }
+
+  static func validatedMacOSTextInputCodeUnits(
+    _ text: String
+  ) -> [UniChar]? {
+    guard !text.isEmpty, text.utf8.count <= 4096 else { return nil }
+    for scalar in text.unicodeScalars {
+      if scalar.value <= 0x1f || scalar.value == 0x7f {
+        return nil
+      }
+    }
+    let codeUnits = Array(text.utf16)
+    return codeUnits.isEmpty ? nil : codeUnits
+  }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private static func macAXString(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element,
+      attribute as CFString,
+      &value
+    ) == .success else {
+      return nil
+    }
+    return value as? String
+  }
+
+  private static func macAXBool(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> Bool? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element,
+      attribute as CFString,
+      &value
+    ) == .success else {
+      return nil
+    }
+    return value as? Bool
+  }
+
+  private static func macAXElement(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> AXUIElement? {
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        element,
+        attribute as CFString,
+        &value
+      ) == .success,
+      let value,
+      CFGetTypeID(value) == AXUIElementGetTypeID()
+    else {
+      return nil
+    }
+    return (value as! AXUIElement)
+  }
+
+  private static func macAXPoint(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> CGPoint? {
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        element,
+        attribute as CFString,
+        &value
+      ) == .success,
+      let value,
+      CFGetTypeID(value) == AXValueGetTypeID()
+    else {
+      return nil
+    }
+    let axValue = value as! AXValue
+    guard AXValueGetType(axValue) == .cgPoint else { return nil }
+    var point = CGPoint.zero
+    return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+  }
+
+  private static func macAXSize(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> CGSize? {
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        element,
+        attribute as CFString,
+        &value
+      ) == .success,
+      let value,
+      CFGetTypeID(value) == AXValueGetTypeID()
+    else {
+      return nil
+    }
+    let axValue = value as! AXValue
+    guard AXValueGetType(axValue) == .cgSize else { return nil }
+    var size = CGSize.zero
+    return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+  }
+
+  private static func macAXFrame(_ element: AXUIElement) -> CGRect? {
+    guard
+      let position = macAXPoint(
+        element,
+        attribute: kAXPositionAttribute as String
+      ),
+      let size = macAXSize(
+        element,
+        attribute: kAXSizeAttribute as String
+      ),
+      size.width > 0,
+      size.height > 0
+    else {
+      return nil
+    }
+    return CGRect(origin: position, size: size)
+  }
+
+  private static func macAXAttributeIsSettable(
+    _ element: AXUIElement,
+    attribute: String
+  ) -> Bool {
+    var settable = DarwinBoolean(false)
+    return AXUIElementIsAttributeSettable(
+      element,
+      attribute as CFString,
+      &settable
+    ) == .success && settable.boolValue
+  }
+
+  private static func macTextInputTraits(
+    for element: AXUIElement
+  ) -> MacOSTextInputTraits {
+    let valueSettable = macAXAttributeIsSettable(
+      element,
+      attribute: kAXValueAttribute as String
+    ) || macAXAttributeIsSettable(
+      element,
+      attribute: kAXSelectedTextAttribute as String
+    ) || macAXAttributeIsSettable(
+      element,
+      attribute: kAXSelectedTextRangeAttribute as String
+    )
+    return MacOSTextInputTraits(
+      role: macAXString(element, attribute: kAXRoleAttribute as String),
+      subrole: macAXString(element, attribute: kAXSubroleAttribute as String),
+      enabled: macAXBool(
+        element,
+        attribute: kAXEnabledAttribute as String
+      ) ?? true,
+      editable: macAXBool(
+        element,
+        attribute: kAXIsEditableAttribute as String
+      ),
+      valueSettable: valueSettable
+    )
+  }
+
+  private static func inspectMacTextInputElement(
+    _ element: AXUIElement,
+    includeParentChain: Bool = false
+  ) -> MacOSTextInputDecision {
+    var candidates = [AXUIElement]()
+    func appendUnique(_ candidate: AXUIElement) {
+      if !candidates.contains(where: { CFEqual($0, candidate) }) {
+        candidates.append(candidate)
+      }
+    }
+
+    appendUnique(element)
+    if let editableAncestor = macAXElement(
+      element,
+      attribute: kAXEditableAncestorAttribute as String
+    ) {
+      appendUnique(editableAncestor)
+    }
+    if let highestEditableAncestor = macAXElement(
+      element,
+      attribute: kAXHighestEditableAncestorAttribute as String
+    ) {
+      appendUnique(highestEditableAncestor)
+    }
+    if includeParentChain {
+      var ancestor = element
+      for _ in 0..<12 {
+        guard let parent = macAXElement(
+          ancestor,
+          attribute: kAXParentAttribute as String
+        ) else {
+          break
+        }
+        appendUnique(parent)
+        ancestor = parent
+      }
+    }
+    for candidate in candidates {
+      let decision = macTextInputDecision(
+        for: macTextInputTraits(for: candidate)
+      )
+      if decision.active {
+        return decision
+      }
+    }
+    return MacOSTextInputDecision(active: false, secure: nil)
+  }
+
+  private static func inspectMacFocusedElement(
+    _ application: AXUIElement
+  ) -> MacOSTextInputDecision? {
+    guard let focused = macAXElement(
+      application,
+      attribute: kAXFocusedUIElementAttribute as String
+    ) else {
+      return nil
+    }
+    return inspectMacTextInputElement(focused)
+  }
+
+  private static func inspectMacTextInputAtPosition(
+    _ location: CGPoint,
+    application: AXUIElement?
+  ) -> MacOSTextInputDecision {
+    let systemWide = AXUIElementCreateSystemWide()
+    var hitElement: AXUIElement?
+    if AXUIElementCopyElementAtPosition(
+      systemWide,
+      Float(location.x),
+      Float(location.y),
+      &hitElement
+    ) == .success, let hitElement {
+      let hitDecision = inspectMacTextInputElement(
+        hitElement,
+        includeParentChain: true
+      )
+      if hitDecision.active {
+        return hitDecision
+      }
+    }
+
+    // Browser accessibility providers sometimes expose the editable object as
+    // the focused element but return a generic WebArea descendant for hit-test.
+    // The frame check keeps an app-activation focus restore from opening the
+    // keyboard when the remote click landed somewhere else.
+    guard
+      let application,
+      let focused = macAXElement(
+        application,
+        attribute: kAXFocusedUIElementAttribute as String
+      ),
+      let frame = macAXFrame(focused),
+      frame.contains(location)
+    else {
+      return MacOSTextInputDecision(active: false, secure: nil)
+    }
+    return inspectMacTextInputElement(focused, includeParentChain: true)
+  }
+
+  private func updateMacTextInputSnapshot(from element: AXUIElement) {
+    macTextInputQueue.async { [weak self] in
+      guard let self else { return }
+      self.macTextInputSnapshot = Self.inspectMacTextInputElement(element)
+      self.macTextInputSnapshotKnown = true
+    }
+  }
+
+  private func refreshMacTextInputSnapshot(
+    from application: AXUIElement
+  ) {
+    macTextInputQueue.async { [weak self] in
+      guard let self else { return }
+      if let decision = Self.inspectMacFocusedElement(application) {
+        self.macTextInputSnapshot = decision
+        self.macTextInputSnapshotKnown = true
+      } else {
+        self.macTextInputSnapshot = MacOSTextInputDecision(
+          active: false,
+          secure: nil
+        )
+        self.macTextInputSnapshotKnown = false
+      }
+    }
+  }
+
+  private func detachMacTextInputObserver() {
+    if let observer = macTextInputObserver,
+       let application = macTextInputObservedApplication {
+      AXObserverRemoveNotification(
+        observer,
+        application,
+        kAXFocusedUIElementChangedNotification as CFString
+      )
+      CFRunLoopRemoveSource(
+        CFRunLoopGetMain(),
+        AXObserverGetRunLoopSource(observer),
+        .commonModes
+      )
+    }
+    macTextInputObserver = nil
+    macTextInputObservedApplication = nil
+  }
+
+  private func attachMacTextInputObserver(
+    to runningApplication: NSRunningApplication
+  ) {
+    detachMacTextInputObserver()
+
+    let application = AXUIElementCreateApplication(
+      runningApplication.processIdentifier
+    )
+    AXUIElementSetMessagingTimeout(application, 0.2)
+    var observer: AXObserver?
+    guard AXObserverCreate(
+      runningApplication.processIdentifier,
+      Self.macTextInputObserverCallback,
+      &observer
+    ) == .success, let observer else {
+      return
+    }
+    let refcon = Unmanaged.passUnretained(self).toOpaque()
+    guard AXObserverAddNotification(
+      observer,
+      application,
+      kAXFocusedUIElementChangedNotification as CFString,
+      refcon
+    ) == .success else {
+      return
+    }
+
+    macTextInputObserver = observer
+    macTextInputObservedApplication = application
+    CFRunLoopAddSource(
+      CFRunLoopGetMain(),
+      AXObserverGetRunLoopSource(observer),
+      .commonModes
+    )
+    refreshMacTextInputSnapshot(from: application)
+  }
+
+  private func startMacOSTextInputDecisionCapture() -> Bool {
+    if macTextInputCaptureStarted { return true }
+    guard AXIsProcessTrusted() else { return false }
+    macTextInputCaptureStarted = true
+    macTextInputWorkspaceObserver = NSWorkspace.shared.notificationCenter
+      .addObserver(
+        forName: NSWorkspace.didActivateApplicationNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] notification in
+        guard
+          let self,
+          let application = notification.userInfo?[
+            NSWorkspace.applicationUserInfoKey
+          ] as? NSRunningApplication
+        else {
+          return
+        }
+        self.attachMacTextInputObserver(to: application)
+      }
+    if let application = NSWorkspace.shared.frontmostApplication {
+      attachMacTextInputObserver(to: application)
+    }
+    return true
+  }
+
+  private func stopMacOSTextInputDecisionCapture() {
+    guard macTextInputCaptureStarted else { return }
+    macTextInputCaptureStarted = false
+    if let macTextInputWorkspaceObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(
+        macTextInputWorkspaceObserver
+      )
+    }
+    macTextInputWorkspaceObserver = nil
+    detachMacTextInputObserver()
+    macTextInputQueue.async { [weak self] in
+      guard let self else { return }
+      self.macTextInputRequestSequence &+= 1
+      self.macTextInputSnapshot = MacOSTextInputDecision(
+        active: false,
+        secure: nil
+      )
+      self.macTextInputSnapshotKnown = false
+    }
+  }
+
+  private func inspectMacTextInputAfterRemotePointerUp(
+    editFocusRequestId: Int?,
+    location: CGPoint?
+  ) {
+    guard
+      macTextInputCaptureStarted,
+      let editFocusRequestId,
+      let location
+    else {
+      return
+    }
+    let observedApplication = macTextInputObservedApplication
+    macTextInputQueue.async { [weak self] in
+      guard let self else { return }
+      self.macTextInputRequestSequence &+= 1
+      let sequence = self.macTextInputRequestSequence
+      self.macTextInputQueue.asyncAfter(
+        deadline: .now() + .milliseconds(50)
+      ) { [weak self] in
+        guard
+          let self,
+          sequence == self.macTextInputRequestSequence
+        else {
+          return
+        }
+        let decision = Self.inspectMacTextInputAtPosition(
+          location,
+          application: observedApplication
+        )
+        self.macTextInputSnapshot = decision
+        self.macTextInputSnapshotKnown = true
+        DispatchQueue.main.async { [weak self] in
+          self?.methodChannel?.invokeMethod(
+            "onTextInputDecision",
+            arguments: [
+              "active": decision.active,
+              "secure": decision.secure as Any,
+              "editFocusRequestId": editFocusRequestId,
+            ]
+          )
+        }
+      }
+    }
+  }
+
+  private func performMacOSTextInput(_ text: String) -> Bool {
+    guard let codeUnits = Self.validatedMacOSTextInputCodeUnits(text) else {
+      return false
+    }
+    guard
+      let keyDown = CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: 0,
+        keyDown: true
+      ),
+      let keyUp = CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: 0,
+        keyDown: false
+      )
+    else {
+      return false
+    }
+    codeUnits.withUnsafeBufferPointer { buffer in
+      keyDown.keyboardSetUnicodeString(
+        stringLength: buffer.count,
+        unicodeString: buffer.baseAddress
+      )
+      keyUp.keyboardSetUnicodeString(
+        stringLength: buffer.count,
+        unicodeString: buffer.baseAddress
+      )
+    }
+    keyDown.flags = []
+    keyUp.flags = []
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
+    return true
+  }
+#endif
+
   // MARK: - macOS permission self-check
 
   /// Whether this process can capture the screen. Uses the official preflight
@@ -2618,7 +3163,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   /// NOTE: both calls cache in-process, so a freshly-granted permission only
   /// shows up after relaunch. The UI tells the user this after they request it.
   private func macInputInjectionGranted() -> Bool {
-    return CGPreflightPostEventAccess() || AXIsProcessTrusted()
+    if #available(macOS 10.15, *) {
+      return CGPreflightPostEventAccess() || AXIsProcessTrusted()
+    }
+    return AXIsProcessTrusted()
   }
 
   /// Opens the relevant pane of System Settings → Privacy & Security.
@@ -2639,6 +3187,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     switch call.method {
     case "getPlatformVersion":
       result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
+    case "startTextInputDecisionCapture":
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      result(startMacOSTextInputDecisionCapture())
+#else
+      result(false)
+#endif
+    case "stopTextInputDecisionCapture":
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      stopMacOSTextInputDecisionCapture()
+#endif
+      result(nil)
     case "startTrackpadScrollCapture":
       result(startTrackpadScrollCapture())
     case "stopTrackpadScrollCapture":
@@ -2648,7 +3207,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)
       // - inputInjection: needed to post synthetic mouse clicks / key events (CGEventPost)
-      // - accessibility: legacy AX trust, kept for diagnostics
+      // - accessibility: AX trust for editable-focus observation
       result([
         "screenCapture": macScreenCaptureGranted(),
         "inputInjection": macInputInjectionGranted(),
@@ -2673,9 +3232,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         }
       case "inputInjection":
         // CGRequestPostEventAccess shows the prompt the first time (macOS 10.15+).
-        let granted = CGRequestPostEventAccess()
-        if !granted { openMacOSPrivacySettings(section: "accessibility") }
-        result(granted)
+        if #available(macOS 10.15, *) {
+          let granted = CGRequestPostEventAccess()
+          if !granted { openMacOSPrivacySettings(section: "accessibility") }
+          result(granted)
+        } else {
+          openMacOSPrivacySettings(section: "accessibility")
+          result(AXIsProcessTrusted())
+        }
+      case "accessibility":
+        let options = [
+          kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary
+        result(AXIsProcessTrustedWithOptions(options))
       default:
         result(FlutterError(code: "BAD_ARGS", message: "Unknown permission type: \(type)", details: nil))
       }
@@ -2896,7 +3465,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         let buttonId = args["buttonId"] as? Int,
         let isDown = args["isDown"] as? Bool {
         // 调用鼠标移动函数
+        let pointerLocation = currentMouseLocation()
         performMouseButton(buttonId: buttonId, isDown: isDown)
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+        if buttonId == 1 && !isDown {
+          inspectMacTextInputAfterRemotePointerUp(
+            editFocusRequestId: args["editFocusRequestId"] as? Int,
+            location: pointerLocation
+          )
+        }
+#endif
         result(nil) // 表示成功执行，不返回值
       } else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for Mouse Press", details: nil))
@@ -2947,6 +3525,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       } else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for KeyPress", details: nil))
       }
+    case "performTextInput":
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      guard
+        let args = call.arguments as? [String: Any],
+        let text = args["text"] as? String
+      else {
+        result(FlutterError(
+          code: "INVALID_TEXT",
+          message: "Text input must be a string",
+          details: nil
+        ))
+        return
+      }
+      if performMacOSTextInput(text) {
+        result(nil)
+      } else {
+        result(FlutterError(
+          code: "INVALID_TEXT",
+          message: "Text input is invalid or too long",
+          details: nil
+        ))
+      }
+#else
+      result(FlutterMethodNotImplemented)
+#endif
     case "clearAllPressedEvents":
       keyboardRepeatQueue.async { [weak self] in
         self?.clearAllPressedEventsOnKeyboardQueue()

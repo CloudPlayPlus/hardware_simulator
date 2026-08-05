@@ -5,9 +5,15 @@ export 'hardware_simulator_platform_interface.dart'
         TrackpadScrollCallback,
         TrackpadScrollEvent,
         TrackpadScrollPhase,
+        TextInputDecision,
+        TextInputDecisionCallback,
         WindowsTextInputDecision,
         WindowsTextInputDecisionCallback;
 import 'display_data.dart';
+
+const bool _macOSDmgDistribution = bool.fromEnvironment(
+  'CLOUDPLAYPLUS_DMG_DISTRIBUTION',
+);
 
 /// Snapshot of the macOS TCC permissions relevant to remote-control hosting.
 class MacOSPermissionStatus {
@@ -19,7 +25,7 @@ class MacOSPermissionStatus {
   /// permission, so it is intentionally not tracked here.)
   final bool inputInjection;
 
-  /// Legacy Accessibility (AXIsProcessTrusted), exposed for diagnostics.
+  /// Accessibility (AXIsProcessTrusted), required for editable-focus events.
   final bool accessibility;
 
   const MacOSPermissionStatus({
@@ -29,7 +35,10 @@ class MacOSPermissionStatus {
   });
 
   /// True when every permission needed to host a session is granted.
-  bool get allGranted => screenCapture && inputInjection;
+  bool get allGranted =>
+      screenCapture &&
+      inputInjection &&
+      (!_macOSDmgDistribution || accessibility);
 
   factory MacOSPermissionStatus.fromMap(Map<String, bool> m) =>
       MacOSPermissionStatus(
@@ -151,8 +160,8 @@ class HardwareSimulator {
   }
 
   /// macOS only. Triggers the consent prompt (or opens System Settings) for
-  /// [type]: `screenCapture` or `inputInjection`. Returns the granted state
-  /// after the request.
+  /// [type]: `screenCapture`, `inputInjection`, or `accessibility`. Returns the
+  /// granted state after the request.
   static Future<bool> requestMacOSPermission(String type) {
     return HardwareSimulatorPlatform.instance.requestMacOSPermission(type);
   }
@@ -274,17 +283,31 @@ class HardwareSimulator {
     HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
   }
 
-  /// 注册 Windows 远端点击后的软件盘决策。
+  /// 注册 Host 远端点击后的软件盘决策。
+  static void addTextInputDecision(
+    TextInputDecisionCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.addTextInputDecision(callback);
+  }
+
+  static void removeTextInputDecision(
+    TextInputDecisionCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.removeTextInputDecision(callback);
+  }
+
+  @Deprecated('Use addTextInputDecision instead.')
   static void addWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
   ) {
-    HardwareSimulatorPlatform.instance.addWindowsTextInputDecision(callback);
+    addTextInputDecision(callback);
   }
 
+  @Deprecated('Use removeTextInputDecision instead.')
   static void removeWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
   ) {
-    HardwareSimulatorPlatform.instance.removeWindowsTextInputDecision(callback);
+    removeTextInputDecision(callback);
   }
 
   // ignore: constant_identifier_names
