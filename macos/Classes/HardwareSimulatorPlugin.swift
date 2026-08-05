@@ -6,6 +6,9 @@ import ApplicationServices
 import Darwin
 
 class CursorConstants {    
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  static let cursorInvisible = 1
+#endif
   static let cursorVisible = 2
   static let cursorUpdatedDefault = 3    
   static let cursorUpdatedImage = 4    
@@ -100,8 +103,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     stopTrackpadScrollCapture()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     stopMacOSTextInputDecisionCapture()
-#endif
-#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    if let cursorVisibilityProcessHandle {
+      dlclose(cursorVisibilityProcessHandle)
+    }
     if let macTerminationObserver {
       NotificationCenter.default.removeObserver(macTerminationObserver)
     }
@@ -1932,6 +1936,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           clickCount: 0,
           screenId: screenId
       )
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      updateCursorVisibilityAfterInjectedMouseMove()
+#endif
   }
 
   func performMouseMoveRelative(dx: Double, dy: Double, screenId: Int) {
@@ -1954,6 +1961,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               clickCount: 0,
               screenId: screenId
           )
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+          updateCursorVisibilityAfterInjectedMouseMove()
+#endif
       }
   }
 
@@ -2206,6 +2216,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                              mouseCursorPosition: CGPoint(x: targetX, y: targetY), 
                              mouseButton: .left)
       moveEvent?.post(tap: .cghidEventTap)
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      updateCursorVisibilityAfterInjectedMouseMove()
+#endif
   }
 
   private func cursorLocationInQuartzCoordinates(
@@ -2265,6 +2278,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   var mouseMovedMonitor: Any?
   var cursorPositionMonitor: Any?
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  var lastCursorVisible: Bool?
+#endif
   var previousCursorImageHashes: String = ""
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
@@ -2284,6 +2300,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     .otherMouseUp,
   ]
   static let cursorTransitionProbeDelaysMs = [16, 50]
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private typealias CGCursorIsVisibleFunction = @convention(c) () -> Int32
+  private var cgCursorIsVisibleFunction: CGCursorIsVisibleFunction?
+  private var cgCursorIsVisibleLookupAttempted = false
+  private var cursorVisibilityProcessHandle: UnsafeMutableRawPointer?
+
+  private typealias SLCursorIsVisibleFunction = @convention(c) () -> Int32
+  private var slCursorIsVisibleFunction: SLCursorIsVisibleFunction?
+  private var slCursorIsVisibleLookupAttempted = false
+#endif
 
   func JSHash(buffer: [UInt8], size: Int) -> UInt32 {
     var hash: UInt32 = 1315423911
@@ -2358,6 +2384,93 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     bytes.append(contentsOf: pixels)
     return (messageHash, Data(bytes))
   }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private static func cursorVisibilityValue(_ rawValue: Int32?) -> Bool? {
+    return rawValue.map { $0 != 0 }
+  }
+
+  private func currentSystemCursorVisibility() -> Bool {
+    if let slCursorIsVisible = resolveSLCursorIsVisibleFunction() {
+      return Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
+    }
+    guard let cgCursorIsVisible = resolveCGCursorIsVisibleFunction() else {
+      return true
+    }
+    return Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
+  }
+
+  private func sendCursorInvisible(callbackID: Int) {
+    methodChannel?.invokeMethod("onCursorImageMessage", arguments: [
+      "callbackID": callbackID,
+      "message": CursorConstants.cursorInvisible,
+      "msg_info": 0,
+      "cursorImage": FlutterStandardTypedData.init(bytes: Data([]))
+    ])
+  }
+
+  private func sendCursorVisibility(callbackID: Int, visible: Bool) {
+    if visible {
+      sendCursorImagePosition(callbackID: callbackID)
+    } else {
+      sendCursorInvisible(callbackID: callbackID)
+    }
+  }
+
+  private func updateCursorVisibility(_ visible: Bool) {
+    guard lastCursorVisible != visible else { return }
+
+    lastCursorVisible = visible
+    for callbackID in cursorChangedCallbacks {
+      sendCursorVisibility(callbackID: callbackID, visible: visible)
+    }
+  }
+
+  private func pollCursorVisibility() {
+    guard !cursorChangedCallbacks.isEmpty else { return }
+
+    updateCursorVisibility(currentSystemCursorVisibility())
+  }
+
+  private func updateCursorVisibilityAfterInjectedMouseMove() {
+    pollCursorVisibility()
+  }
+
+  private func resolveCGCursorIsVisibleFunction() -> CGCursorIsVisibleFunction? {
+    if cgCursorIsVisibleLookupAttempted {
+      return cgCursorIsVisibleFunction
+    }
+    cgCursorIsVisibleLookupAttempted = true
+
+    guard let processHandle = dlopen(nil, RTLD_LAZY) else { return nil }
+    guard let symbol = dlsym(processHandle, "CGCursorIsVisible") else {
+      dlclose(processHandle)
+      return nil
+    }
+    cursorVisibilityProcessHandle = processHandle
+    cgCursorIsVisibleFunction = unsafeBitCast(
+      symbol,
+      to: CGCursorIsVisibleFunction.self
+    )
+    return cgCursorIsVisibleFunction
+  }
+
+  private func resolveSLCursorIsVisibleFunction() -> SLCursorIsVisibleFunction? {
+    if slCursorIsVisibleLookupAttempted {
+      return slCursorIsVisibleFunction
+    }
+    slCursorIsVisibleLookupAttempted = true
+
+    if let skyLight = loadMacSkyLight(),
+       let symbol = dlsym(skyLight, "SLCursorIsVisible") {
+      slCursorIsVisibleFunction = unsafeBitCast(
+        symbol,
+        to: SLCursorIsVisibleFunction.self
+      )
+    }
+    return slCursorIsVisibleFunction
+  }
+#endif
 
   private func handleCursorMonitorEvent(_ event: NSEvent) {
     checkMouseCursor()
@@ -3626,9 +3739,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                   ]
                   methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
                   markCursorHashSeen(callbackID, messageHash)
+#if !CLOUDPLAYPLUS_DMG_DISTRIBUTION
                   sendCursorImagePosition(callbackID: callbackID)
+#endif
               }
           }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+          let visible = currentSystemCursorVisibility()
+          if lastCursorVisible == visible {
+            sendCursorVisibility(callbackID: callbackID, visible: visible)
+          } else {
+            updateCursorVisibility(visible)
+          }
+#endif
          }
       else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for hookCursorImage", details: nil))
@@ -3640,6 +3764,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           hookAllCursorImage.removeValue(forKey: callbackID)
           cursorHashesByCallback.removeValue(forKey: callbackID)
           if cursorChangedCallbacks.count == 0{
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+              lastCursorVisible = nil
+#endif
               if let monitor = mouseMovedMonitor {
                NSEvent.removeMonitor(monitor)
                mouseMovedMonitor = nil
