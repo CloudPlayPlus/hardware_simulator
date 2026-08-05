@@ -33,6 +33,9 @@ struct WindowsTextInputTraits {
 };
 
 bool IsWindowsTextInputCandidate(const WindowsTextInputTraits &traits);
+bool IsWindowsTextInputElementEligible(
+    const WindowsTextInputTraits &traits, bool enabled,
+    bool keyboard_focusable, const RECT &bounds, const POINT &point);
 
 class WindowsEditingEventMonitor {
 public:
