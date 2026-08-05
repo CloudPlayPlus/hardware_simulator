@@ -290,6 +290,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performKeyEvent() has not been implemented.');
   }
 
+  Future<void> performTextInput(String text) async {
+    throw UnimplementedError('performTextInput() has not been implemented.');
+  }
+
   // Relative mouse movement.
   Future<void> performMouseMoveRelative(
       double deltax, double deltay, int screenId) async {

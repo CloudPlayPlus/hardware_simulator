@@ -28,6 +28,25 @@ void main() {
     expect(await platform.getPlatformVersion(), '42');
   });
 
+  test('performTextInput sends committed text without transformation',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performTextInput('你好 👋');
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'performTextInput');
+    expect(calls.single.arguments, {'text': '你好 👋'});
+  });
+
   test('performPenHover sends penHover method call', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

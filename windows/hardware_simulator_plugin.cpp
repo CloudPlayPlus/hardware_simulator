@@ -7,6 +7,7 @@
 #include "trackpad_scroll_accumulator.h"
 #include "virtual_display_control.h"
 #include "windows_editing_event_monitor.h"
+#include "windows_text_input_injector.h"
 #include "SmartKeyboardBlocker.h"
 
 // This must be included before many other Windows headers.
@@ -1582,6 +1583,27 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto keyCode = (args->find(flutter::EncodableValue("code")))->second;
         auto isDown = (args->find(flutter::EncodableValue("isDown")))->second;
         performKeyEvent(static_cast<int>(std::get<int>((keyCode))), static_cast<bool>(std::get<bool>((isDown))));
+        result->Success(nullptr);
+  } else if (method_call.method_name().compare("performTextInput") == 0) {
+        if (!args) {
+          result->Error("INVALID_TEXT", "Missing text input arguments");
+          return;
+        }
+        const auto text_iter = args->find(flutter::EncodableValue("text"));
+        if (text_iter == args->end() ||
+            !std::holds_alternative<std::string>(text_iter->second)) {
+          result->Error("INVALID_TEXT", "Text input must be a string");
+          return;
+        }
+        std::vector<INPUT> inputs;
+        if (!BuildWindowsUnicodeTextInputs(
+                std::get<std::string>(text_iter->second), &inputs)) {
+          result->Error("INVALID_TEXT", "Text input is invalid or too long");
+          return;
+        }
+        for (auto& input : inputs) {
+          send_input(input);
+        }
         result->Success(nullptr);
   } else if (method_call.method_name().compare("mouseMoveR") == 0) {
         auto deltax = (args->find(flutter::EncodableValue("x")))->second;

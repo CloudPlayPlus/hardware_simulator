@@ -44,6 +44,11 @@ class HWKeyboard {
   void performKeyEvent(int keyCode, bool isDown) {
     HardwareSimulatorPlatform.instance.performKeyEvent(keyCode, isDown);
   }
+
+  /// Injects committed text without exposing its contents to Dart-side logs.
+  Future<void> performTextInput(String text) {
+    return HardwareSimulatorPlatform.instance.performTextInput(text);
+  }
 }
 
 class HWMouse {
