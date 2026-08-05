@@ -58,16 +58,17 @@ class TrackpadScrollEvent {
   final bool isMomentum;
 }
 
-/// 远端左键抬起后，Windows UI Automation 给出的软件盘决策。
+/// 远端主鼠标、触摸或笔抬起后，Windows UI Automation 给出的软件盘决策。
 ///
 /// [active] 为 true 时应弹出软件盘，否则应收起。[secure] 只在 UIA 明确判断
 /// 当前可编辑控件是否为密码框时取 true 或 false；无法确认或 [active] 为 false
-/// 时为 null。
+/// 时为 null。[editFocusRequestId] 原样返回触发检查的 Dart 请求标识。
 @immutable
 class WindowsTextInputDecision {
   const WindowsTextInputDecision({
     required this.active,
     required this.secure,
+    this.editFocusRequestId,
   });
 
   factory WindowsTextInputDecision.fromMap(Map<Object?, Object?> map) {
@@ -76,11 +77,15 @@ class WindowsTextInputDecision {
     return WindowsTextInputDecision(
       active: active,
       secure: active && secure is bool ? secure : null,
+      editFocusRequestId: map['editFocusRequestId'] is int
+          ? map['editFocusRequestId'] as int
+          : null,
     );
   }
 
   final bool active;
   final bool? secure;
+  final int? editFocusRequestId;
 }
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
@@ -290,6 +295,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performKeyEvent() has not been implemented.');
   }
 
+  Future<void> performTextInput(String text) async {
+    throw UnimplementedError('performTextInput() has not been implemented.');
+  }
+
   // Relative mouse movement.
   Future<void> performMouseMoveRelative(
       double deltax, double deltay, int screenId) async {
@@ -311,7 +320,11 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
         'performMouseMoveToWindowPosition() has not been implemented.');
   }
 
-  Future<void> performMouseClick(int buttonId, bool isDown) async {
+  Future<void> performMouseClick(
+    int buttonId,
+    bool isDown, {
+    int? editFocusRequestId,
+  }) async {
     throw UnimplementedError('performMouseClick() has not been implemented.');
   }
 
@@ -333,7 +346,13 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   // Touch event simulation
   Future<void> performTouchEvent(
-      double x, double y, int touchId, bool isDown, int screenId) async {
+    double x,
+    double y,
+    int touchId,
+    bool isDown,
+    int screenId, {
+    int? editFocusRequestId,
+  }) async {
     throw UnimplementedError('performTouchEvent() has not been implemented.');
   }
 
@@ -343,8 +362,17 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   // Pen event simulation
-  Future<void> performPenEvent(double x, double y, bool isDown, bool hasButton,
-      double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenEvent(
+    double x,
+    double y,
+    bool isDown,
+    bool hasButton,
+    double pressure,
+    double rotation,
+    double tilt,
+    int screenId, {
+    int? editFocusRequestId,
+  }) async {
     throw UnimplementedError('performPenEvent() has not been implemented.');
   }
 

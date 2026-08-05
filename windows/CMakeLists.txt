@@ -32,6 +32,8 @@ list(APPEND PLUGIN_SOURCES
   "trackpad_scroll_accumulator.h"
   "windows_editing_event_monitor.cc"
   "windows_editing_event_monitor.h"
+  "windows_text_input_injector.cc"
+  "windows_text_input_injector.h"
   "virtual_display.cc"
   "virtual_display.h"
   "virtual_display_control.cc"

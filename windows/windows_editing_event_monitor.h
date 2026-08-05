@@ -19,6 +19,7 @@ namespace hardware_simulator {
 struct WindowsTextInputDecision {
   bool active = false;
   std::optional<bool> secure;
+  std::optional<std::int64_t> edit_focus_request_id;
 };
 
 struct WindowsTextInputTraits {
@@ -46,7 +47,9 @@ public:
 
   bool Start();
   void Stop();
-  void InspectAfterRemoteClick();
+  void InspectAfterRemotePointerUp(
+      std::optional<std::int64_t> edit_focus_request_id,
+      std::optional<POINT> point = std::nullopt);
   bool is_running() const;
 
 private:
@@ -55,6 +58,7 @@ private:
   struct InspectionRequest {
     POINT point = {};
     std::uint64_t sequence = 0;
+    std::optional<std::int64_t> edit_focus_request_id;
   };
 
   static void WorkerMain(std::shared_ptr<WorkerState> state,

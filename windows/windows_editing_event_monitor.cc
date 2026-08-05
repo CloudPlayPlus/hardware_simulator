@@ -269,21 +269,26 @@ bool WindowsEditingEventMonitor::is_running() const {
   return state && state->running.load();
 }
 
-void WindowsEditingEventMonitor::InspectAfterRemoteClick() {
+void WindowsEditingEventMonitor::InspectAfterRemotePointerUp(
+    std::optional<std::int64_t> edit_focus_request_id,
+    std::optional<POINT> point) {
   const std::shared_ptr<WorkerState> state = state_;
   if (!state || !state->running.load()) {
     return;
   }
-  POINT point = {};
-  if (!GetCursorPos(&point)) {
+  POINT inspection_point = {};
+  if (point.has_value()) {
+    inspection_point = point.value();
+  } else if (!GetCursorPos(&inspection_point)) {
     return;
   }
 
   {
     std::lock_guard<std::mutex> lock(state->request_mutex);
     state->pending_request = InspectionRequest{
-        point,
+        inspection_point,
         ++state->next_sequence,
+        edit_focus_request_id,
     };
   }
   SetEvent(state->request_event);
@@ -383,6 +388,7 @@ WindowsTextInputDecision
 WindowsEditingEventMonitor::Inspect(IUIAutomation *automation,
                                     const InspectionRequest &request) {
   WindowsTextInputDecision decision;
+  decision.edit_focus_request_id = request.edit_focus_request_id;
 
   IUIAutomationCacheRequest *cache = CreateCacheRequest(automation);
   if (cache == nullptr) {

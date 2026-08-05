@@ -7,6 +7,7 @@
 #include "trackpad_scroll_accumulator.h"
 #include "virtual_display_control.h"
 #include "windows_editing_event_monitor.h"
+#include "windows_text_input_injector.h"
 #include "SmartKeyboardBlocker.h"
 
 // This must be included before many other Windows headers.
@@ -27,6 +28,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -68,6 +70,62 @@ int logicalScrollToWindowsWheel(double logical_distance, bool invert) {
   const double clamped = (std::clamp)(
       scaled, -kMaxWindowsWheelDistance, kMaxWindowsWheelDistance);
   return static_cast<int>(std::lround(clamped));
+}
+
+std::optional<std::int64_t> ReadOptionalInt64(
+    const flutter::EncodableMap* args,
+    const char* key) {
+  if (args == nullptr) {
+    return std::nullopt;
+  }
+  const auto iterator = args->find(flutter::EncodableValue(key));
+  if (iterator == args->end()) {
+    return std::nullopt;
+  }
+  if (const auto value = std::get_if<std::int32_t>(&iterator->second)) {
+    return static_cast<std::int64_t>(*value);
+  }
+  if (const auto value = std::get_if<std::int64_t>(&iterator->second)) {
+    return *value;
+  }
+  return std::nullopt;
+}
+
+bool adjust_touch_to_screen(
+    int screen_index,
+    double x_percent,
+    double y_percent,
+    LONG& out_x,
+    LONG& out_y);
+
+std::optional<POINT> NormalizedPointOnMonitor(
+    const RECT& monitor_rect,
+    double x_percent,
+    double y_percent) {
+  if (!std::isfinite(x_percent) || !std::isfinite(y_percent) ||
+      monitor_rect.right <= monitor_rect.left ||
+      monitor_rect.bottom <= monitor_rect.top) {
+    return std::nullopt;
+  }
+  return POINT{
+      monitor_rect.left + static_cast<LONG>(
+                              (monitor_rect.right - monitor_rect.left) *
+                              x_percent),
+      monitor_rect.top + static_cast<LONG>(
+                             (monitor_rect.bottom - monitor_rect.top) *
+                             y_percent)};
+}
+
+std::optional<POINT> PointerPointForScreen(
+    int screen_id,
+    double x,
+    double y) {
+  LONG point_x = 0;
+  LONG point_y = 0;
+  if (!adjust_touch_to_screen(screen_id, x, y, point_x, point_y)) {
+    return std::nullopt;
+  }
+  return POINT{point_x, point_y};
 }
 
 LRESULT CALLBACK CursorReseedSubclassProc(
@@ -361,26 +419,14 @@ bool adjust_touch_to_screen(int screen_index, double x_percent, double y_percent
         return false;
     }
 
-    RECT global_bounds = {0};
-    for (const auto& monitor : monitors) {
-        global_bounds.left = (std::min)(global_bounds.left, monitor.rect.left);
-        global_bounds.top = (std::min)(global_bounds.top, monitor.rect.top);
-        global_bounds.right = (std::max)(global_bounds.right, monitor.rect.right);
-        global_bounds.bottom = (std::max)(global_bounds.bottom, monitor.rect.bottom);
+    const auto point = NormalizedPointOnMonitor(
+        monitors[screen_index].rect, x_percent, y_percent);
+    if (!point.has_value()) {
+        out_x = out_y = 0;
+        return false;
     }
-
-    const auto& screen = monitors[screen_index];
-    
-    double global_x = (screen.rect.left - global_bounds.left + 
-                      (screen.rect.right - screen.rect.left) * x_percent) / 
-                     (global_bounds.right - global_bounds.left);
-    
-    double global_y = (screen.rect.top - global_bounds.top + 
-                      (screen.rect.bottom - screen.rect.top) * y_percent) / 
-                     (global_bounds.bottom - global_bounds.top);
-
-    out_x = static_cast<LONG>(global_x * GetSystemMetrics(SM_CXVIRTUALSCREEN));
-    out_y = static_cast<LONG>(global_y * GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    out_x = point->x;
+    out_y = point->y;
     return true;
 }
 
@@ -1159,6 +1205,10 @@ void HardwareSimulatorPlugin::SendWindowsTextInputDecision(
       decision.secure.has_value()
           ? flutter::EncodableValue(decision.secure.value())
           : flutter::EncodableValue();
+  message[flutter::EncodableValue("editFocusRequestId")] =
+      decision.edit_focus_request_id.has_value()
+          ? flutter::EncodableValue(decision.edit_focus_request_id.value())
+          : flutter::EncodableValue();
   channel_->InvokeMethod(
       "onWindowsTextInputDecision",
       std::make_unique<flutter::EncodableValue>(message));
@@ -1583,6 +1633,27 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto isDown = (args->find(flutter::EncodableValue("isDown")))->second;
         performKeyEvent(static_cast<int>(std::get<int>((keyCode))), static_cast<bool>(std::get<bool>((isDown))));
         result->Success(nullptr);
+  } else if (method_call.method_name().compare("performTextInput") == 0) {
+        if (!args) {
+          result->Error("INVALID_TEXT", "Missing text input arguments");
+          return;
+        }
+        const auto text_iter = args->find(flutter::EncodableValue("text"));
+        if (text_iter == args->end() ||
+            !std::holds_alternative<std::string>(text_iter->second)) {
+          result->Error("INVALID_TEXT", "Text input must be a string");
+          return;
+        }
+        std::vector<INPUT> inputs;
+        if (!BuildWindowsUnicodeTextInputs(
+                std::get<std::string>(text_iter->second), &inputs)) {
+          result->Error("INVALID_TEXT", "Text input is invalid or too long");
+          return;
+        }
+        for (auto& input : inputs) {
+          send_input(input);
+        }
+        result->Success(nullptr);
   } else if (method_call.method_name().compare("mouseMoveR") == 0) {
         auto deltax = (args->find(flutter::EncodableValue("x")))->second;
         auto deltay = (args->find(flutter::EncodableValue("y")))->second;
@@ -1604,9 +1675,12 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto isDown = (args->find(flutter::EncodableValue("isDown")))->second;
         const int button = static_cast<int>(std::get<int>(buttonid));
         const bool is_down = static_cast<bool>(std::get<bool>(isDown));
+        const auto edit_focus_request_id =
+            ReadOptionalInt64(args, "editFocusRequestId");
         performMouseButton(button, !is_down);
         if (button == 1 && !is_down && windows_editing_event_monitor_) {
-          windows_editing_event_monitor_->InspectAfterRemoteClick();
+          windows_editing_event_monitor_->InspectAfterRemotePointerUp(
+              edit_focus_request_id);
         }
         result->Success(nullptr);
   } else if (method_call.method_name().compare("mouseScroll") == 0) {
@@ -1728,13 +1802,25 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto y = (args->find(flutter::EncodableValue("y")))->second;
         auto touchId = (args->find(flutter::EncodableValue("touchId")))->second;
         auto isDown = (args->find(flutter::EncodableValue("isDown")))->second;
+        const int screen_id = static_cast<int>(std::get<int>((screenId)));
+        const double x_value = static_cast<double>(std::get<double>((x)));
+        const double y_value = static_cast<double>(std::get<double>((y)));
+        const bool is_down = static_cast<bool>(std::get<bool>((isDown)));
         performTouchEvent(
-            static_cast<int>(std::get<int>((screenId))),
-            static_cast<double>(std::get<double>((x))),
-            static_cast<double>(std::get<double>((y))),
+            screen_id,
+            x_value,
+            y_value,
             static_cast<uint32_t>(std::get<int>((touchId))),
-            static_cast<bool>(std::get<bool>((isDown)))
+            is_down
         );
+        const auto inspection_point =
+            PointerPointForScreen(screen_id, x_value, y_value);
+        if (!is_down && windows_editing_event_monitor_ &&
+            inspection_point.has_value()) {
+          windows_editing_event_monitor_->InspectAfterRemotePointerUp(
+              ReadOptionalInt64(args, "editFocusRequestId"),
+              inspection_point);
+        }
         result->Success(nullptr);
   } else if (method_call.method_name().compare("touchMove") == 0) {
         auto screenId = (args->find(flutter::EncodableValue("screenId")))->second;
@@ -1757,16 +1843,28 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto pressure = (args->find(flutter::EncodableValue("pressure")))->second;
         auto rotation = (args->find(flutter::EncodableValue("rotation")))->second;
         auto tilt = (args->find(flutter::EncodableValue("tilt")))->second;
+        const int screen_id = static_cast<int>(std::get<int>((screenId)));
+        const double x_value = static_cast<double>(std::get<double>((x)));
+        const double y_value = static_cast<double>(std::get<double>((y)));
+        const bool is_down = static_cast<bool>(std::get<bool>((isDown)));
         performPenEvent(
-            static_cast<int>(std::get<int>((screenId))),
-            static_cast<double>(std::get<double>((x))),
-            static_cast<double>(std::get<double>((y))),
-            static_cast<bool>(std::get<bool>((isDown))),
+            screen_id,
+            x_value,
+            y_value,
+            is_down,
             static_cast<bool>(std::get<bool>((hasButton))),
             static_cast<double>(std::get<double>((pressure))),
             static_cast<double>(std::get<double>((rotation))),
             static_cast<double>(std::get<double>((tilt)))
         );
+        const auto inspection_point =
+            PointerPointForScreen(screen_id, x_value, y_value);
+        if (!is_down && windows_editing_event_monitor_ &&
+            inspection_point.has_value()) {
+          windows_editing_event_monitor_->InspectAfterRemotePointerUp(
+              ReadOptionalInt64(args, "editFocusRequestId"),
+              inspection_point);
+        }
         result->Success(nullptr);
   } else if (method_call.method_name().compare("penMove") == 0) {
         auto screenId = (args->find(flutter::EncodableValue("screenId")))->second;

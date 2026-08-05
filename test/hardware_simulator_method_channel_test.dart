@@ -28,6 +28,87 @@ void main() {
     expect(await platform.getPlatformVersion(), '42');
   });
 
+  test('performTextInput sends committed text without transformation',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performTextInput('你好 👋');
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'performTextInput');
+    expect(calls.single.arguments, {'text': '你好 👋'});
+  });
+
+  test('pointer contact-up carries the edit-focus request id', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return null;
+      },
+    );
+
+    await platform.performMouseClick(
+      1,
+      false,
+      editFocusRequestId: 41,
+    );
+    await platform.performTouchEvent(
+      0.25,
+      0.75,
+      2,
+      false,
+      1,
+      editFocusRequestId: 42,
+    );
+    await platform.performPenEvent(
+      0.5,
+      0.6,
+      false,
+      false,
+      0.8,
+      0,
+      0,
+      1,
+      editFocusRequestId: 43,
+    );
+
+    expect(calls[0].arguments, {
+      'buttonId': 1,
+      'isDown': false,
+      'editFocusRequestId': 41,
+    });
+    expect(calls[1].arguments, {
+      'x': 0.25,
+      'y': 0.75,
+      'touchId': 2,
+      'isDown': false,
+      'screenId': 1,
+      'editFocusRequestId': 42,
+    });
+    expect(calls[2].arguments, {
+      'x': 0.5,
+      'y': 0.6,
+      'isDown': false,
+      'hasButton': false,
+      'pressure': 0.8,
+      'rotation': 0.0,
+      'tilt': 0.0,
+      'screenId': 1,
+      'editFocusRequestId': 43,
+    });
+  });
+
   test('performPenHover sends penHover method call', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -258,6 +339,7 @@ void main() {
         const MethodCall('onWindowsTextInputDecision', <String, dynamic>{
           'active': true,
           'secure': false,
+          'editFocusRequestId': 42,
         }),
       ),
       null,
@@ -266,6 +348,7 @@ void main() {
     expect(received, isNotNull);
     expect(received!.active, isTrue);
     expect(received!.secure, isFalse);
+    expect(received!.editFocusRequestId, 42);
     await Future<void>.delayed(Duration.zero);
   });
 
