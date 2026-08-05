@@ -51,12 +51,13 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
             callback(event);
           }
         }
-      } else if (call.method == "onWindowsTextInputDecision") {
+      } else if (call.method == "onTextInputDecision" ||
+          call.method == "onWindowsTextInputDecision") {
         final arguments = call.arguments;
         if (arguments is Map) {
-          final decision = WindowsTextInputDecision.fromMap(arguments);
-          for (final callback in List<WindowsTextInputDecisionCallback>.of(
-            windowsTextInputDecisionCallbacks,
+          final decision = TextInputDecision.fromMap(arguments);
+          for (final callback in List<TextInputDecisionCallback>.of(
+            textInputDecisionCallbacks,
           )) {
             callback(decision);
           }
@@ -311,48 +312,59 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     }
   }
 
-  final List<WindowsTextInputDecisionCallback>
-      windowsTextInputDecisionCallbacks = [];
+  final List<TextInputDecisionCallback> textInputDecisionCallbacks = [];
 
   @override
-  void addWindowsTextInputDecision(WindowsTextInputDecisionCallback callback) {
+  void addTextInputDecision(TextInputDecisionCallback callback) {
     if (!isinitialized) init();
-    if (windowsTextInputDecisionCallbacks.contains(callback)) return;
-    final shouldStartCapture = windowsTextInputDecisionCallbacks.isEmpty;
-    windowsTextInputDecisionCallbacks.add(callback);
+    if (textInputDecisionCallbacks.contains(callback)) return;
+    final shouldStartCapture = textInputDecisionCallbacks.isEmpty;
+    textInputDecisionCallbacks.add(callback);
     if (shouldStartCapture) {
-      unawaited(startWindowsTextInputDecisionCapture());
+      unawaited(startTextInputDecisionCapture());
     }
   }
 
   @override
-  void removeWindowsTextInputDecision(
-    WindowsTextInputDecisionCallback callback,
+  void removeTextInputDecision(
+    TextInputDecisionCallback callback,
   ) {
-    final removed = windowsTextInputDecisionCallbacks.remove(callback);
-    if (removed && windowsTextInputDecisionCallbacks.isEmpty) {
-      unawaited(stopWindowsTextInputDecisionCapture());
+    final removed = textInputDecisionCallbacks.remove(callback);
+    if (removed && textInputDecisionCallbacks.isEmpty) {
+      unawaited(stopTextInputDecisionCapture());
     }
   }
 
   @override
-  Future<bool> startWindowsTextInputDecisionCapture() async {
+  Future<bool> startTextInputDecisionCapture() async {
     try {
       final supported = await methodChannel
-          .invokeMethod<Object?>('startWindowsTextInputDecisionCapture');
+          .invokeMethod<Object?>('startTextInputDecisionCapture');
       return supported == true;
     } on MissingPluginException {
-      return false;
+      try {
+        final supported = await methodChannel.invokeMethod<Object?>(
+          'startWindowsTextInputDecisionCapture',
+        );
+        return supported == true;
+      } on MissingPluginException {
+        return false;
+      }
     }
   }
 
   @override
-  Future<void> stopWindowsTextInputDecisionCapture() async {
+  Future<void> stopTextInputDecisionCapture() async {
     try {
-      await methodChannel
-          .invokeMethod<void>('stopWindowsTextInputDecisionCapture');
+      await methodChannel.invokeMethod<void>('stopTextInputDecisionCapture');
     } on MissingPluginException {
-      return;
+      try {
+        await methodChannel.invokeMethod<void>(
+          'stopWindowsTextInputDecisionCapture',
+        );
+      } on MissingPluginException {
+        return;
+      }
     }
   }
 

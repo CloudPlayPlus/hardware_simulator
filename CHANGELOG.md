@@ -1,5 +1,7 @@
 ## Unreleased
 
+* Add event-driven macOS editable-focus detection and Unicode text injection.
+* Generalize the editable-focus decision API for Windows and macOS hosts.
 * Derive injected macOS keyboard flags from remote pressed modifiers so
   back-to-back shortcuts keep their Command/Control state reliably.
 * Inject macOS Caps Lock as explicit AlphaShift state changes so repeated

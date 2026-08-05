@@ -12,9 +12,11 @@ typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
-typedef WindowsTextInputDecisionCallback = void Function(
-  WindowsTextInputDecision decision,
+typedef TextInputDecisionCallback = void Function(
+  TextInputDecision decision,
 );
+@Deprecated('Use TextInputDecisionCallback instead.')
+typedef WindowsTextInputDecisionCallback = TextInputDecisionCallback;
 typedef CursorImageUpdatedCallback = void Function(
     int message, int messageInfo, Uint8List cursorImage);
 typedef CursorPositionUpdatedCallback = void Function(
@@ -58,23 +60,23 @@ class TrackpadScrollEvent {
   final bool isMomentum;
 }
 
-/// 远端主鼠标、触摸或笔抬起后，Windows UI Automation 给出的软件盘决策。
+/// 远端主鼠标、触摸或笔抬起后，Host 原生可访问性 API 给出的软件盘决策。
 ///
 /// [active] 为 true 时应弹出软件盘，否则应收起。[secure] 只在 UIA 明确判断
 /// 当前可编辑控件是否为密码框时取 true 或 false；无法确认或 [active] 为 false
 /// 时为 null。[editFocusRequestId] 原样返回触发检查的 Dart 请求标识。
 @immutable
-class WindowsTextInputDecision {
-  const WindowsTextInputDecision({
+class TextInputDecision {
+  const TextInputDecision({
     required this.active,
     required this.secure,
     this.editFocusRequestId,
   });
 
-  factory WindowsTextInputDecision.fromMap(Map<Object?, Object?> map) {
+  factory TextInputDecision.fromMap(Map<Object?, Object?> map) {
     final active = map['active'] == true;
     final secure = map['secure'];
-    return WindowsTextInputDecision(
+    return TextInputDecision(
       active: active,
       secure: active && secure is bool ? secure : null,
       editFocusRequestId: map['editFocusRequestId'] is int
@@ -87,6 +89,9 @@ class WindowsTextInputDecision {
   final bool? secure;
   final int? editFocusRequestId;
 }
+
+@Deprecated('Use TextInputDecision instead.')
+typedef WindowsTextInputDecision = TextInputDecision;
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Constructs a HardwareSimulatorPlatform.
@@ -121,8 +126,9 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   /// macOS only. Asks macOS to show the consent prompt for [type]
-  /// (`screenCapture` or `inputInjection`), opening System Settings if no
-  /// auto-prompt is available. Returns the granted state after the request.
+  /// (`screenCapture`, `inputInjection`, or `accessibility`), opening System
+  /// Settings if no auto-prompt is available. Returns the granted state after
+  /// the request.
   Future<bool> requestMacOSPermission(String type) async {
     return false;
   }
@@ -239,22 +245,46 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
 
-  /// 注册 Windows 远端点击后的文本输入决策。
+  /// 注册 Host 远端点击后的文本输入决策。
+  void addTextInputDecision(
+    TextInputDecisionCallback callback,
+  ) {
+    addWindowsTextInputDecision(callback);
+  }
+
+  /// 移除 Host 软件盘决策监听器。
+  void removeTextInputDecision(
+    TextInputDecisionCallback callback,
+  ) {
+    removeWindowsTextInputDecision(callback);
+  }
+
+  /// 启动原生编辑焦点检测；不支持的平台返回 false。
+  Future<bool> startTextInputDecisionCapture() {
+    return startWindowsTextInputDecisionCapture();
+  }
+
+  /// 停止原生编辑焦点检测。
+  Future<void> stopTextInputDecisionCapture() {
+    return stopWindowsTextInputDecisionCapture();
+  }
+
+  @Deprecated('Use addTextInputDecision instead.')
   void addWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
   ) {}
 
-  /// 移除 Windows 软件盘决策监听器。
+  @Deprecated('Use removeTextInputDecision instead.')
   void removeWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
   ) {}
 
-  /// 启动 Windows 按需 UI Automation 检查；不支持的平台返回 false。
+  @Deprecated('Use startTextInputDecisionCapture instead.')
   Future<bool> startWindowsTextInputDecisionCapture() async {
     return false;
   }
 
-  /// 停止 Windows 按需 UI Automation 检查。
+  @Deprecated('Use stopTextInputDecisionCapture instead.')
   Future<void> stopWindowsTextInputDecisionCapture() async {}
 
   void addCursorImageUpdated(

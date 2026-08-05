@@ -1210,7 +1210,7 @@ void HardwareSimulatorPlugin::SendWindowsTextInputDecision(
           ? flutter::EncodableValue(decision.edit_focus_request_id.value())
           : flutter::EncodableValue();
   channel_->InvokeMethod(
-      "onWindowsTextInputDecision",
+      "onTextInputDecision",
       std::make_unique<flutter::EncodableValue>(message));
 }
 
@@ -1606,10 +1606,14 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     }
     result->Success(flutter::EncodableValue(version_stream.str()));
   } else if (method_call.method_name().compare(
+                 "startTextInputDecisionCapture") == 0 ||
+             method_call.method_name().compare(
                  "startWindowsTextInputDecisionCapture") == 0) {
     result->Success(
         flutter::EncodableValue(StartWindowsEditingEventMonitor()));
   } else if (method_call.method_name().compare(
+                 "stopTextInputDecisionCapture") == 0 ||
+             method_call.method_name().compare(
                  "stopWindowsTextInputDecisionCapture") == 0) {
     StopWindowsEditingEventMonitor();
     result->Success(nullptr);

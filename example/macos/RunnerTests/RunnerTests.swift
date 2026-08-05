@@ -136,6 +136,90 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(flags.contains(.maskControl))
   }
 
+  func testMacTextInputObserverOnlyUsesFocusedElementChanges() {
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.macTextInputNotificationNames,
+      [kAXFocusedUIElementChangedNotification as String]
+    )
+  }
+
+  func testMacTextInputClassifiesEditableAndSecureFields() {
+    let ordinary = HardwareSimulatorPlugin.macTextInputDecision(
+      for: MacOSTextInputTraits(
+        role: kAXTextFieldRole as String,
+        subrole: nil,
+        enabled: true,
+        editable: true,
+        valueSettable: true
+      )
+    )
+    XCTAssertTrue(ordinary.active)
+    XCTAssertEqual(ordinary.secure, false)
+
+    let secure = HardwareSimulatorPlugin.macTextInputDecision(
+      for: MacOSTextInputTraits(
+        role: kAXTextFieldRole as String,
+        subrole: kAXSecureTextFieldSubrole as String,
+        enabled: true,
+        editable: true,
+        valueSettable: false
+      )
+    )
+    XCTAssertTrue(secure.active)
+    XCTAssertEqual(secure.secure, true)
+  }
+
+  func testMacTextInputRejectsDisabledReadOnlyAndNonTextElements() {
+    let disabled = HardwareSimulatorPlugin.macTextInputDecision(
+      for: MacOSTextInputTraits(
+        role: kAXTextAreaRole as String,
+        subrole: nil,
+        enabled: false,
+        editable: true,
+        valueSettable: true
+      )
+    )
+    XCTAssertFalse(disabled.active)
+    XCTAssertNil(disabled.secure)
+
+    let readOnly = HardwareSimulatorPlugin.macTextInputDecision(
+      for: MacOSTextInputTraits(
+        role: kAXTextFieldRole as String,
+        subrole: nil,
+        enabled: true,
+        editable: false,
+        valueSettable: false
+      )
+    )
+    XCTAssertFalse(readOnly.active)
+
+    let button = HardwareSimulatorPlugin.macTextInputDecision(
+      for: MacOSTextInputTraits(
+        role: kAXButtonRole as String,
+        subrole: nil,
+        enabled: true,
+        editable: nil,
+        valueSettable: false
+      )
+    )
+    XCTAssertFalse(button.active)
+  }
+
+  func testMacTextInputValidatesCommittedUnicodeAtomically() {
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.validatedMacOSTextInputCodeUnits("你好 👋"),
+      Array("你好 👋".utf16)
+    )
+    XCTAssertNil(HardwareSimulatorPlugin.validatedMacOSTextInputCodeUnits(""))
+    XCTAssertNil(HardwareSimulatorPlugin.validatedMacOSTextInputCodeUnits("a\nb"))
+    XCTAssertNil(HardwareSimulatorPlugin.validatedMacOSTextInputCodeUnits("\u{7f}"))
+    XCTAssertNil(
+      HardwareSimulatorPlugin.validatedMacOSTextInputCodeUnits(
+        String(repeating: "界", count: 1366)
+      )
+    )
+  }
+
   func testCursorEncodingPrefersImagePointSize() throws {
     let plugin = HardwareSimulatorPlugin()
     let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
