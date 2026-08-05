@@ -2882,8 +2882,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private static func inspectMacTextInputAtPosition(
-    _ location: CGPoint,
-    application: AXUIElement?
+    _ location: CGPoint
   ) -> MacOSTextInputDecision {
     let systemWide = AXUIElementCreateSystemWide()
     var hitElement: AXUIElement?
@@ -2907,7 +2906,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     // The frame check keeps an app-activation focus restore from opening the
     // keyboard when the remote click landed somewhere else.
     guard
-      let application,
+      let application = macAXElement(
+        systemWide,
+        attribute: kAXFocusedApplicationAttribute as String
+      ),
       let focused = macAXElement(
         application,
         attribute: kAXFocusedUIElementAttribute as String
@@ -3059,7 +3061,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     else {
       return
     }
-    let observedApplication = macTextInputObservedApplication
     macTextInputQueue.async { [weak self] in
       guard let self else { return }
       self.macTextInputRequestSequence &+= 1
@@ -3073,10 +3074,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         else {
           return
         }
-        let decision = Self.inspectMacTextInputAtPosition(
-          location,
-          application: observedApplication
-        )
+        let decision = Self.inspectMacTextInputAtPosition(location)
         self.macTextInputSnapshot = decision
         self.macTextInputSnapshotKnown = true
         DispatchQueue.main.async { [weak self] in

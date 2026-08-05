@@ -248,44 +248,44 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// 注册 Host 远端点击后的文本输入决策。
   void addTextInputDecision(
     TextInputDecisionCallback callback,
-  ) {}
+  ) {
+    addWindowsTextInputDecision(callback);
+  }
 
   /// 移除 Host 软件盘决策监听器。
   void removeTextInputDecision(
     TextInputDecisionCallback callback,
-  ) {}
+  ) {
+    removeWindowsTextInputDecision(callback);
+  }
 
   /// 启动原生编辑焦点检测；不支持的平台返回 false。
-  Future<bool> startTextInputDecisionCapture() async {
-    return false;
+  Future<bool> startTextInputDecisionCapture() {
+    return startWindowsTextInputDecisionCapture();
   }
 
   /// 停止原生编辑焦点检测。
-  Future<void> stopTextInputDecisionCapture() async {}
+  Future<void> stopTextInputDecisionCapture() {
+    return stopWindowsTextInputDecisionCapture();
+  }
 
   @Deprecated('Use addTextInputDecision instead.')
   void addWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
-  ) {
-    addTextInputDecision(callback);
-  }
+  ) {}
 
   @Deprecated('Use removeTextInputDecision instead.')
   void removeWindowsTextInputDecision(
     WindowsTextInputDecisionCallback callback,
-  ) {
-    removeTextInputDecision(callback);
-  }
+  ) {}
 
   @Deprecated('Use startTextInputDecisionCapture instead.')
-  Future<bool> startWindowsTextInputDecisionCapture() {
-    return startTextInputDecisionCapture();
+  Future<bool> startWindowsTextInputDecisionCapture() async {
+    return false;
   }
 
   @Deprecated('Use stopTextInputDecisionCapture instead.')
-  Future<void> stopWindowsTextInputDecisionCapture() {
-    return stopTextInputDecisionCapture();
-  }
+  Future<void> stopWindowsTextInputDecisionCapture() async {}
 
   void addCursorImageUpdated(
       CursorImageUpdatedCallback callback, int callbackId, bool hookAll) {

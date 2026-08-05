@@ -2,6 +2,39 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hardware_simulator/hardware_simulator.dart';
 import 'package:hardware_simulator/hardware_simulator_method_channel.dart';
+import 'package:hardware_simulator/hardware_simulator_platform_interface.dart';
+
+class _LegacyWindowsTextInputPlatform extends HardwareSimulatorPlatform {
+  int listenerAdds = 0;
+  int listenerRemoves = 0;
+  int captureStarts = 0;
+  int captureStops = 0;
+
+  @override
+  void addWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {
+    listenerAdds += 1;
+  }
+
+  @override
+  void removeWindowsTextInputDecision(
+    WindowsTextInputDecisionCallback callback,
+  ) {
+    listenerRemoves += 1;
+  }
+
+  @override
+  Future<bool> startWindowsTextInputDecisionCapture() async {
+    captureStarts += 1;
+    return true;
+  }
+
+  @override
+  Future<void> stopWindowsTextInputDecisionCapture() async {
+    captureStops += 1;
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -26,6 +59,22 @@ void main() {
 
   test('getPlatformVersion', () async {
     expect(await platform.getPlatformVersion(), '42');
+  });
+
+  test('unified text input API delegates to legacy Windows overrides',
+      () async {
+    final legacy = _LegacyWindowsTextInputPlatform();
+    void listener(TextInputDecision _) {}
+
+    legacy.addTextInputDecision(listener);
+    legacy.removeTextInputDecision(listener);
+
+    expect(await legacy.startTextInputDecisionCapture(), isTrue);
+    await legacy.stopTextInputDecisionCapture();
+    expect(legacy.listenerAdds, 1);
+    expect(legacy.listenerRemoves, 1);
+    expect(legacy.captureStarts, 1);
+    expect(legacy.captureStops, 1);
   });
 
   test('performTextInput sends committed text without transformation',
