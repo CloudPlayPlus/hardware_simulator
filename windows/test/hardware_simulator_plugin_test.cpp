@@ -155,5 +155,21 @@ TEST(WindowsEditingEventMonitor, FiltersDocumentsAndReadOnlyControls) {
       UIA_DocumentControlTypeId, true, false, false, true, true, false}));
 }
 
+TEST(WindowsEditingEventMonitor, AcceptsFocusedBrowserEditOnlyAtClickPoint) {
+  const WindowsTextInputTraits chrome_omnibox{
+      UIA_EditControlTypeId, false, false, false, false, false, false};
+  const RECT omnibox_bounds = {1158, 560, 2790, 608};
+
+  EXPECT_TRUE(IsWindowsTextInputElementEligible(
+      chrome_omnibox, true, true, omnibox_bounds, POINT{1178, 584}));
+  EXPECT_FALSE(IsWindowsTextInputElementEligible(
+      chrome_omnibox, true, true, omnibox_bounds, POINT{1178, 700}));
+
+  const WindowsTextInputTraits chrome_overlay{
+      UIA_PaneControlTypeId, false, false, false, false, false, false};
+  EXPECT_FALSE(IsWindowsTextInputElementEligible(
+      chrome_overlay, true, false, omnibox_bounds, POINT{1178, 584}));
+}
+
 }  // namespace test
 }  // namespace hardware_simulator

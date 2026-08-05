@@ -148,7 +148,7 @@ IUIAutomationCacheRequest *CreateCacheRequest(IUIAutomation *automation) {
   return request;
 }
 
-} // namespace
+}  // namespace
 
 struct WindowsEditingEventMonitor::WorkerState {
   explicit WorkerState(Callback worker_callback)
@@ -199,6 +199,86 @@ bool IsWindowsTextInputCandidate(const WindowsTextInputTraits &traits) {
   return is_document &&
          (traits.has_active_text_caret || traits.known_rich_text_editor);
 }
+
+bool IsWindowsTextInputElementEligible(
+    const WindowsTextInputTraits &traits, bool enabled,
+    bool keyboard_focusable, const RECT &bounds, const POINT &point) {
+  return IsWindowsTextInputCandidate(traits) && enabled &&
+         keyboard_focusable && RectContainsPointWithTolerance(bounds, point);
+}
+
+namespace {
+
+// Takes ownership of |element| and checks it plus its Control View ancestors.
+// Chrome's omnibox is a notable case where ElementFromPoint returns an
+// overlapping Pane rather than the focused Edit, so callers may retry this
+// helper with GetFocusedElementBuildCache after the hit-test chain fails.
+bool TryMatchTextInputElementChain(
+    IUIAutomation *automation, IUIAutomationCacheRequest *cache,
+    IUIAutomationElement *element, const POINT &point,
+    std::optional<bool> *secure) {
+  IUIAutomationTreeWalker *walker = nullptr;
+  automation->get_ControlViewWalker(&walker);
+  bool matched = false;
+  for (int depth = 0; element != nullptr && depth < kMaximumParentDepth;
+       ++depth) {
+    BOOL enabled = FALSE;
+    BOOL keyboard_focusable = FALSE;
+    CONTROLTYPEID control_type = 0;
+    int process_id = 0;
+    RECT bounds = {};
+    element->get_CachedIsEnabled(&enabled);
+    element->get_CachedIsKeyboardFocusable(&keyboard_focusable);
+    element->get_CachedControlType(&control_type);
+    element->get_CachedProcessId(&process_id);
+    element->get_CachedBoundingRectangle(&bounds);
+
+    const bool supports_text =
+        CachedBool(element, UIA_IsTextPatternAvailablePropertyId);
+    const bool supports_value =
+        CachedBool(element, UIA_IsValuePatternAvailablePropertyId);
+    const bool supports_text_edit =
+        CachedBool(element, UIA_IsTextEditPatternAvailablePropertyId);
+    const bool read_only =
+        supports_value && CachedBool(element, UIA_ValueIsReadOnlyPropertyId);
+    const bool needs_caret = control_type == UIA_DocumentControlTypeId ||
+                             supports_text || supports_text_edit;
+    const bool active_caret = needs_caret && HasActiveTextCaret(element);
+    const bool known_rich_editor =
+        control_type == UIA_DocumentControlTypeId &&
+        IsKnownRichTextEditor(ProcessNameFromPid(process_id));
+    const WindowsTextInputTraits traits{
+        control_type, supports_text, supports_value,    supports_text_edit,
+        active_caret, read_only,     known_rich_editor,
+    };
+
+    if (IsWindowsTextInputElementEligible(
+            traits, enabled == TRUE, keyboard_focusable == TRUE, bounds,
+            point)) {
+      matched = true;
+      *secure = CachedOptionalBool(element, UIA_IsPasswordPropertyId);
+      break;
+    }
+
+    IUIAutomationElement *parent = nullptr;
+    if (walker == nullptr ||
+        FAILED(walker->GetParentElementBuildCache(element, cache, &parent))) {
+      parent = nullptr;
+    }
+    element->Release();
+    element = parent;
+  }
+
+  if (element != nullptr) {
+    element->Release();
+  }
+  if (walker != nullptr) {
+    walker->Release();
+  }
+  return matched;
+}
+
+} // namespace
 
 WindowsEditingEventMonitor::WindowsEditingEventMonitor(Callback callback)
     : callback_(std::move(callback)) {}
@@ -396,70 +476,21 @@ WindowsEditingEventMonitor::Inspect(IUIAutomation *automation,
   }
 
   IUIAutomationElement *element = nullptr;
-  if (FAILED(automation->ElementFromPointBuildCache(request.point, cache,
-                                                    &element)) ||
-      element == nullptr) {
-    cache->Release();
-    return decision;
+  if (SUCCEEDED(automation->ElementFromPointBuildCache(request.point, cache,
+                                                       &element)) &&
+      element != nullptr) {
+    decision.active = TryMatchTextInputElementChain(
+        automation, cache, element, request.point, &decision.secure);
   }
 
-  IUIAutomationTreeWalker *walker = nullptr;
-  automation->get_ControlViewWalker(&walker);
-  for (int depth = 0; element != nullptr && depth < kMaximumParentDepth;
-       ++depth) {
-    BOOL enabled = FALSE;
-    BOOL keyboard_focusable = FALSE;
-    CONTROLTYPEID control_type = 0;
-    int process_id = 0;
-    RECT bounds = {};
-    element->get_CachedIsEnabled(&enabled);
-    element->get_CachedIsKeyboardFocusable(&keyboard_focusable);
-    element->get_CachedControlType(&control_type);
-    element->get_CachedProcessId(&process_id);
-    element->get_CachedBoundingRectangle(&bounds);
-
-    const bool supports_text =
-        CachedBool(element, UIA_IsTextPatternAvailablePropertyId);
-    const bool supports_value =
-        CachedBool(element, UIA_IsValuePatternAvailablePropertyId);
-    const bool supports_text_edit =
-        CachedBool(element, UIA_IsTextEditPatternAvailablePropertyId);
-    const bool read_only =
-        supports_value && CachedBool(element, UIA_ValueIsReadOnlyPropertyId);
-    const bool needs_caret = control_type == UIA_DocumentControlTypeId ||
-                             supports_text || supports_text_edit;
-    const bool active_caret = needs_caret && HasActiveTextCaret(element);
-    const bool known_rich_editor =
-        control_type == UIA_DocumentControlTypeId &&
-        IsKnownRichTextEditor(ProcessNameFromPid(process_id));
-    const WindowsTextInputTraits traits{
-        control_type, supports_text, supports_value,    supports_text_edit,
-        active_caret, read_only,     known_rich_editor,
-    };
-
-    const bool text_candidate = IsWindowsTextInputCandidate(traits);
-    const bool inside_bounds =
-        RectContainsPointWithTolerance(bounds, request.point);
-    if (text_candidate && enabled && keyboard_focusable && inside_bounds) {
-      decision.active = true;
-      decision.secure = CachedOptionalBool(element, UIA_IsPasswordPropertyId);
-      break;
+  if (!decision.active) {
+    IUIAutomationElement *focused_element = nullptr;
+    if (SUCCEEDED(
+            automation->GetFocusedElementBuildCache(cache, &focused_element)) &&
+        focused_element != nullptr) {
+      decision.active = TryMatchTextInputElementChain(
+          automation, cache, focused_element, request.point, &decision.secure);
     }
-
-    IUIAutomationElement *parent = nullptr;
-    if (walker == nullptr ||
-        FAILED(walker->GetParentElementBuildCache(element, cache, &parent))) {
-      parent = nullptr;
-    }
-    element->Release();
-    element = parent;
-  }
-
-  if (element != nullptr) {
-    element->Release();
-  }
-  if (walker != nullptr) {
-    walker->Release();
   }
   cache->Release();
   return decision;
