@@ -43,6 +43,24 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
   EXPECT_TRUE(result_string.rfind("Windows ", 0) == 0);
 }
 
+TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {
+  const RECT left_monitor = {-1920, 0, 0, 1080};
+  const auto left_center =
+      NormalizedPointOnMonitor(left_monitor, 0.5, 0.5);
+
+  ASSERT_TRUE(left_center.has_value());
+  EXPECT_EQ(left_center->x, -960);
+  EXPECT_EQ(left_center->y, 540);
+
+  const RECT upper_monitor = {0, -1200, 1920, 0};
+  const auto upper_center =
+      NormalizedPointOnMonitor(upper_monitor, 0.5, 0.5);
+
+  ASSERT_TRUE(upper_center.has_value());
+  EXPECT_EQ(upper_center->x, 960);
+  EXPECT_EQ(upper_center->y, -600);
+}
+
 TEST(TrackpadScrollAccumulator, PreservesIntegralInputDistance) {
   TrackpadScrollAccumulator accumulator(12000);
 

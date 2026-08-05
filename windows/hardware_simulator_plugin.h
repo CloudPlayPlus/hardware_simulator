@@ -25,6 +25,13 @@ namespace hardware_simulator {
 class WindowsEditingEventMonitor;
 struct WindowsTextInputDecision;
 
+// Converts monitor-local normalized coordinates into physical virtual-desktop
+// pixels. The result intentionally preserves negative virtual origins.
+std::optional<POINT> NormalizedPointOnMonitor(
+    const RECT& monitor_rect,
+    double x_percent,
+    double y_percent);
+
 class HardwareSimulatorPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);

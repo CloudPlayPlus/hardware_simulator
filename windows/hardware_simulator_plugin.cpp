@@ -98,6 +98,24 @@ bool adjust_touch_to_screen(
     LONG& out_x,
     LONG& out_y);
 
+std::optional<POINT> NormalizedPointOnMonitor(
+    const RECT& monitor_rect,
+    double x_percent,
+    double y_percent) {
+  if (!std::isfinite(x_percent) || !std::isfinite(y_percent) ||
+      monitor_rect.right <= monitor_rect.left ||
+      monitor_rect.bottom <= monitor_rect.top) {
+    return std::nullopt;
+  }
+  return POINT{
+      monitor_rect.left + static_cast<LONG>(
+                              (monitor_rect.right - monitor_rect.left) *
+                              x_percent),
+      monitor_rect.top + static_cast<LONG>(
+                             (monitor_rect.bottom - monitor_rect.top) *
+                             y_percent)};
+}
+
 std::optional<POINT> PointerPointForScreen(
     int screen_id,
     double x,
@@ -401,26 +419,14 @@ bool adjust_touch_to_screen(int screen_index, double x_percent, double y_percent
         return false;
     }
 
-    RECT global_bounds = {0};
-    for (const auto& monitor : monitors) {
-        global_bounds.left = (std::min)(global_bounds.left, monitor.rect.left);
-        global_bounds.top = (std::min)(global_bounds.top, monitor.rect.top);
-        global_bounds.right = (std::max)(global_bounds.right, monitor.rect.right);
-        global_bounds.bottom = (std::max)(global_bounds.bottom, monitor.rect.bottom);
+    const auto point = NormalizedPointOnMonitor(
+        monitors[screen_index].rect, x_percent, y_percent);
+    if (!point.has_value()) {
+        out_x = out_y = 0;
+        return false;
     }
-
-    const auto& screen = monitors[screen_index];
-    
-    double global_x = (screen.rect.left - global_bounds.left + 
-                      (screen.rect.right - screen.rect.left) * x_percent) / 
-                     (global_bounds.right - global_bounds.left);
-    
-    double global_y = (screen.rect.top - global_bounds.top + 
-                      (screen.rect.bottom - screen.rect.top) * y_percent) / 
-                     (global_bounds.bottom - global_bounds.top);
-
-    out_x = static_cast<LONG>(global_x * GetSystemMetrics(SM_CXVIRTUALSCREEN));
-    out_y = static_cast<LONG>(global_y * GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    out_x = point->x;
+    out_y = point->y;
     return true;
 }
 
