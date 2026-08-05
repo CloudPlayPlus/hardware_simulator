@@ -478,10 +478,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> performMouseClick(int buttonId, bool isDown) async {
+  Future<void> performMouseClick(
+    int buttonId,
+    bool isDown, {
+    int? editFocusRequestId,
+  }) async {
     await methodChannel.invokeMethod('mousePress', {
       'buttonId': buttonId,
       'isDown': isDown,
+      if (editFocusRequestId != null) 'editFocusRequestId': editFocusRequestId,
     });
   }
 
@@ -530,13 +535,20 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   @override
   Future<void> performTouchEvent(
-      double x, double y, int touchId, bool isDown, int screenId) async {
+    double x,
+    double y,
+    int touchId,
+    bool isDown,
+    int screenId, {
+    int? editFocusRequestId,
+  }) async {
     await methodChannel.invokeMethod('touchEvent', {
       'x': x,
       'y': y,
       'touchId': touchId,
       'isDown': isDown,
       'screenId': screenId,
+      if (editFocusRequestId != null) 'editFocusRequestId': editFocusRequestId,
     });
   }
 
@@ -552,8 +564,17 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> performPenEvent(double x, double y, bool isDown, bool hasButton,
-      double pressure, double rotation, double tilt, int screenId) async {
+  Future<void> performPenEvent(
+    double x,
+    double y,
+    bool isDown,
+    bool hasButton,
+    double pressure,
+    double rotation,
+    double tilt,
+    int screenId, {
+    int? editFocusRequestId,
+  }) async {
     await methodChannel.invokeMethod('penEvent', {
       'x': x,
       'y': y,
@@ -563,6 +584,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       'rotation': rotation,
       'tilt': tilt,
       'screenId': screenId,
+      if (editFocusRequestId != null) 'editFocusRequestId': editFocusRequestId,
     });
   }
 

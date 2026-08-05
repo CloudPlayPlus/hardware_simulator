@@ -69,8 +69,16 @@ class HWMouse {
   }
 
   // mouse left button id 1, right button id 3
-  void performMouseClick(int buttonId, bool isDown) {
-    HardwareSimulatorPlatform.instance.performMouseClick(buttonId, isDown);
+  void performMouseClick(
+    int buttonId,
+    bool isDown, {
+    int? editFocusRequestId,
+  }) {
+    HardwareSimulatorPlatform.instance.performMouseClick(
+      buttonId,
+      isDown,
+      editFocusRequestId: editFocusRequestId,
+    );
   }
 
   /// Injects a canonical logical scroll delta.
@@ -335,9 +343,21 @@ class HardwareSimulator {
   }
 
   static void performTouchEvent(
-      double x, double y, int touchId, bool isDown, int screenId) {
-    HardwareSimulatorPlatform.instance
-        .performTouchEvent(x, y, touchId, isDown, screenId);
+    double x,
+    double y,
+    int touchId,
+    bool isDown,
+    int screenId, {
+    int? editFocusRequestId,
+  }) {
+    HardwareSimulatorPlatform.instance.performTouchEvent(
+      x,
+      y,
+      touchId,
+      isDown,
+      screenId,
+      editFocusRequestId: editFocusRequestId,
+    );
   }
 
   static void performTouchMove(double x, double y, int touchId, int screenId) {
@@ -345,10 +365,28 @@ class HardwareSimulator {
         .performTouchMove(x, y, touchId, screenId);
   }
 
-  static void performPenEvent(double x, double y, bool isDown, bool hasButton,
-      double pressure, double rotation, double tilt, int screenId) {
+  static void performPenEvent(
+    double x,
+    double y,
+    bool isDown,
+    bool hasButton,
+    double pressure,
+    double rotation,
+    double tilt,
+    int screenId, {
+    int? editFocusRequestId,
+  }) {
     HardwareSimulatorPlatform.instance.performPenEvent(
-        x, y, isDown, hasButton, pressure, rotation, tilt, screenId);
+      x,
+      y,
+      isDown,
+      hasButton,
+      pressure,
+      rotation,
+      tilt,
+      screenId,
+      editFocusRequestId: editFocusRequestId,
+    );
   }
 
   static void performPenMove(double x, double y, bool hasButton,
