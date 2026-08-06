@@ -2389,19 +2389,75 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return (messageHash, Data(bytes))
   }
 
+  static func cursorImageIsFullyTransparent(_ image: NSImage) -> Bool? {
+    var inspectedRepresentation = false
+    for case let bitmapRep as NSBitmapImageRep in image.representations {
+      guard bitmapRep.pixelsWide > 0, bitmapRep.pixelsHigh > 0 else {
+        continue
+      }
+      guard bitmapRep.hasAlpha else { return false }
+      if let transparent = bitmapRepresentationIsFullyTransparent(bitmapRep) {
+        inspectedRepresentation = true
+        if !transparent { return false }
+      }
+    }
+    return inspectedRepresentation ? true : nil
+  }
+
+  private static func bitmapRepresentationIsFullyTransparent(
+    _ bitmapRep: NSBitmapImageRep
+  ) -> Bool? {
+    if bitmapRep.bitsPerSample == 8,
+       !bitmapRep.isPlanar,
+       let bitmapData = bitmapRep.bitmapData {
+      let bytesPerPixel = bitmapRep.bitsPerPixel / 8
+      guard bytesPerPixel > 0 else { return nil }
+      let alphaOffset = bitmapRep.bitmapFormat.contains(.alphaFirst)
+        ? 0
+        : bytesPerPixel - 1
+
+      for y in 0..<bitmapRep.pixelsHigh {
+        let row = bitmapData.advanced(by: y * bitmapRep.bytesPerRow)
+        for x in 0..<bitmapRep.pixelsWide {
+          if row[x * bytesPerPixel + alphaOffset] != 0 {
+            return false
+          }
+        }
+      }
+      return true
+    }
+
+    var inspectedPixel = false
+    for y in 0..<bitmapRep.pixelsHigh {
+      for x in 0..<bitmapRep.pixelsWide {
+        guard let color = bitmapRep.colorAt(x: x, y: y) else { continue }
+        inspectedPixel = true
+        if color.alphaComponent > 0 { return false }
+      }
+    }
+    return inspectedPixel ? true : nil
+  }
+
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private static func cursorVisibilityValue(_ rawValue: Int32?) -> Bool? {
     return rawValue.map { $0 != 0 }
   }
 
   private func currentSystemCursorVisibility() -> Bool {
+    let windowServerVisible: Bool
     if let slCursorIsVisible = resolveSLCursorIsVisibleFunction() {
-      return Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
+      windowServerVisible =
+        Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
+    } else if let cgCursorIsVisible = resolveCGCursorIsVisibleFunction() {
+      windowServerVisible =
+        Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
+    } else {
+      windowServerVisible = true
     }
-    guard let cgCursorIsVisible = resolveCGCursorIsVisibleFunction() else {
-      return true
-    }
-    return Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
+    guard windowServerVisible else { return false }
+
+    guard let cursorImage = NSCursor.currentSystem?.image else { return true }
+    return !(Self.cursorImageIsFullyTransparent(cursorImage) ?? false)
   }
 
   private func sendCursorInvisible(callbackID: Int) {
