@@ -2282,6 +2282,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   var cursorVisibilityTimer: DispatchSourceTimer?
   var lastCursorVisible: Bool?
+  var lastWindowServerCursorVisible: Bool?
+  // 远程注入移动后 WindowServer getter 可能一直停留在 false；新的非透明纹理
+  // 证明系统已经重新绘制光标，不能被同一个滞留值立即覆盖。
+  var cursorTextureProvesVisible = false
 #endif
   var previousCursorImageHashes: String = ""
   var cursorChangedCallbacks = Set<Int>()
@@ -2411,6 +2415,24 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return windowServerVisible && cursorImageIsFullyTransparent != true
   }
 
+  static func reconciledCursorVisibility(
+    windowServerVisible: Bool,
+    previousWindowServerVisible: Bool?,
+    cursorTextureProvesVisible: Bool,
+    cursorImageIsFullyTransparent: Bool?
+  ) -> (visible: Bool, cursorTextureProvesVisible: Bool) {
+    if cursorImageIsFullyTransparent == true {
+      return (false, false)
+    }
+    if windowServerVisible {
+      return (true, false)
+    }
+    if previousWindowServerVisible == nil || previousWindowServerVisible == true {
+      return (false, false)
+    }
+    return (cursorTextureProvesVisible, cursorTextureProvesVisible)
+  }
+
   private static func bitmapRepresentationIsFullyTransparent(
     _ bitmapRep: NSBitmapImageRep
   ) -> Bool? {
@@ -2450,25 +2472,46 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return rawValue.map { $0 != 0 }
   }
 
-  private func currentSystemCursorVisibility() -> Bool {
-    let windowServerVisible: Bool
+  private func currentWindowServerCursorVisibility() -> Bool {
     if let slCursorIsVisible = resolveSLCursorIsVisibleFunction() {
-      windowServerVisible =
-        Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
+      return Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
     } else if let cgCursorIsVisible = resolveCGCursorIsVisibleFunction() {
-      windowServerVisible =
-        Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
-    } else {
-      windowServerVisible = true
+      return Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
     }
-    guard windowServerVisible else { return false }
+    return true
+  }
 
-    guard let cursorImage = NSCursor.currentSystem?.image else { return true }
-    return Self.combinedCursorVisibility(
+  private func currentSystemCursorVisibility() -> Bool {
+    let windowServerVisible = currentWindowServerCursorVisibility()
+    let cursorImage = NSCursor.currentSystem?.image
+    let cursorImageIsFullyTransparent = cursorImage.flatMap {
+      Self.cursorImageIsFullyTransparent($0)
+    }
+    let result = Self.reconciledCursorVisibility(
       windowServerVisible: windowServerVisible,
-      cursorImageIsFullyTransparent:
-        Self.cursorImageIsFullyTransparent(cursorImage)
+      previousWindowServerVisible: lastWindowServerCursorVisible,
+      cursorTextureProvesVisible: cursorTextureProvesVisible,
+      cursorImageIsFullyTransparent: cursorImageIsFullyTransparent
     )
+    lastWindowServerCursorVisible = windowServerVisible
+    cursorTextureProvesVisible = result.cursorTextureProvesVisible
+    return result.visible
+  }
+
+  private func updateCursorVisibilityAfterTextureChange(_ image: NSImage) {
+    let cursorImageIsFullyTransparent = Self.cursorImageIsFullyTransparent(image)
+    guard cursorImageIsFullyTransparent != nil else { return }
+
+    let windowServerVisible = currentWindowServerCursorVisibility()
+    let result = Self.reconciledCursorVisibility(
+      windowServerVisible: windowServerVisible,
+      previousWindowServerVisible: lastWindowServerCursorVisible,
+      cursorTextureProvesVisible: cursorImageIsFullyTransparent == false,
+      cursorImageIsFullyTransparent: cursorImageIsFullyTransparent
+    )
+    lastWindowServerCursorVisible = windowServerVisible
+    cursorTextureProvesVisible = result.cursorTextureProvesVisible
+    updateCursorVisibility(result.visible)
   }
 
   private func sendCursorInvisible(callbackID: Int) {
@@ -2525,6 +2568,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     cursorVisibilityTimer?.cancel()
     cursorVisibilityTimer = nil
     lastCursorVisible = nil
+    lastWindowServerCursorVisible = nil
+    cursorTextureProvesVisible = false
   }
 
   private func updateCursorVisibilityAfterInjectedMouseMove() {
@@ -2720,6 +2765,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if(cursorImageHashes == previousCursorImageHashes){
         return;
     }
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    updateCursorVisibilityAfterTextureChange(cursorImage)
+#endif
     //system default
     if let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
         var updatedAllCallbacks = true
