@@ -2500,16 +2500,18 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func updateCursorVisibilityAfterTextureChange(_ image: NSImage) {
     let cursorImageIsFullyTransparent = Self.cursorImageIsFullyTransparent(image)
-    if cursorImageIsFullyTransparent == true {
-      cursorTextureProvesVisible = false
-      updateCursorVisibility(false)
-      return
-    }
-    guard cursorImageIsFullyTransparent == false else { return }
+    guard cursorImageIsFullyTransparent != nil else { return }
 
-    lastWindowServerCursorVisible = currentWindowServerCursorVisibility()
-    cursorTextureProvesVisible = true
-    updateCursorVisibility(true)
+    let windowServerVisible = currentWindowServerCursorVisibility()
+    let result = Self.reconciledCursorVisibility(
+      windowServerVisible: windowServerVisible,
+      previousWindowServerVisible: lastWindowServerCursorVisible,
+      cursorTextureProvesVisible: cursorImageIsFullyTransparent == false,
+      cursorImageIsFullyTransparent: cursorImageIsFullyTransparent
+    )
+    lastWindowServerCursorVisible = windowServerVisible
+    cursorTextureProvesVisible = result.cursorTextureProvesVisible
+    updateCursorVisibility(result.visible)
   }
 
   private func sendCursorInvisible(callbackID: Int) {

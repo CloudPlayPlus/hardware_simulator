@@ -341,15 +341,25 @@ class RunnerTests: XCTestCase {
   }
 
   func testCursorVisibilityUsesNewWindowServerHiddenTransition() {
-    let result = HardwareSimulatorPlugin.reconciledCursorVisibility(
+    let textureUpdate = HardwareSimulatorPlugin.reconciledCursorVisibility(
       windowServerVisible: false,
       previousWindowServerVisible: true,
       cursorTextureProvesVisible: true,
       cursorImageIsFullyTransparent: false
     )
 
-    XCTAssertFalse(result.visible)
-    XCTAssertFalse(result.cursorTextureProvesVisible)
+    XCTAssertFalse(textureUpdate.visible)
+    XCTAssertFalse(textureUpdate.cursorTextureProvesVisible)
+
+    let followingPoll = HardwareSimulatorPlugin.reconciledCursorVisibility(
+      windowServerVisible: false,
+      previousWindowServerVisible: false,
+      cursorTextureProvesVisible: textureUpdate.cursorTextureProvesVisible,
+      cursorImageIsFullyTransparent: false
+    )
+
+    XCTAssertFalse(followingPoll.visible)
+    XCTAssertFalse(followingPoll.cursorTextureProvesVisible)
   }
 
   func testCursorVisibilityClearsTextureEvidenceWhenGetterRecovers() {
