@@ -253,6 +253,97 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(readUInt32BE(bytes, offset: 17), encoded.hash)
   }
 
+  func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
+    let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
+
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.cursorImageIsFullyTransparent(image),
+      true
+    )
+  }
+
+  func testCursorVisibilityTreatsAnyNonzeroAlphaAsVisible() throws {
+    let image = try makeCursorImage(alphaValues: [0, 0, 1, 0])
+
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.cursorImageIsFullyTransparent(image),
+      false
+    )
+  }
+
+  func testCursorVisibilityTreatsOpaqueBitmapWithoutAlphaAsVisible() throws {
+    let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: 1,
+      pixelsHigh: 1,
+      bitsPerSample: 8,
+      samplesPerPixel: 3,
+      hasAlpha: false,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ))
+    let image = NSImage(size: NSSize(width: 1, height: 1))
+    image.addRepresentation(bitmapRep)
+
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.cursorImageIsFullyTransparent(image),
+      false
+    )
+  }
+
+  func testCursorVisibilityCombinesWindowServerAndBitmapSignals() {
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: false,
+      cursorImageIsFullyTransparent: false
+    ))
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: false,
+      cursorImageIsFullyTransparent: true
+    ))
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: true
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: false
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: nil
+    ))
+  }
+
+  private func makeCursorImage(alphaValues: [UInt8]) throws -> NSImage {
+    let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: alphaValues.count,
+      pixelsHigh: 1,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ))
+    let bitmapData = try XCTUnwrap(bitmapRep.bitmapData)
+    let bytesPerPixel = bitmapRep.bitsPerPixel / 8
+    let alphaOffset = bitmapRep.bitmapFormat.contains(.alphaFirst)
+      ? 0
+      : bytesPerPixel - 1
+    for (x, alpha) in alphaValues.enumerated() {
+      bitmapData[x * bytesPerPixel + alphaOffset] = alpha
+    }
+    let image = NSImage(
+      size: NSSize(width: alphaValues.count, height: 1)
+    )
+    image.addRepresentation(bitmapRep)
+    return image
+  }
+
   private func readUInt32BE(_ bytes: [UInt8], offset: Int) -> UInt32 {
     bytes[offset..<offset + 4].reduce(0) { ($0 << 8) | UInt32($1) }
   }

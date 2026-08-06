@@ -6,6 +6,9 @@ import ApplicationServices
 import Darwin
 
 class CursorConstants {    
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  static let cursorInvisible = 1
+#endif
   static let cursorVisible = 2
   static let cursorUpdatedDefault = 3    
   static let cursorUpdatedImage = 4    
@@ -99,9 +102,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   deinit {
     stopTrackpadScrollCapture()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    stopCursorVisibilityTimer()
     stopMacOSTextInputDecisionCapture()
-#endif
-#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    if let cursorVisibilityProcessHandle {
+      dlclose(cursorVisibilityProcessHandle)
+    }
     if let macTerminationObserver {
       NotificationCenter.default.removeObserver(macTerminationObserver)
     }
@@ -1932,6 +1937,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           clickCount: 0,
           screenId: screenId
       )
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      updateCursorVisibilityAfterInjectedMouseMove()
+#endif
   }
 
   func performMouseMoveRelative(dx: Double, dy: Double, screenId: Int) {
@@ -1954,6 +1962,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               clickCount: 0,
               screenId: screenId
           )
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+          updateCursorVisibilityAfterInjectedMouseMove()
+#endif
       }
   }
 
@@ -2206,6 +2217,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                              mouseCursorPosition: CGPoint(x: targetX, y: targetY), 
                              mouseButton: .left)
       moveEvent?.post(tap: .cghidEventTap)
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      updateCursorVisibilityAfterInjectedMouseMove()
+#endif
   }
 
   private func cursorLocationInQuartzCoordinates(
@@ -2265,6 +2279,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   var mouseMovedMonitor: Any?
   var cursorPositionMonitor: Any?
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  var cursorVisibilityTimer: DispatchSourceTimer?
+  var lastCursorVisible: Bool?
+#endif
   var previousCursorImageHashes: String = ""
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
@@ -2284,6 +2302,18 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     .otherMouseUp,
   ]
   static let cursorTransitionProbeDelaysMs = [16, 50]
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  static let cursorVisibilityPollIntervalMs = 200
+
+  private typealias CGCursorIsVisibleFunction = @convention(c) () -> Int32
+  private var cgCursorIsVisibleFunction: CGCursorIsVisibleFunction?
+  private var cgCursorIsVisibleLookupAttempted = false
+  private var cursorVisibilityProcessHandle: UnsafeMutableRawPointer?
+
+  private typealias SLCursorIsVisibleFunction = @convention(c) () -> Int32
+  private var slCursorIsVisibleFunction: SLCursorIsVisibleFunction?
+  private var slCursorIsVisibleLookupAttempted = false
+#endif
 
   func JSHash(buffer: [UInt8], size: Int) -> UInt32 {
     var hash: UInt32 = 1315423911
@@ -2358,6 +2388,184 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     bytes.append(contentsOf: pixels)
     return (messageHash, Data(bytes))
   }
+
+  static func cursorImageIsFullyTransparent(_ image: NSImage) -> Bool? {
+    var inspectedRepresentation = false
+    for case let bitmapRep as NSBitmapImageRep in image.representations {
+      guard bitmapRep.pixelsWide > 0, bitmapRep.pixelsHigh > 0 else {
+        continue
+      }
+      guard bitmapRep.hasAlpha else { return false }
+      if let transparent = bitmapRepresentationIsFullyTransparent(bitmapRep) {
+        inspectedRepresentation = true
+        if !transparent { return false }
+      }
+    }
+    return inspectedRepresentation ? true : nil
+  }
+
+  static func combinedCursorVisibility(
+    windowServerVisible: Bool,
+    cursorImageIsFullyTransparent: Bool?
+  ) -> Bool {
+    return windowServerVisible && cursorImageIsFullyTransparent != true
+  }
+
+  private static func bitmapRepresentationIsFullyTransparent(
+    _ bitmapRep: NSBitmapImageRep
+  ) -> Bool? {
+    if bitmapRep.bitsPerSample == 8,
+       !bitmapRep.isPlanar,
+       let bitmapData = bitmapRep.bitmapData {
+      let bytesPerPixel = bitmapRep.bitsPerPixel / 8
+      guard bytesPerPixel > 0 else { return nil }
+      let alphaOffset = bitmapRep.bitmapFormat.contains(.alphaFirst)
+        ? 0
+        : bytesPerPixel - 1
+
+      for y in 0..<bitmapRep.pixelsHigh {
+        let row = bitmapData.advanced(by: y * bitmapRep.bytesPerRow)
+        for x in 0..<bitmapRep.pixelsWide {
+          if row[x * bytesPerPixel + alphaOffset] != 0 {
+            return false
+          }
+        }
+      }
+      return true
+    }
+
+    var inspectedPixel = false
+    for y in 0..<bitmapRep.pixelsHigh {
+      for x in 0..<bitmapRep.pixelsWide {
+        guard let color = bitmapRep.colorAt(x: x, y: y) else { continue }
+        inspectedPixel = true
+        if color.alphaComponent > 0 { return false }
+      }
+    }
+    return inspectedPixel ? true : nil
+  }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  private static func cursorVisibilityValue(_ rawValue: Int32?) -> Bool? {
+    return rawValue.map { $0 != 0 }
+  }
+
+  private func currentSystemCursorVisibility() -> Bool {
+    let windowServerVisible: Bool
+    if let slCursorIsVisible = resolveSLCursorIsVisibleFunction() {
+      windowServerVisible =
+        Self.cursorVisibilityValue(slCursorIsVisible()) ?? true
+    } else if let cgCursorIsVisible = resolveCGCursorIsVisibleFunction() {
+      windowServerVisible =
+        Self.cursorVisibilityValue(cgCursorIsVisible()) ?? true
+    } else {
+      windowServerVisible = true
+    }
+    guard windowServerVisible else { return false }
+
+    guard let cursorImage = NSCursor.currentSystem?.image else { return true }
+    return Self.combinedCursorVisibility(
+      windowServerVisible: windowServerVisible,
+      cursorImageIsFullyTransparent:
+        Self.cursorImageIsFullyTransparent(cursorImage)
+    )
+  }
+
+  private func sendCursorInvisible(callbackID: Int) {
+    methodChannel?.invokeMethod("onCursorImageMessage", arguments: [
+      "callbackID": callbackID,
+      "message": CursorConstants.cursorInvisible,
+      "msg_info": 0,
+      "cursorImage": FlutterStandardTypedData.init(bytes: Data([]))
+    ])
+  }
+
+  private func sendCursorVisibility(callbackID: Int, visible: Bool) {
+    if visible {
+      sendCursorImagePosition(callbackID: callbackID)
+    } else {
+      sendCursorInvisible(callbackID: callbackID)
+    }
+  }
+
+  private func updateCursorVisibility(_ visible: Bool) {
+    guard lastCursorVisible != visible else { return }
+
+    lastCursorVisible = visible
+    for callbackID in cursorChangedCallbacks {
+      sendCursorVisibility(callbackID: callbackID, visible: visible)
+    }
+  }
+
+  private func pollCursorVisibility() {
+    guard !cursorChangedCallbacks.isEmpty else { return }
+
+    updateCursorVisibility(currentSystemCursorVisibility())
+  }
+
+  private func startCursorVisibilityTimer() {
+    guard cursorVisibilityTimer == nil else { return }
+
+    let intervalMs = Self.cursorVisibilityPollIntervalMs
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(
+      deadline: .now() + .milliseconds(intervalMs),
+      repeating: .milliseconds(intervalMs),
+      leeway: .milliseconds(25)
+    )
+    timer.setEventHandler { [weak self] in
+      self?.pollCursorVisibility()
+    }
+    cursorVisibilityTimer = timer
+    timer.resume()
+  }
+
+  private func stopCursorVisibilityTimer() {
+    cursorVisibilityTimer?.setEventHandler {}
+    cursorVisibilityTimer?.cancel()
+    cursorVisibilityTimer = nil
+    lastCursorVisible = nil
+  }
+
+  private func updateCursorVisibilityAfterInjectedMouseMove() {
+    pollCursorVisibility()
+  }
+
+  private func resolveCGCursorIsVisibleFunction() -> CGCursorIsVisibleFunction? {
+    if cgCursorIsVisibleLookupAttempted {
+      return cgCursorIsVisibleFunction
+    }
+    cgCursorIsVisibleLookupAttempted = true
+
+    guard let processHandle = dlopen(nil, RTLD_LAZY) else { return nil }
+    guard let symbol = dlsym(processHandle, "CGCursorIsVisible") else {
+      dlclose(processHandle)
+      return nil
+    }
+    cursorVisibilityProcessHandle = processHandle
+    cgCursorIsVisibleFunction = unsafeBitCast(
+      symbol,
+      to: CGCursorIsVisibleFunction.self
+    )
+    return cgCursorIsVisibleFunction
+  }
+
+  private func resolveSLCursorIsVisibleFunction() -> SLCursorIsVisibleFunction? {
+    if slCursorIsVisibleLookupAttempted {
+      return slCursorIsVisibleFunction
+    }
+    slCursorIsVisibleLookupAttempted = true
+
+    if let skyLight = loadMacSkyLight(),
+       let symbol = dlsym(skyLight, "SLCursorIsVisible") {
+      slCursorIsVisibleFunction = unsafeBitCast(
+        symbol,
+        to: SLCursorIsVisibleFunction.self
+      )
+    }
+    return slCursorIsVisibleFunction
+  }
+#endif
 
   private func handleCursorMonitorEvent(_ event: NSEvent) {
     checkMouseCursor()
@@ -3626,9 +3834,21 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                   ]
                   methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
                   markCursorHashSeen(callbackID, messageHash)
+#if !CLOUDPLAYPLUS_DMG_DISTRIBUTION
                   sendCursorImagePosition(callbackID: callbackID)
+#endif
               }
           }
+
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+          let visible = currentSystemCursorVisibility()
+          if lastCursorVisible == visible {
+            sendCursorVisibility(callbackID: callbackID, visible: visible)
+          } else {
+            updateCursorVisibility(visible)
+          }
+          startCursorVisibilityTimer()
+#endif
          }
       else {
         result(FlutterError(code: "BAD_ARGS", message: "Missing or incorrect arguments for hookCursorImage", details: nil))
@@ -3640,6 +3860,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           hookAllCursorImage.removeValue(forKey: callbackID)
           cursorHashesByCallback.removeValue(forKey: callbackID)
           if cursorChangedCallbacks.count == 0{
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+              stopCursorVisibilityTimer()
+#endif
               if let monitor = mouseMovedMonitor {
                NSEvent.removeMonitor(monitor)
                mouseMovedMonitor = nil
