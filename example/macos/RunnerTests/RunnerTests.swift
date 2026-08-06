@@ -316,6 +316,54 @@ class RunnerTests: XCTestCase {
     ))
   }
 
+  func testCursorVisibilityKeepsNontransparentTextureEvidenceWhileGetterIsStale() {
+    let result = HardwareSimulatorPlugin.reconciledCursorVisibility(
+      windowServerVisible: false,
+      previousWindowServerVisible: false,
+      cursorTextureProvesVisible: true,
+      cursorImageIsFullyTransparent: false
+    )
+
+    XCTAssertTrue(result.visible)
+    XCTAssertTrue(result.cursorTextureProvesVisible)
+  }
+
+  func testCursorVisibilityLetsTransparentTextureOverrideVisibleEvidence() {
+    let result = HardwareSimulatorPlugin.reconciledCursorVisibility(
+      windowServerVisible: false,
+      previousWindowServerVisible: false,
+      cursorTextureProvesVisible: true,
+      cursorImageIsFullyTransparent: true
+    )
+
+    XCTAssertFalse(result.visible)
+    XCTAssertFalse(result.cursorTextureProvesVisible)
+  }
+
+  func testCursorVisibilityUsesNewWindowServerHiddenTransition() {
+    let result = HardwareSimulatorPlugin.reconciledCursorVisibility(
+      windowServerVisible: false,
+      previousWindowServerVisible: true,
+      cursorTextureProvesVisible: true,
+      cursorImageIsFullyTransparent: false
+    )
+
+    XCTAssertFalse(result.visible)
+    XCTAssertFalse(result.cursorTextureProvesVisible)
+  }
+
+  func testCursorVisibilityClearsTextureEvidenceWhenGetterRecovers() {
+    let result = HardwareSimulatorPlugin.reconciledCursorVisibility(
+      windowServerVisible: true,
+      previousWindowServerVisible: false,
+      cursorTextureProvesVisible: true,
+      cursorImageIsFullyTransparent: false
+    )
+
+    XCTAssertTrue(result.visible)
+    XCTAssertFalse(result.cursorTextureProvesVisible)
+  }
+
   private func makeCursorImage(alphaValues: [UInt8]) throws -> NSImage {
     let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
       bitmapDataPlanes: nil,
