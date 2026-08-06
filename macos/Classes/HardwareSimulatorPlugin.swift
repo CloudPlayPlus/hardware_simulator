@@ -102,6 +102,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   deinit {
     stopTrackpadScrollCapture()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    stopCursorVisibilityTimer()
     stopMacOSTextInputDecisionCapture()
     if let cursorVisibilityProcessHandle {
       dlclose(cursorVisibilityProcessHandle)
@@ -2279,6 +2280,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var mouseMovedMonitor: Any?
   var cursorPositionMonitor: Any?
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  var cursorVisibilityTimer: DispatchSourceTimer?
   var lastCursorVisible: Bool?
 #endif
   var previousCursorImageHashes: String = ""
@@ -2301,6 +2303,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   ]
   static let cursorTransitionProbeDelaysMs = [16, 50]
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+  static let cursorVisibilityPollIntervalMs = 200
+
   private typealias CGCursorIsVisibleFunction = @convention(c) () -> Int32
   private var cgCursorIsVisibleFunction: CGCursorIsVisibleFunction?
   private var cgCursorIsVisibleLookupAttempted = false
@@ -2430,6 +2434,30 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard !cursorChangedCallbacks.isEmpty else { return }
 
     updateCursorVisibility(currentSystemCursorVisibility())
+  }
+
+  private func startCursorVisibilityTimer() {
+    guard cursorVisibilityTimer == nil else { return }
+
+    let intervalMs = Self.cursorVisibilityPollIntervalMs
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(
+      deadline: .now() + .milliseconds(intervalMs),
+      repeating: .milliseconds(intervalMs),
+      leeway: .milliseconds(25)
+    )
+    timer.setEventHandler { [weak self] in
+      self?.pollCursorVisibility()
+    }
+    cursorVisibilityTimer = timer
+    timer.resume()
+  }
+
+  private func stopCursorVisibilityTimer() {
+    cursorVisibilityTimer?.setEventHandler {}
+    cursorVisibilityTimer?.cancel()
+    cursorVisibilityTimer = nil
+    lastCursorVisible = nil
   }
 
   private func updateCursorVisibilityAfterInjectedMouseMove() {
@@ -3752,6 +3780,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           } else {
             updateCursorVisibility(visible)
           }
+          startCursorVisibilityTimer()
 #endif
          }
       else {
@@ -3765,7 +3794,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           cursorHashesByCallback.removeValue(forKey: callbackID)
           if cursorChangedCallbacks.count == 0{
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
-              lastCursorVisible = nil
+              stopCursorVisibilityTimer()
 #endif
               if let monitor = mouseMovedMonitor {
                NSEvent.removeMonitor(monitor)
