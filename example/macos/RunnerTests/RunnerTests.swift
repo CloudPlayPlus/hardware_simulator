@@ -293,6 +293,29 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testCursorVisibilityCombinesWindowServerAndBitmapSignals() {
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: false,
+      cursorImageIsFullyTransparent: false
+    ))
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: false,
+      cursorImageIsFullyTransparent: true
+    ))
+    XCTAssertFalse(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: true
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: false
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.combinedCursorVisibility(
+      windowServerVisible: true,
+      cursorImageIsFullyTransparent: nil
+    ))
+  }
+
   private func makeCursorImage(alphaValues: [UInt8]) throws -> NSImage {
     let bitmapRep = try XCTUnwrap(NSBitmapImageRep(
       bitmapDataPlanes: nil,

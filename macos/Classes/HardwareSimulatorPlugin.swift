@@ -2404,6 +2404,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return inspectedRepresentation ? true : nil
   }
 
+  static func combinedCursorVisibility(
+    windowServerVisible: Bool,
+    cursorImageIsFullyTransparent: Bool?
+  ) -> Bool {
+    return windowServerVisible && cursorImageIsFullyTransparent != true
+  }
+
   private static func bitmapRepresentationIsFullyTransparent(
     _ bitmapRep: NSBitmapImageRep
   ) -> Bool? {
@@ -2457,7 +2464,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard windowServerVisible else { return false }
 
     guard let cursorImage = NSCursor.currentSystem?.image else { return true }
-    return !(Self.cursorImageIsFullyTransparent(cursorImage) ?? false)
+    return Self.combinedCursorVisibility(
+      windowServerVisible: windowServerVisible,
+      cursorImageIsFullyTransparent:
+        Self.cursorImageIsFullyTransparent(cursorImage)
+    )
   }
 
   private func sendCursorInvisible(callbackID: Int) {
