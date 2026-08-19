@@ -40,7 +40,7 @@ public:
         std::string device_name;         // "\\\\.\\DISPLAYn"
         std::string display_name; 
         std::string device_description;   
-        FILETIME last_arrival;
+        FILETIME last_arrival{};
         int    left          = 0;
         int    top           = 0;
         int    right         = 0;

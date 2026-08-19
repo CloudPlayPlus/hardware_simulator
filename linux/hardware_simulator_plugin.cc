@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -38,6 +39,9 @@ struct MonitorBounds {
   int y;
   int width;
   int height;
+  std::string platform_display_id;
+  int64_t display_uid = 0;
+  bool is_primary = false;
 };
 
 enum class MouseMode {
@@ -190,8 +194,18 @@ std::vector<MonitorBounds> get_monitors(Display* display) {
       if (xrr_monitors[i].noutput <= 0) {
         continue;
       }
+      char* atom_name = XGetAtomName(display, xrr_monitors[i].name);
+      std::string monitor_name = atom_name != nullptr
+                                     ? std::string(atom_name)
+                                     : "monitor-" + std::to_string(i);
+      if (atom_name != nullptr) {
+        XFree(atom_name);
+      }
       monitors.push_back({xrr_monitors[i].x, xrr_monitors[i].y,
-                          xrr_monitors[i].width, xrr_monitors[i].height});
+                          xrr_monitors[i].width, xrr_monitors[i].height,
+                          monitor_name,
+                          static_cast<int64_t>(xrr_monitors[i].name),
+                          xrr_monitors[i].primary == True});
     }
     XRRFreeMonitors(xrr_monitors);
   }
@@ -199,7 +213,8 @@ std::vector<MonitorBounds> get_monitors(Display* display) {
   if (monitors.empty()) {
     int screen = DefaultScreen(display);
     monitors.push_back({0, 0, DisplayWidth(display, screen),
-                        DisplayHeight(display, screen)});
+                        DisplayHeight(display, screen),
+                        "x11-root-" + std::to_string(screen), screen, true});
   }
   return monitors;
 }
@@ -502,6 +517,50 @@ FlMethodResponse* get_monitor_count() {
   return success_int(static_cast<int>(get_monitors(display.get()).size()));
 }
 
+FlMethodResponse* get_display_list() {
+  XDisplay display;
+  if (display.get() == nullptr) {
+    return linux_display_error();
+  }
+  const auto monitors = get_monitors(display.get());
+  g_autoptr(FlValue) list = fl_value_new_list();
+  for (size_t index = 0; index < monitors.size(); ++index) {
+    const auto& monitor = monitors[index];
+    const int64_t input_screen_id = static_cast<int64_t>(index);
+    g_autoptr(FlValue) item = fl_value_new_map();
+    fl_value_set_string_take(item, "index", fl_value_new_int(input_screen_id));
+    fl_value_set_string_take(item, "width", fl_value_new_int(monitor.width));
+    fl_value_set_string_take(item, "height", fl_value_new_int(monitor.height));
+    fl_value_set_string_take(item, "refreshRate", fl_value_new_int(60));
+    fl_value_set_string_take(item, "isVirtual", fl_value_new_bool(false));
+    fl_value_set_string_take(
+        item, "displayName",
+        fl_value_new_string(monitor.platform_display_id.c_str()));
+    fl_value_set_string_take(
+        item, "deviceName",
+        fl_value_new_string(monitor.platform_display_id.c_str()));
+    fl_value_set_string_take(item, "active", fl_value_new_bool(true));
+    fl_value_set_string_take(item, "displayUid",
+                             fl_value_new_int(monitor.display_uid));
+    fl_value_set_string_take(item, "orientation", fl_value_new_int(0));
+    fl_value_set_string_take(item, "left", fl_value_new_int(monitor.x));
+    fl_value_set_string_take(item, "top", fl_value_new_int(monitor.y));
+    fl_value_set_string_take(item, "right",
+                             fl_value_new_int(monitor.x + monitor.width));
+    fl_value_set_string_take(item, "bottom",
+                             fl_value_new_int(monitor.y + monitor.height));
+    fl_value_set_string_take(item, "isPrimary",
+                             fl_value_new_bool(monitor.is_primary));
+    fl_value_set_string_take(
+        item, "platformDisplayId",
+        fl_value_new_string(monitor.platform_display_id.c_str()));
+    fl_value_set_string_take(item, "inputScreenId",
+                             fl_value_new_int(input_screen_id));
+    fl_value_append_take(list, fl_value_ref(item));
+  }
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+}
+
 FlMethodResponse* clear_all_pressed_mouse_buttons() {
   std::map<inputtino::Mouse::MOUSE_BUTTON, MouseMode> buttons;
   {
@@ -580,6 +639,10 @@ static void hardware_simulator_plugin_handle_method_call(
     response = get_platform_version();
   } else if (strcmp(method, "getMonitorCount") == 0) {
     response = get_monitor_count();
+  } else if (strcmp(method, "getAllDisplays") == 0) {
+    response = get_monitor_count();
+  } else if (strcmp(method, "getDisplayList") == 0) {
+    response = get_display_list();
   } else if (strcmp(method, "KeyPress") == 0) {
     response = perform_key_event(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mouseMoveR") == 0) {
