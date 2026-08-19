@@ -68,7 +68,7 @@ public:
         std::string device_name;       // Device name like "\\\\.\\DISPLAYn"
         std::string display_name;      // Human-readable display name
         std::string device_description; // Device description
-        FILETIME last_arrival{};       // Last arrival time
+        FILETIME last_arrival;         // Last arrival time
         
         // Display bounds coordinates
         int left = 0;
@@ -80,7 +80,6 @@ public:
         // Additional fields
         bool is_virtual = false;       // Whether this is a virtual display
         int orientation = 0;           // Display orientation (0=landscape, 1=portrait, 2=landscape_flipped, 3=portrait_flipped)
-        int input_screen_id = -1;      // Active EnumDisplayDevices ordinal used by input/cursor APIs
     };
     static std::vector<DetailedDisplayInfo> GetDetailedDisplayList();
 
