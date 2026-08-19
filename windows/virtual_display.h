@@ -38,6 +38,7 @@ public:
         bool   is_virtual    = false;  // Whether this is a virtual display
         int    display_uid   = 0;       // Display unique identifier  
         std::string device_name;         // "\\\\.\\DISPLAYn"
+        std::string platform_display_id; // DisplayConfig path identity
         std::string display_name; 
         std::string device_description;   
         FILETIME last_arrival{};

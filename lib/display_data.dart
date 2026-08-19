@@ -16,7 +16,10 @@ class DisplayData {
   final int right;
   final int bottom;
   final bool isPrimary;
+  /// Stable, platform-native display identity used inside the host catalog.
   final String? platformDisplayId;
+  /// Platform selector used to join this display with the capture backend.
+  final String? captureDisplayId;
   final int? inputScreenId;
 
   DisplayData({
@@ -36,6 +39,7 @@ class DisplayData {
     required this.bottom,
     required this.isPrimary,
     this.platformDisplayId,
+    this.captureDisplayId,
     this.inputScreenId,
   });
 
@@ -59,6 +63,10 @@ class DisplayData {
       platformDisplayId: map['platformDisplayId'] is String &&
               (map['platformDisplayId'] as String).isNotEmpty
           ? map['platformDisplayId'] as String
+          : null,
+      captureDisplayId: map['captureDisplayId'] is String &&
+              (map['captureDisplayId'] as String).isNotEmpty
+          ? map['captureDisplayId'] as String
           : null,
       inputScreenId:
           map['inputScreenId'] is int && (map['inputScreenId'] as int) >= 0

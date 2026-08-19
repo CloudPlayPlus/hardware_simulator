@@ -725,6 +725,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "bottom": Int(bounds.maxY.rounded()),
         "isPrimary": displayId == mainId,
         "platformDisplayId": "\(displayId)",
+        "captureDisplayId": "\(displayId)",
         "inputScreenId": inputIndexes[displayId] ?? -1,
       ]
     }

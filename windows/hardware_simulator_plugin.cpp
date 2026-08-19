@@ -1985,7 +1985,8 @@ void HardwareSimulatorPlugin::HandleMethodCall(
          displayMap[flutter::EncodableValue("right")] = flutter::EncodableValue(display.right);
          displayMap[flutter::EncodableValue("bottom")] = flutter::EncodableValue(display.bottom);
          displayMap[flutter::EncodableValue("isPrimary")] = flutter::EncodableValue(display.is_primary);
-         displayMap[flutter::EncodableValue("platformDisplayId")] = flutter::EncodableValue(display.device_name);
+         displayMap[flutter::EncodableValue("platformDisplayId")] = flutter::EncodableValue(display.platform_display_id);
+         displayMap[flutter::EncodableValue("captureDisplayId")] = flutter::EncodableValue(display.device_name);
          if (display.input_screen_id >= 0) {
              displayMap[flutter::EncodableValue("inputScreenId")] = flutter::EncodableValue(display.input_screen_id);
          }

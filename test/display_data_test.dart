@@ -5,12 +5,17 @@ void main() {
   test('parses catalog display and input target identifiers', () {
     final display = DisplayData.fromMap({
       'index': 9,
-      'platformDisplayId': r'\\.\DISPLAY2',
+      'platformDisplayId': r'win:00000000:00000001:4:\\?\DISPLAY#DEL4098',
+      'captureDisplayId': r'\\.\DISPLAY2',
       'inputScreenId': 1,
     });
 
     expect(display.index, 9);
-    expect(display.platformDisplayId, r'\\.\DISPLAY2');
+    expect(
+      display.platformDisplayId,
+      r'win:00000000:00000001:4:\\?\DISPLAY#DEL4098',
+    );
+    expect(display.captureDisplayId, r'\\.\DISPLAY2');
     expect(display.inputScreenId, 1);
   });
 
@@ -18,6 +23,7 @@ void main() {
     final display = DisplayData.fromMap(const {});
 
     expect(display.platformDisplayId, isNull);
+    expect(display.captureDisplayId, isNull);
     expect(display.inputScreenId, isNull);
   });
 }
