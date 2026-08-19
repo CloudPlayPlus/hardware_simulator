@@ -59,6 +59,18 @@ TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {
   ASSERT_TRUE(upper_center.has_value());
   EXPECT_EQ(upper_center->x, 960);
   EXPECT_EQ(upper_center->y, -600);
+
+  const auto left_bottom_right =
+      NormalizedPointOnMonitor(left_monitor, 1.0, 1.0);
+  ASSERT_TRUE(left_bottom_right.has_value());
+  EXPECT_EQ(left_bottom_right->x, -1);
+  EXPECT_EQ(left_bottom_right->y, 1079);
+
+  const auto clamped =
+      NormalizedPointOnMonitor(left_monitor, 2.0, -1.0);
+  ASSERT_TRUE(clamped.has_value());
+  EXPECT_EQ(clamped->x, -1);
+  EXPECT_EQ(clamped->y, 0);
 }
 
 TEST(TrackpadScrollAccumulator, PreservesIntegralInputDistance) {

@@ -66,7 +66,7 @@ public:
         bool active = false;
         int display_uid = 0;           // Unique display identifier
         std::string device_name;       // Device name like "\\\\.\\DISPLAYn"
-        std::string platform_display_id; // Stable DisplayConfig path identity
+        std::string platform_display_id; // Stable target device-interface identity
         std::string display_name;      // Human-readable display name
         std::string device_description; // Device description
         FILETIME last_arrival{};       // Last arrival time

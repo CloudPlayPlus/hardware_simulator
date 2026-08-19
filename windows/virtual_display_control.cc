@@ -249,74 +249,6 @@ static std::wstring GetDisplayTargetName(LUID adapterId, UINT32 targetId) {
     return std::wstring(targetName.monitorFriendlyDeviceName);
 }
 
-// Resolve the transient GDI capture selector (\\.\DISPLAYn) to the active
-// DisplayConfig path identity. The latter remains usable when Windows reassigns
-// GDI ordinals after a topology change.
-static std::map<std::string, std::string> GetActiveDisplayIdentities() {
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        UINT32 path_count = 0;
-        UINT32 mode_count = 0;
-        LONG result = GetDisplayConfigBufferSizes(
-            QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
-        if (result != ERROR_SUCCESS) {
-            return {};
-        }
-
-        std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
-        std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
-        result = QueryDisplayConfig(
-            QDC_ONLY_ACTIVE_PATHS,
-            &path_count,
-            paths.data(),
-            &mode_count,
-            modes.data(),
-            nullptr);
-        if (result == ERROR_INSUFFICIENT_BUFFER) {
-            continue;
-        }
-        if (result != ERROR_SUCCESS) {
-            return {};
-        }
-
-        std::map<std::string, std::string> identities;
-        for (UINT32 index = 0; index < path_count; ++index) {
-            const auto& path = paths[index];
-            DISPLAYCONFIG_SOURCE_DEVICE_NAME source_name{};
-            source_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-            source_name.header.size = sizeof(source_name);
-            source_name.header.adapterId = path.sourceInfo.adapterId;
-            source_name.header.id = path.sourceInfo.id;
-            if (DisplayConfigGetDeviceInfo(&source_name.header) != ERROR_SUCCESS) {
-                continue;
-            }
-
-            DISPLAYCONFIG_TARGET_DEVICE_NAME target_name{};
-            target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
-            target_name.header.size = sizeof(target_name);
-            target_name.header.adapterId = path.targetInfo.adapterId;
-            target_name.header.id = path.targetInfo.id;
-            if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS ||
-                target_name.monitorDevicePath[0] == L'\0') {
-                continue;
-            }
-
-            char prefix[80]{};
-            sprintf_s(
-                prefix,
-                sizeof(prefix),
-                "win:%08lx:%08lx:%u:",
-                static_cast<unsigned long>(path.targetInfo.adapterId.HighPart),
-                static_cast<unsigned long>(path.targetInfo.adapterId.LowPart),
-                path.targetInfo.id);
-            identities[WideStringToString(source_name.viewGdiDeviceName)] =
-                std::string(prefix) +
-                WideStringToString(target_name.monitorDevicePath);
-        }
-        return identities;
-    }
-    return {};
-}
-
 }
 
 namespace {
@@ -626,7 +558,6 @@ int VirtualDisplayControl::GetAllDisplays() {
 
     std::map <std::string, std::unique_ptr<VirtualDisplay>> displayMap;
     auto paths= GetDisplayPaths();
-    const auto displayConfigIdentities = GetActiveDisplayIdentities();
 
     DISPLAY_DEVICEW ddAdapter{}, ddMonitor{};
     ddAdapter.cb = sizeof(ddAdapter);
@@ -689,10 +620,10 @@ int VirtualDisplayControl::GetAllDisplays() {
                 d.active      = !!(ddMonitor.StateFlags & DISPLAY_DEVICE_ACTIVE);
                 std::wstring w_device_name(ddAdapter.DeviceName);
                 d.device_name  = WideStringToString(w_device_name);
-                const auto displayIdentity = displayConfigIdentities.find(d.device_name);
-                d.platform_display_id = displayIdentity == displayConfigIdentities.end()
-                    ? "win:path:" + devicePath
-                    : displayIdentity->second;
+                // EDD_GET_DEVICE_INTERFACE_NAME makes DeviceID the monitor
+                // interface path. Unlike the GDI name, it is tied to this
+                // target and is not reassigned when display ordinals move.
+                d.platform_display_id = "win:path:" + device_id;
                 d.display_name = ParseDisplayCode(device_id);
 
                 DEVINST dev_inst;

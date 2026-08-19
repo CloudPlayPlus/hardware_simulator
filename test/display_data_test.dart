@@ -5,7 +5,7 @@ void main() {
   test('parses catalog display and input target identifiers', () {
     final display = DisplayData.fromMap({
       'index': 9,
-      'platformDisplayId': r'win:00000000:00000001:4:\\?\DISPLAY#DEL4098',
+      'platformDisplayId': r'win:path:\\?\DISPLAY#DEL4098',
       'captureDisplayId': r'\\.\DISPLAY2',
       'inputScreenId': 1,
     });
@@ -13,7 +13,7 @@ void main() {
     expect(display.index, 9);
     expect(
       display.platformDisplayId,
-      r'win:00000000:00000001:4:\\?\DISPLAY#DEL4098',
+      r'win:path:\\?\DISPLAY#DEL4098',
     );
     expect(display.captureDisplayId, r'\\.\DISPLAY2');
     expect(display.inputScreenId, 1);
