@@ -16,6 +16,8 @@ class DisplayData {
   final int right;
   final int bottom;
   final bool isPrimary;
+  final String? platformDisplayId;
+  final int? inputScreenId;
 
   DisplayData({
     required this.index,
@@ -33,6 +35,8 @@ class DisplayData {
     required this.right,
     required this.bottom,
     required this.isPrimary,
+    this.platformDisplayId,
+    this.inputScreenId,
   });
 
   factory DisplayData.fromMap(Map<String, dynamic> map) {
@@ -52,6 +56,14 @@ class DisplayData {
       right: map['right'] ?? 0,
       bottom: map['bottom'] ?? 0,
       isPrimary: map['isPrimary'] ?? false,
+      platformDisplayId: map['platformDisplayId'] is String &&
+              (map['platformDisplayId'] as String).isNotEmpty
+          ? map['platformDisplayId'] as String
+          : null,
+      inputScreenId:
+          map['inputScreenId'] is int && (map['inputScreenId'] as int) >= 0
+              ? map['inputScreenId'] as int
+              : null,
     );
   }
 }

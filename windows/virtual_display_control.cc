@@ -752,6 +752,28 @@ bool VirtualDisplayControl::ChangeDisplaySettings(int display_uid, const Virtual
 std::vector<VirtualDisplayControl::DetailedDisplayInfo> VirtualDisplayControl::GetDetailedDisplayList() {
     std::vector<DetailedDisplayInfo> result;
     VirtualDisplayControl::GetAllDisplays();
+
+    // Input injection and cursor monitoring enumerate active top-level display
+    // devices. Preserve that exact ordinal explicitly instead of assuming it
+    // matches the arrival-time-sorted DisplayData.index below.
+    std::map<std::string, int> inputScreenIds;
+    int nextInputScreenId = 0;
+    for (DWORD deviceIndex = 0;; ++deviceIndex) {
+        DISPLAY_DEVICEW device{};
+        device.cb = sizeof(device);
+        if (!EnumDisplayDevicesW(nullptr, deviceIndex, &device, 0)) {
+            break;
+        }
+        if (!(device.StateFlags & DISPLAY_DEVICE_ACTIVE)) {
+            continue;
+        }
+        DEVMODEW mode{};
+        mode.dmSize = sizeof(mode);
+        if (!EnumDisplaySettingsW(device.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) {
+            continue;
+        }
+        inputScreenIds[WideStringToString(device.DeviceName)] = nextInputScreenId++;
+    }
     
     // First, add all managed virtual displays from displays_ array
     for (size_t i = 0; i < displays_.size(); i++) {
@@ -785,6 +807,10 @@ std::vector<VirtualDisplayControl::DetailedDisplayInfo> VirtualDisplayControl::G
             // Set additional fields
             info.is_virtual = display_info.is_virtual;  // These are managed virtual displays
             info.orientation = static_cast<int>(display->GetCurrentOrientation());  // Orientation field
+            const auto inputScreen = inputScreenIds.find(info.device_name);
+            if (inputScreen != inputScreenIds.end()) {
+                info.input_screen_id = inputScreen->second;
+            }
 
             
             // std::cout << "Display[" << i << "]:" << std::endl;
@@ -1314,4 +1340,3 @@ bool VirtualDisplayControl::SaveDisplayConfiguration() {
     std::cout << "Display configuration saved successfully. Found " << numPathArrayElements << " active displays." << std::endl;
     return true;
 }
-
