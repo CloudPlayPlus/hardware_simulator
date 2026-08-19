@@ -664,21 +664,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return names
   }
 
-  private func inputScreenIndexByDisplayId() -> [Int: Int] {
-    var indexes: [Int: Int] = [:]
-    for (index, screen) in NSScreen.screens.enumerated() {
-      guard
-        let number = screen.deviceDescription[
-          NSDeviceDescriptionKey("NSScreenNumber")
-        ] as? NSNumber
-      else {
-        continue
-      }
-      indexes[number.intValue] = index
-    }
-    return indexes
-  }
-
   private func displayRefreshRate(_ mode: CGDisplayMode?) -> Int {
     guard let mode else {
       return 60
@@ -697,7 +682,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     let names = screenNameByDisplayId()
-    let inputIndexes = inputScreenIndexByDisplayId()
     let mainId = Int(CGMainDisplayID())
     let virtualDisplayIds = macVirtualDisplayIdsSnapshot()
     return displayIds.enumerated().map { index, id in
@@ -724,8 +708,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "right": Int(bounds.maxX.rounded()),
         "bottom": Int(bounds.maxY.rounded()),
         "isPrimary": displayId == mainId,
-        "platformDisplayId": "\(displayId)",
-        "inputScreenId": inputIndexes[displayId] ?? -1,
       ]
     }
   }
