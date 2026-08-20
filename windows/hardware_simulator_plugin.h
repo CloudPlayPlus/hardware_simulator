@@ -18,6 +18,7 @@
 struct MonitorInfo {
     RECT rect;
     bool is_primary;
+    int screen_id = -1;
 };
 
 namespace hardware_simulator {
@@ -31,6 +32,13 @@ std::optional<POINT> NormalizedPointOnMonitor(
     const RECT& monitor_rect,
     double x_percent,
     double y_percent);
+
+// Resolves the raw EnumDisplayDevices device index used by libwebrtc and the
+// input protocol to the current monitor bounds. Returns nullopt when the raw
+// id is no longer active instead of falling back to a different monitor.
+std::optional<RECT> MonitorRectForScreenId(
+    const std::vector<MonitorInfo>& monitors,
+    int screen_id);
 
 class HardwareSimulatorPlugin : public flutter::Plugin {
  public:

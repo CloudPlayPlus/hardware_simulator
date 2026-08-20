@@ -61,6 +61,28 @@ TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {
   EXPECT_EQ(upper_center->y, -600);
 }
 
+TEST(PointerCoordinates, ResolvesRawScreenIdsWithGaps) {
+  const std::vector<MonitorInfo> monitors = {
+      {{0, 0, 1920, 1080}, true, 0},
+      {{1920, 0, 4480, 1440}, false, 3},
+  };
+
+  const auto second = MonitorRectForScreenId(monitors, 3);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(second->left, 1920);
+  EXPECT_EQ(second->right, 4480);
+  EXPECT_FALSE(MonitorRectForScreenId(monitors, 1).has_value());
+}
+
+TEST(PointerCoordinates, ClampsNormalizedPointToMonitorBounds) {
+  const RECT monitor = {-1920, 0, 0, 1080};
+  const auto point = NormalizedPointOnMonitor(monitor, 2.0, -1.0);
+
+  ASSERT_TRUE(point.has_value());
+  EXPECT_EQ(point->x, -1);
+  EXPECT_EQ(point->y, 0);
+}
+
 TEST(TrackpadScrollAccumulator, PreservesIntegralInputDistance) {
   TrackpadScrollAccumulator accumulator(12000);
 
