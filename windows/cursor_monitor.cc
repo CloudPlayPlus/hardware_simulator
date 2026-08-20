@@ -471,18 +471,13 @@ MousePosition GetMousePositionAndScreenId() {
 
     // Use HardwareSimulatorPlugin's static monitors
     const auto& monitors_info = hardware_simulator::HardwareSimulatorPlugin::GetStaticMonitors();
-    std::vector<RECT> monitors;
+    int screenId = -1;
     for (const auto& info : monitors_info) {
-        monitors.push_back(info.rect);
-    }
-
-    int screenId = 0;
-    for (size_t i = 0; i < monitors.size(); ++i) {
-        if (monitors[i].left == monitorInfo.rcMonitor.left && 
-            monitors[i].top == monitorInfo.rcMonitor.top &&
-            monitors[i].right == monitorInfo.rcMonitor.right && 
-            monitors[i].bottom == monitorInfo.rcMonitor.bottom) {
-            screenId = static_cast<int>(i);
+        if (info.rect.left == monitorInfo.rcMonitor.left &&
+            info.rect.top == monitorInfo.rcMonitor.top &&
+            info.rect.right == monitorInfo.rcMonitor.right &&
+            info.rect.bottom == monitorInfo.rcMonitor.bottom) {
+            screenId = info.screen_id;
             break;
         }
     }

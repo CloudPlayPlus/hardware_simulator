@@ -107,13 +107,26 @@ std::optional<POINT> NormalizedPointOnMonitor(
       monitor_rect.bottom <= monitor_rect.top) {
     return std::nullopt;
   }
+  const double clamped_x = (std::clamp)(x_percent, 0.0, 1.0);
+  const double clamped_y = (std::clamp)(y_percent, 0.0, 1.0);
+  const LONG width = monitor_rect.right - monitor_rect.left;
+  const LONG height = monitor_rect.bottom - monitor_rect.top;
   return POINT{
-      monitor_rect.left + static_cast<LONG>(
-                              (monitor_rect.right - monitor_rect.left) *
-                              x_percent),
-      monitor_rect.top + static_cast<LONG>(
-                             (monitor_rect.bottom - monitor_rect.top) *
-                             y_percent)};
+      monitor_rect.left +
+          static_cast<LONG>(std::lround(clamped_x * (width - 1))),
+      monitor_rect.top +
+          static_cast<LONG>(std::lround(clamped_y * (height - 1)))};
+}
+
+std::optional<RECT> MonitorRectForScreenId(
+    const std::vector<MonitorInfo>& monitors,
+    int screen_id) {
+  const auto monitor = std::find_if(
+      monitors.begin(), monitors.end(), [screen_id](const MonitorInfo& info) {
+        return info.screen_id == screen_id;
+      });
+  return monitor == monitors.end() ? std::nullopt
+                                   : std::optional<RECT>(monitor->rect);
 }
 
 std::optional<POINT> PointerPointForScreen(
@@ -373,6 +386,7 @@ void HardwareSimulatorPlugin::UpdateStaticMonitors() {
                 info.rect.right = devMode.dmPosition.x + devMode.dmPelsWidth;
                 info.rect.bottom = devMode.dmPosition.y + devMode.dmPelsHeight;
                 info.is_primary = (displayDevice.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+                info.screen_id = static_cast<int>(deviceNum);
                 
                 static_monitors_.push_back(info);
             }
@@ -395,32 +409,37 @@ std::vector<MonitorInfo> get_monitors() {
     return HardwareSimulatorPlugin::GetStaticMonitors();
 }
 
-bool adjust_to_main_screen(int screen_index, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
     auto monitors = get_monitors();
-    if (screen_index < 0 || screen_index >= monitors.size()) return false;
+    const auto monitor_rect = MonitorRectForScreenId(monitors, screen_id);
+    if (!monitor_rect.has_value()) return false;
+    const auto point =
+        NormalizedPointOnMonitor(*monitor_rect, x_percent, y_percent);
+    if (!point.has_value()) return false;
 
-    const auto& screen = monitors[screen_index];
-    int ox, oy;
-    ox = screen.rect.left + static_cast<int>((screen.rect.right - screen.rect.left) * x_percent);
-    oy = screen.rect.top + static_cast<int>((screen.rect.bottom - screen.rect.top) * y_percent);
-
-    int primary_width = GetSystemMetrics(SM_CXSCREEN);
-    int primary_height = GetSystemMetrics(SM_CYSCREEN);
-
-    out_x = static_cast<LONG>(ox * (65535.0f / primary_width));
-    out_y = static_cast<LONG>(oy * (65535.0f / primary_height));
+    const int virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int virtual_width =
+        (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const int virtual_height =
+        (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    out_x = MulDiv(
+        point->x - virtual_x, 65535, (std::max)(1, virtual_width - 1));
+    out_y = MulDiv(
+        point->y - virtual_y, 65535, (std::max)(1, virtual_height - 1));
     return true;
 }
 
-bool adjust_touch_to_screen(int screen_index, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+bool adjust_touch_to_screen(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
     auto monitors = get_monitors();
-    if (monitors.empty() || screen_index < 0 || screen_index >= monitors.size()) {
+    const auto monitor_rect = MonitorRectForScreenId(monitors, screen_id);
+    if (!monitor_rect.has_value()) {
         out_x = out_y = 0;
         return false;
     }
 
     const auto point = NormalizedPointOnMonitor(
-        monitors[screen_index].rect, x_percent, y_percent);
+        *monitor_rect, x_percent, y_percent);
     if (!point.has_value()) {
         out_x = out_y = 0;
         return false;
@@ -1447,8 +1466,9 @@ void performMouseMoveAbsl(double x,double y,int screenId){
     LONG newx = 0, newy = 0;
 
 
-    mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    if (!adjust_to_main_screen(screenId, x,y, newx, newy)) return;
+    mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+                 MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+    if (!adjust_to_virtual_desktop(screenId, x,y, newx, newy)) return;
     mi.dx = newx;
     mi.dy = newy;
 
