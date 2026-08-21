@@ -65,6 +65,7 @@ public:
         // Display information (from VirtualDisplay::DisplayInfo)
         bool active = false;
         int display_uid = 0;           // Unique display identifier
+        int raw_screen_id = -1;        // EnumDisplayDevices device index
         std::string device_name;       // Device name like "\\\\.\\DISPLAYn"
         std::string display_name;      // Human-readable display name
         std::string device_description; // Device description

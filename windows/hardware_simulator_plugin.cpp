@@ -1996,6 +1996,7 @@ void HardwareSimulatorPlugin::HandleMethodCall(
          displayMap[flutter::EncodableValue("refreshRate")] = flutter::EncodableValue(display.refresh_rate);
          displayMap[flutter::EncodableValue("active")] = flutter::EncodableValue(display.active);
          displayMap[flutter::EncodableValue("displayUid")] = flutter::EncodableValue(display.display_uid);
+         displayMap[flutter::EncodableValue("rawScreenId")] = flutter::EncodableValue(display.raw_screen_id);
          displayMap[flutter::EncodableValue("deviceName")] = flutter::EncodableValue(display.device_name);
          displayMap[flutter::EncodableValue("displayName")] = flutter::EncodableValue(display.display_name);
          displayMap[flutter::EncodableValue("isVirtual")] = flutter::EncodableValue(display.is_virtual);

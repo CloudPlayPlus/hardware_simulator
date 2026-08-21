@@ -610,6 +610,7 @@ int VirtualDisplayControl::GetAllDisplays() {
 
                 VirtualDisplay::DisplayInfo d;
                 d.display_uid     = ParseDisplayAddress(devicePath);
+                d.raw_screen_id   = ai;
 
                 if (ParseDisplayCode(device_id).compare(parsec_vdd::VDD_DISPLAY_ID) == 0) {
                     d.is_virtual = true;
@@ -769,6 +770,7 @@ std::vector<VirtualDisplayControl::DetailedDisplayInfo> VirtualDisplayControl::G
             auto display_info = display->GetDisplayInfo();
             info.active = display_info.active;
             info.display_uid = display->GetDisplayUid();
+            info.raw_screen_id = display_info.raw_screen_id;
             info.device_name = display_info.device_name;
             info.display_name = display_info.display_name;
             info.device_description = display_info.device_description;
