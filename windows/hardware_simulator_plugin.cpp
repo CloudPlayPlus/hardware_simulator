@@ -1467,7 +1467,7 @@ void performMouseMoveAbsl(double x,double y,int screenId){
 
 
     mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
-                 MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+                 MOUSEEVENTF_VIRTUALDESK;
     if (!adjust_to_virtual_desktop(screenId, x,y, newx, newy)) return;
     mi.dx = newx;
     mi.dy = newy;
@@ -1523,7 +1523,7 @@ void performMouseMoveToWindowPosition(
 
     mi.dwFlags =
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
-        MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE;
+        MOUSEEVENTF_VIRTUALDESK;
     mi.dx =
         MulDiv(targetX - virtual_x, 65535, (std::max)(1, virtual_width - 1));
     mi.dy =
