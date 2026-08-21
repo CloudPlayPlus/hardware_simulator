@@ -10,6 +10,7 @@ class DisplayData {
   final String deviceName;
   final bool active;
   final int displayUid;
+  final int rawScreenId;
   final int orientation;
   final int left;
   final int top;
@@ -27,6 +28,7 @@ class DisplayData {
     required this.deviceName,
     required this.active,
     required this.displayUid,
+    this.rawScreenId = -1,
     required this.orientation,
     required this.left,
     required this.top,
@@ -46,6 +48,7 @@ class DisplayData {
       deviceName: map['deviceName'] ?? '',
       active: map['active'] ?? true,
       displayUid: map['displayUid'] ?? 0,
+      rawScreenId: map['rawScreenId'] ?? -1,
       orientation: map['orientation'] ?? 0,
       left: map['left'] ?? 0,
       top: map['top'] ?? 0,

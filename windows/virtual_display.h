@@ -37,6 +37,7 @@ public:
         bool   active        = false;
         bool   is_virtual    = false;  // Whether this is a virtual display
         int    display_uid   = 0;       // Display unique identifier  
+        int    raw_screen_id = -1;      // EnumDisplayDevices device index
         std::string device_name;         // "\\\\.\\DISPLAYn"
         std::string display_name; 
         std::string device_description;   
