@@ -1887,11 +1887,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func refreshDisplayBoundsCache() {
+      let displayIds: [CGDirectDisplayID]
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+      displayIds = enabledMacDisplayIds()
+#else
+      displayIds = onlineMacDisplayIds()
+#endif
       var updated: [Int: CGRect] = [:]
-      for screen in NSScreen.screens {
-          guard let displayId = displayId(for: screen) else {
-              continue
-          }
+      for displayId in displayIds {
           let bounds = CGDisplayBounds(displayId)
           guard !bounds.isNull && !bounds.isEmpty else {
               continue
@@ -1907,6 +1910,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       displayBoundsCacheLock.lock()
       defer { displayBoundsCacheLock.unlock() }
       return displayBoundsCache
+  }
+
+  private func onlineMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
+      var displayIds = Array<CGDirectDisplayID>(repeating: 0, count: limit)
+      var displayCount: UInt32 = 0
+      let error = CGGetOnlineDisplayList(
+          UInt32(displayIds.count),
+          &displayIds,
+          &displayCount
+      )
+      guard error == .success else {
+          return []
+      }
+      return Array(displayIds.prefix(min(Int(displayCount), displayIds.count)))
   }
 
   private func basicMacDisplayList() -> [[String: Any]] {
