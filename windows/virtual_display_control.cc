@@ -618,7 +618,10 @@ int VirtualDisplayControl::GetAllDisplays() {
                     d.is_virtual = false;
                 }
 
-                d.active      = !!(ddMonitor.StateFlags & DISPLAY_DEVICE_ACTIVE);
+                // Match WebRTC's GetScreenList() criterion exactly. A child
+                // monitor can report DISPLAY_DEVICE_ACTIVE before its top-level
+                // adapter does, which otherwise produces a false "ready".
+                d.active = !!(ddAdapter.StateFlags & DISPLAY_DEVICE_ACTIVE);
                 std::wstring w_device_name(ddAdapter.DeviceName);
                 d.device_name  = WideStringToString(w_device_name);
                 d.display_name = ParseDisplayCode(device_id);
@@ -981,11 +984,15 @@ VirtualDisplay::Orientation VirtualDisplayControl::GetDisplayOrientation(int dis
 }
 
 bool VirtualDisplayControl::SetMultiDisplayMode(MultiDisplayMode mode, int primary_display_id) {
-    UINT32 flags = SDC_APPLY;
+    // Force the requested topology through to the display driver. In
+    // particular, a newly-created VDD target may not yet be part of the last
+    // persisted extended topology even though SetDisplayConfig can otherwise
+    // return success without changing the active desktop paths.
+    UINT32 flags = SDC_APPLY | SDC_NO_OPTIMIZATION;
     
     switch (mode) {
         case MultiDisplayMode::Extend:
-            flags |= SDC_TOPOLOGY_EXTEND;
+            flags |= SDC_TOPOLOGY_EXTEND | SDC_PATH_PERSIST_IF_REQUIRED;
             break;
             
         case MultiDisplayMode::Duplicate:
