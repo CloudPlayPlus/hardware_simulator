@@ -35,7 +35,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
-  private var currentScreenId: Int = 0
+  private var currentDisplayId: Int?
   private var lastMouseClickButtonId: Int?
   private var lastMouseClickTime: TimeInterval = 0
   private var lastMouseClickLocation: CGPoint?
@@ -702,6 +702,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         "deviceName": "\(displayId)",
         "active": isMacDisplayEnabled(id),
         "displayUid": displayId,
+        "rawScreenId": displayId,
         "orientation": 0,
         "left": Int(bounds.minX.rounded()),
         "top": Int(bounds.minY.rounded()),
@@ -1867,17 +1868,36 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return CGEvent(source: mouseEventSource)?.location ?? CGEvent(source: nil)?.location
   }
 
+  private func displayId(for screen: NSScreen) -> CGDirectDisplayID? {
+      guard let number = screen.deviceDescription[
+          NSDeviceDescriptionKey("NSScreenNumber")
+      ] as? NSNumber else {
+          return nil
+      }
+      return CGDirectDisplayID(number.uint32Value)
+  }
+
+  private func displayBounds(nativeDisplayId: Int) -> CGRect? {
+      guard let rawDisplayId = UInt32(exactly: nativeDisplayId) else {
+          return nil
+      }
+      let nativeId = CGDirectDisplayID(rawDisplayId)
+      guard NSScreen.screens.contains(where: { displayId(for: $0) == nativeId }) else {
+          return nil
+      }
+      let bounds = CGDisplayBounds(nativeId)
+      guard !bounds.isNull && !bounds.isEmpty else {
+          return nil
+      }
+      return bounds
+  }
+
   private func clampMouseLocation(_ location: CGPoint, screenId: Int? = nil) -> CGPoint {
-      let screens = NSScreen.screens
-      let id = screenId ?? currentScreenId
-      guard screens.indices.contains(id) else {
+      guard let id = screenId ?? currentDisplayId,
+            let bounds = displayBounds(nativeDisplayId: id) else {
           return location
       }
-      let frame = screens[id].frame
-      return CGPoint(
-          x: min(max(location.x, frame.minX), frame.maxX - 1),
-          y: min(max(location.y, frame.minY), frame.maxY - 1)
-      )
+      return MacDisplayCoordinateMapper.clamp(location, to: bounds) ?? location
   }
 
   private func postMouse(
@@ -1908,26 +1928,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   func performMouseMoveAbsl(x: Double, y: Double, screenId: Int) {
-      let screens = NSScreen.screens
-      guard screens.indices.contains(screenId) else {
-          print("Invalid screenId: \(screenId)")
+      guard let bounds = displayBounds(nativeDisplayId: screenId) else {
           return
       }
-      currentScreenId = screenId;
+      currentDisplayId = screenId
 
-      let targetScreen = screens[screenId]
-      let screenFrame = targetScreen.frame
-      
-      let absoluteX = x * Double(screenFrame.width) + Double(screenFrame.minX)
-
-      let heightFactor = y * Double(screenFrame.height)
-      let yOffset = Double(screenFrame.minY)
-      let screenDiff = Double(screenFrame.height) - Double(screens[0].frame.height)
-      // Haichao: It seems this is how macos works for Y. I don't know why it is so strange.
-      let absoluteY = heightFactor - (yOffset + screenDiff)
+      guard let location = MacDisplayCoordinateMapper.absolutePoint(
+          xPercent: x,
+          yPercent: y,
+          bounds: bounds
+      ) else {
+          return
+      }
 
       let injectedMove = injectedMouseMoveEvent()
-      let location = CGPoint(x: absoluteX, y: absoluteY)
       let previousLocation = currentMouseLocation() ?? location
       postMouse(
           button: injectedMove.button,
@@ -1943,11 +1957,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   func performMouseMoveRelative(dx: Double, dy: Double, screenId: Int) {
-      let screens = NSScreen.screens
-      guard screens.indices.contains(screenId) else {
-          print("Invalid screenId: \(screenId)")
+      guard displayBounds(nativeDisplayId: screenId) != nil else {
           return
       }
+      currentDisplayId = screenId
 
       if let currentMouseLocation = currentMouseLocation() {
           // Calculate new position based on dx and dy
@@ -2658,31 +2671,45 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func currentMousePosition() -> (screenId: Int, xPercent: Double, yPercent: Double)? {
-    let location = NSEvent.mouseLocation
-    let screens = NSScreen.screens
-    for (index, screen) in screens.enumerated() {
-      let frame = screen.frame
-      if frame.contains(location) {
-        let xPercent = Double((location.x - frame.minX) / frame.width)
-        let yPercent = Double((frame.maxY - location.y) / frame.height)
+    guard let location = currentMouseLocation() else {
+      return nil
+    }
+    for screen in NSScreen.screens {
+      guard let displayId = displayId(for: screen) else {
+        continue
+      }
+      let bounds = CGDisplayBounds(displayId)
+      if location.x >= bounds.minX && location.x < bounds.maxX &&
+          location.y >= bounds.minY && location.y < bounds.maxY {
+        guard let position = MacDisplayCoordinateMapper.normalizedPoint(
+          location,
+          in: bounds
+        ) else {
+          continue
+        }
         return (
-          screenId: index,
-          xPercent: min(max(xPercent, 0.0), 1.0),
-          yPercent: min(max(yPercent, 0.0), 1.0)
+          screenId: Int(displayId),
+          xPercent: position.x,
+          yPercent: position.y
         )
       }
     }
 
-    guard let main = screens.first else {
+    let mainDisplayId = CGMainDisplayID()
+    let bounds = CGDisplayBounds(mainDisplayId)
+    guard !bounds.isNull && !bounds.isEmpty else {
       return nil
     }
-    let frame = main.frame
-    let xPercent = Double((location.x - frame.minX) / frame.width)
-    let yPercent = Double((frame.maxY - location.y) / frame.height)
+    guard let position = MacDisplayCoordinateMapper.normalizedPoint(
+      location,
+      in: bounds
+    ) else {
+      return nil
+    }
     return (
-      screenId: 0,
-      xPercent: min(max(xPercent, 0.0), 1.0),
-      yPercent: min(max(yPercent, 0.0), 1.0)
+      screenId: Int(mainDisplayId),
+      xPercent: position.x,
+      yPercent: position.y
     )
   }
 
