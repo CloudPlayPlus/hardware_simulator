@@ -38,6 +38,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var currentDisplayId: Int?
   private let displayBoundsCacheLock = NSLock()
   private var displayBoundsCache: [Int: CGRect] = [:]
+  private var cursorDisplayOrderCache: [Int] = []
   private var displayBoundsCacheObserver: NSObjectProtocol?
   private var lastMouseClickButtonId: Int?
   private var lastMouseClickTime: TimeInterval = 0
@@ -1894,22 +1895,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       displayIds = onlineMacDisplayIds()
 #endif
       var updated: [Int: CGRect] = [:]
+      var mirrorTargets: [Int: Int] = [:]
       for displayId in displayIds {
           let bounds = CGDisplayBounds(displayId)
           guard !bounds.isNull && !bounds.isEmpty else {
               continue
           }
-          updated[Int(displayId)] = bounds
+          let nativeDisplayId = Int(displayId)
+          updated[nativeDisplayId] = bounds
+          mirrorTargets[nativeDisplayId] = Int(CGDisplayMirrorsDisplay(displayId))
       }
+      let cursorOrder = MacDisplayCoordinateMapper.cursorDisplayOrder(
+          displayIds: Array(updated.keys),
+          mirrorTargetByDisplayId: mirrorTargets,
+          mainDisplayId: Int(CGMainDisplayID())
+      )
       displayBoundsCacheLock.lock()
       displayBoundsCache = updated
+      cursorDisplayOrderCache = cursorOrder
       displayBoundsCacheLock.unlock()
   }
 
-  private func displayBoundsSnapshot() -> [Int: CGRect] {
+  private func displayTopologySnapshot() -> (bounds: [Int: CGRect], cursorOrder: [Int]) {
       displayBoundsCacheLock.lock()
       defer { displayBoundsCacheLock.unlock() }
-      return displayBoundsCache
+      return (displayBoundsCache, cursorDisplayOrderCache)
   }
 
   private func onlineMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {
@@ -2778,7 +2788,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard let location = currentMouseLocation() else {
       return nil
     }
-    for (displayId, bounds) in displayBoundsSnapshot() {
+    let topology = displayTopologySnapshot()
+    for displayId in topology.cursorOrder {
+      guard let bounds = topology.bounds[displayId] else {
+        continue
+      }
       if location.x >= bounds.minX && location.x < bounds.maxX &&
           location.y >= bounds.minY && location.y < bounds.maxY {
         guard let position = MacDisplayCoordinateMapper.normalizedPoint(

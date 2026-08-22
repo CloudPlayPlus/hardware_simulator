@@ -1,6 +1,52 @@
 import CoreGraphics
 
 public enum MacDisplayCoordinateMapper {
+  public static func cursorDisplayOrder(
+    displayIds: [Int],
+    mirrorTargetByDisplayId: [Int: Int],
+    mainDisplayId: Int
+  ) -> [Int] {
+    let mirrorMasters = Set(
+      mirrorTargetByDisplayId.values.filter { $0 != 0 }
+    )
+    return Array(Set(displayIds)).sorted { lhs, rhs in
+      let lhsPriority = cursorDisplayPriority(
+        lhs,
+        mirrorMasters: mirrorMasters,
+        mirrorTargetByDisplayId: mirrorTargetByDisplayId,
+        mainDisplayId: mainDisplayId
+      )
+      let rhsPriority = cursorDisplayPriority(
+        rhs,
+        mirrorMasters: mirrorMasters,
+        mirrorTargetByDisplayId: mirrorTargetByDisplayId,
+        mainDisplayId: mainDisplayId
+      )
+      if lhsPriority != rhsPriority {
+        return lhsPriority < rhsPriority
+      }
+      return lhs < rhs
+    }
+  }
+
+  private static func cursorDisplayPriority(
+    _ displayId: Int,
+    mirrorMasters: Set<Int>,
+    mirrorTargetByDisplayId: [Int: Int],
+    mainDisplayId: Int
+  ) -> Int {
+    if displayId == mainDisplayId {
+      return 0
+    }
+    if mirrorMasters.contains(displayId) {
+      return 1
+    }
+    if mirrorTargetByDisplayId[displayId, default: 0] == 0 {
+      return 2
+    }
+    return 3
+  }
+
   public static func absolutePoint(
     xPercent: Double,
     yPercent: Double,
