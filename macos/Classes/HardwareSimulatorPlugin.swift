@@ -36,6 +36,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
   private var currentDisplayId: Int?
+  private let displayBoundsCacheLock = NSLock()
+  private var displayBoundsCache: [Int: CGRect] = [:]
+  private var displayBoundsCacheObserver: NSObjectProtocol?
   private var lastMouseClickButtonId: Int?
   private var lastMouseClickTime: TimeInterval = 0
   private var lastMouseClickLocation: CGPoint?
@@ -93,6 +96,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     instance.methodChannel = channel
     instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
+    instance.startDisplayBoundsCache()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
 #endif
@@ -101,6 +105,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   deinit {
     stopTrackpadScrollCapture()
+    if let displayBoundsCacheObserver {
+      NotificationCenter.default.removeObserver(displayBoundsCacheObserver)
+    }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     stopCursorVisibilityTimer()
     stopMacOSTextInputDecisionCapture()
@@ -1868,6 +1875,40 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return CGEvent(source: mouseEventSource)?.location ?? CGEvent(source: nil)?.location
   }
 
+  private func startDisplayBoundsCache() {
+      refreshDisplayBoundsCache()
+      displayBoundsCacheObserver = NotificationCenter.default.addObserver(
+          forName: NSApplication.didChangeScreenParametersNotification,
+          object: nil,
+          queue: .main
+      ) { [weak self] _ in
+          self?.refreshDisplayBoundsCache()
+      }
+  }
+
+  private func refreshDisplayBoundsCache() {
+      var updated: [Int: CGRect] = [:]
+      for screen in NSScreen.screens {
+          guard let displayId = displayId(for: screen) else {
+              continue
+          }
+          let bounds = CGDisplayBounds(displayId)
+          guard !bounds.isNull && !bounds.isEmpty else {
+              continue
+          }
+          updated[Int(displayId)] = bounds
+      }
+      displayBoundsCacheLock.lock()
+      displayBoundsCache = updated
+      displayBoundsCacheLock.unlock()
+  }
+
+  private func displayBoundsSnapshot() -> [Int: CGRect] {
+      displayBoundsCacheLock.lock()
+      defer { displayBoundsCacheLock.unlock() }
+      return displayBoundsCache
+  }
+
   private func basicMacDisplayList() -> [[String: Any]] {
       let mainDisplayId = CGMainDisplayID()
       return NSScreen.screens.enumerated().compactMap { index, screen in
@@ -1915,23 +1956,25 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func displayBounds(nativeDisplayId: Int) -> CGRect? {
-      guard let rawDisplayId = UInt32(exactly: nativeDisplayId) else {
-          return nil
-      }
-      let nativeId = CGDirectDisplayID(rawDisplayId)
-      guard NSScreen.screens.contains(where: { displayId(for: $0) == nativeId }) else {
-          return nil
-      }
-      let bounds = CGDisplayBounds(nativeId)
-      guard !bounds.isNull && !bounds.isEmpty else {
-          return nil
-      }
-      return bounds
+      displayBoundsCacheLock.lock()
+      defer { displayBoundsCacheLock.unlock() }
+      return displayBoundsCache[nativeDisplayId]
   }
 
-  private func clampMouseLocation(_ location: CGPoint, screenId: Int? = nil) -> CGPoint {
-      guard let id = screenId ?? currentDisplayId,
-            let bounds = displayBounds(nativeDisplayId: id) else {
+  private func clampMouseLocation(
+      _ location: CGPoint,
+      screenId: Int? = nil,
+      screenBounds: CGRect? = nil
+  ) -> CGPoint {
+      let bounds: CGRect?
+      if let screenBounds {
+          bounds = screenBounds
+      } else if let id = screenId ?? currentDisplayId {
+          bounds = displayBounds(nativeDisplayId: id)
+      } else {
+          bounds = nil
+      }
+      guard let bounds else {
           return location
       }
       return MacDisplayCoordinateMapper.clamp(location, to: bounds) ?? location
@@ -1943,9 +1986,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       location rawLocation: CGPoint,
       previousLocation: CGPoint,
       clickCount: Int64,
-      screenId: Int? = nil
+      screenId: Int? = nil,
+      screenBounds: CGRect? = nil
   ) {
-      let location = clampMouseLocation(rawLocation, screenId: screenId)
+      let location = clampMouseLocation(
+          rawLocation,
+          screenId: screenId,
+          screenBounds: screenBounds
+      )
       let event = CGEvent(
           mouseEventSource: mouseEventSource,
           mouseType: type,
@@ -1986,7 +2034,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           location: location,
           previousLocation: previousLocation,
           clickCount: 0,
-          screenId: screenId
+          screenId: screenId,
+          screenBounds: bounds
       )
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
       updateCursorVisibilityAfterInjectedMouseMove()
@@ -1994,7 +2043,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   func performMouseMoveRelative(dx: Double, dy: Double, screenId: Int) {
-      guard displayBounds(nativeDisplayId: screenId) != nil else {
+      guard let bounds = displayBounds(nativeDisplayId: screenId) else {
           return
       }
       currentDisplayId = screenId
@@ -2010,7 +2059,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               location: CGPoint(x: newX, y: newY),
               previousLocation: currentMouseLocation,
               clickCount: 0,
-              screenId: screenId
+              screenId: screenId,
+              screenBounds: bounds
           )
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
           updateCursorVisibilityAfterInjectedMouseMove()
@@ -2711,11 +2761,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard let location = currentMouseLocation() else {
       return nil
     }
-    for screen in NSScreen.screens {
-      guard let displayId = displayId(for: screen) else {
-        continue
-      }
-      let bounds = CGDisplayBounds(displayId)
+    for (displayId, bounds) in displayBoundsSnapshot() {
       if location.x >= bounds.minX && location.x < bounds.maxX &&
           location.y >= bounds.minY && location.y < bounds.maxY {
         guard let position = MacDisplayCoordinateMapper.normalizedPoint(
@@ -2725,7 +2771,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           continue
         }
         return (
-          screenId: Int(displayId),
+          screenId: displayId,
           xPercent: position.x,
           yPercent: position.y
         )
