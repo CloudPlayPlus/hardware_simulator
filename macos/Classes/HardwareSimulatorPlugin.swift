@@ -695,6 +695,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return displayIds.enumerated().map { index, id in
       let displayId = Int(id)
       let mode = CGDisplayCopyDisplayMode(id)
+      // Keep the reported size in the same pixel coordinate space used by
+      // macDisplayConfigs() and setMacDisplayMode(). CGDisplayPixelsWide/High
+      // can expose the scaled logical size for HiDPI virtual displays.
+      let modeWidth = mode?.pixelWidth ?? 0
+      let modeHeight = mode?.pixelHeight ?? 0
       let bounds = CGDisplayBounds(id)
       let isVirtual = virtualDisplayIds.contains(displayId)
       let name = isVirtual
@@ -702,8 +707,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         : (names[displayId] ?? "Display \(displayId)")
       return [
         "index": index,
-        "width": CGDisplayPixelsWide(id),
-        "height": CGDisplayPixelsHigh(id),
+        "width": modeWidth > 0 ? modeWidth : CGDisplayPixelsWide(id),
+        "height": modeHeight > 0 ? modeHeight : CGDisplayPixelsHigh(id),
         "refreshRate": displayRefreshRate(mode),
         "isVirtual": isVirtual,
         "displayName": name,
