@@ -1868,6 +1868,43 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return CGEvent(source: mouseEventSource)?.location ?? CGEvent(source: nil)?.location
   }
 
+  private func basicMacDisplayList() -> [[String: Any]] {
+      let mainDisplayId = CGMainDisplayID()
+      return NSScreen.screens.enumerated().compactMap { index, screen in
+          guard let displayId = displayId(for: screen) else {
+              return nil
+          }
+          let bounds = CGDisplayBounds(displayId)
+          let refreshRate = CGDisplayCopyDisplayMode(displayId)?.refreshRate ?? 0
+          let displayName: String
+          if #available(macOS 10.15, *) {
+              displayName = screen.localizedName
+          } else {
+              displayName = "Display \(displayId)"
+          }
+          return [
+              "index": index,
+              "width": CGDisplayPixelsWide(displayId),
+              "height": CGDisplayPixelsHigh(displayId),
+              "refreshRate": refreshRate.isFinite && refreshRate > 0
+                  ? Int(refreshRate.rounded())
+                  : 60,
+              "isVirtual": false,
+              "displayName": displayName,
+              "deviceName": "\(displayId)",
+              "active": CGDisplayIsActive(displayId) != 0,
+              "displayUid": Int(displayId),
+              "rawScreenId": Int(displayId),
+              "orientation": 0,
+              "left": Int(bounds.minX.rounded()),
+              "top": Int(bounds.minY.rounded()),
+              "right": Int(bounds.maxX.rounded()),
+              "bottom": Int(bounds.maxY.rounded()),
+              "isPrimary": displayId == mainDisplayId,
+          ]
+      }
+  }
+
   private func displayId(for screen: NSScreen) -> CGDirectDisplayID? {
       guard let number = screen.deviceDescription[
           NSDeviceDescriptionKey("NSScreenNumber")
@@ -3687,9 +3724,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "removeDisplay":
       result(false)
     case "getAllDisplays":
-      result(NSScreen.screens.count)
+      result(basicMacDisplayList().count)
     case "getDisplayList":
-      result([])
+      result(basicMacDisplayList())
     case "changeDisplaySettings":
       result(false)
     case "getDisplayConfigs":

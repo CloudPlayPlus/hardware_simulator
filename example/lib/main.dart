@@ -69,17 +69,44 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return true;
   }
 
-  void _moveMouseAbsolute() {
+  Future<int?> _resolveMouseDisplayId() async {
+    try {
+      final displays = await HardwareSimulator.getDisplayList();
+      final activeDisplays = displays.where((display) => display.active);
+      if (activeDisplays.isEmpty) {
+        return Platform.isMacOS || Platform.isWindows ? null : 0;
+      }
+      final display = activeDisplays.firstWhere(
+        (candidate) => candidate.isPrimary,
+        orElse: () => activeDisplays.first,
+      );
+      if (Platform.isMacOS || Platform.isWindows) {
+        return display.rawScreenId >= 0 ? display.rawScreenId : null;
+      }
+      return display.index;
+    } catch (error) {
+      debugPrint('Unable to resolve mouse display: $error');
+      return Platform.isMacOS || Platform.isWindows ? null : 0;
+    }
+  }
+
+  void _moveMouseAbsolute() async {
     double x = double.tryParse(xController.text) ?? 0;
     double y = double.tryParse(yController.text) ?? 0;
-    hardwareSimulator.getMouse().performMouseMoveAbsl(x, y, 0);
+    final screenId = await _resolveMouseDisplayId();
+    if (screenId == null) return;
+    hardwareSimulator.getMouse().performMouseMoveAbsl(x, y, screenId);
     //hardwareSimulator.getMouse().performMouseMoveToWindowPosition(x, y);
   }
 
-  void _moveMouseRelative() {
+  void _moveMouseRelative() async {
     double deltaX = double.tryParse(relXController.text) ?? 0;
     double deltaY = double.tryParse(relYController.text) ?? 0;
-    hardwareSimulator.getMouse().performMouseMoveRelative(deltaX, deltaY, 0);
+    final screenId = await _resolveMouseDisplayId();
+    if (screenId == null) return;
+    hardwareSimulator
+        .getMouse()
+        .performMouseMoveRelative(deltaX, deltaY, screenId);
   }
 
   void _pressKey() {
