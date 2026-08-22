@@ -10,6 +10,26 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
+    let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
+      displayIds: [30, 20, 10, 30],
+      mirrorTargetByDisplayId: [30: 20],
+      mainDisplayId: 10
+    )
+
+    XCTAssertEqual(order, [10, 20, 30])
+  }
+
+  func testCursorDisplayOrderIsStableForIndependentDisplays() {
+    let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
+      displayIds: [40, 20, 30],
+      mirrorTargetByDisplayId: [:],
+      mainDisplayId: 99
+    )
+
+    XCTAssertEqual(order, [20, 30, 40])
+  }
+
   func testGetPlatformVersion() {
     let plugin = HardwareSimulatorPlugin()
 
