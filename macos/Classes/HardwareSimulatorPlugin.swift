@@ -2501,7 +2501,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return nil
     }
 
-    let messageHash = JSHash(buffer: pixels, size: pixels.count)
     // NSCursor.hotSpot is expressed in the NSImage coordinate space. Prefer
     // the image's logical point size because a raw bitmap rep may report its
     // pixel dimensions as its size, then fall back to the rep if necessary.
@@ -2514,6 +2513,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       pixelHeight: bitmapRep.pixelsHigh,
       pointSize: pointSize
     )
+
+    var hashInput: [UInt8] = []
+    appendUInt32BE(UInt32(clamping: bitmapRep.pixelsWide), to: &hashInput)
+    appendUInt32BE(UInt32(clamping: bitmapRep.pixelsHigh), to: &hashInput)
+    appendUInt32BE(hotSpotPixels.x, to: &hashInput)
+    appendUInt32BE(hotSpotPixels.y, to: &hashInput)
+    hashInput.append(contentsOf: pixels)
+    let messageHash = JSHash(buffer: hashInput, size: hashInput.count)
 
     var bytes: [UInt8] = [9]
     appendUInt32BE(UInt32(clamping: bitmapRep.pixelsWide), to: &bytes)
@@ -4007,16 +4014,24 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           cursorChangedCallbacks.insert(callbackID)
           hookAllCursorImage[callbackID] = hookAll
 
-          // If hookAll is true, trigger an immediate callback
-          if hookAll {
-              let currentCursor = NSCursor.currentSystem
-              if let cursorImage = currentCursor?.image,
-                 let hotSpot = currentCursor?.hotSpot,
-                 let encoded = encodeCursorBitmap(
-                   image: cursorImage,
-                   hotSpot: hotSpot
-                 ) {
-                  let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
+          // Seed every callback with the current texture. Collaborative
+          // sessions cache it on the Host until that Viewer clicks or drags.
+          if let currentCursor = NSCursor.currentSystem {
+              let cursorImage = currentCursor.image
+              let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
+              if !hookAll,
+                 let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
+                  let message: [String: Any] = [
+                      "callbackID": callbackID,
+                      "message": CursorConstants.cursorUpdatedDefault,
+                      "msg_info": cursorIndex,
+                      "cursorImage": FlutterStandardTypedData.init(bytes: Data([]))
+                  ]
+                  methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
+              } else if let encoded = encodeCursorBitmap(
+                image: cursorImage,
+                hotSpot: currentCursor.hotSpot
+              ) {
                   let messageHash = encoded.hash
                   jsHashWithImageHash[cursorImageHashes] = messageHash
 
