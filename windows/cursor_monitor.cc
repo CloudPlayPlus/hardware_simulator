@@ -269,10 +269,22 @@ HANDLE GetCursorHandle(HCURSOR hCursor) {
     return NULL;
 }
 
-uint32_t JSHash(const uint32_t* buffer, int size) {
+uint32_t CursorBitmapHash(const uint32_t* pixels,
+    int pixel_count,
+    uint32_t width,
+    uint32_t height,
+    uint32_t hotx,
+    uint32_t hoty) {
     uint32_t hash = 1315423911;
-    for (std::size_t i = 0; i < size; i++) {
-        hash ^= ((hash << 5) + buffer[i] + (hash >> 2));
+    const auto mix = [&hash](uint32_t value) {
+        hash ^= ((hash << 5) + value + (hash >> 2));
+    };
+    mix(width);
+    mix(height);
+    mix(hotx);
+    mix(hoty);
+    for (int i = 0; i < pixel_count; i++) {
+        mix(pixels[i]);
     }
     return (hash & 0x7FFFFFFF);
 }
@@ -410,7 +422,8 @@ void SyncCursorImage() {
                     CreateMouseCursorFromHCursor(hdc, ci.hCursor, &width, &height, &hotX, &hotY));
                 ReleaseDC(nullptr, hdc);
 
-                unsigned int hash = JSHash(image.get(), width * height);
+                unsigned int hash = CursorBitmapHash(
+                    image.get(), width * height, width, height, hotX, hotY);
 
                 std::vector<uint8_t> datawith8bitbytes = {};
                 if (cachedcursors[callback.first].find(hash) != cachedcursors[callback.first].end()) {
@@ -434,7 +447,8 @@ void SyncCursorImage() {
             CreateMouseCursorFromHCursor(hdc, ci.hCursor, &width, &height, &hotX, &hotY));
         ReleaseDC(nullptr, hdc);
 
-        unsigned int hash = JSHash(image.get(), width * height);
+        unsigned int hash = CursorBitmapHash(
+            image.get(), width * height, width, height, hotX, hotY);
 
         std::vector<uint8_t> datawith8bitbytes = {};
         for (auto callback : callbacks) {
@@ -648,20 +662,40 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
     hookAllCursorImage[callback_id] = hookAll;
     cachedcursors[callback_id] = {};
 
-    // If hookAll is true, trigger an immediate callback
-    if (hookAll) {
-        CURSORINFO ci = { sizeof(ci) };
-        GetCursorInfo(&ci);
-        HDC hdc = GetDC(nullptr);
-        int width = 0, height = 0, hotX = 0, hotY = 0;
-        std::unique_ptr<uint32_t[]> image = std::move(
-            CreateMouseCursorFromHCursor(hdc, ci.hCursor, &width, &height, &hotX, &hotY));
-        ReleaseDC(nullptr, hdc);
+    // Seed every callback with the current texture. Collaborative sessions
+    // cache this snapshot on the Host and publish it only on that Viewer's
+    // click/drag, so they also work when the native cursor handle does not
+    // change during the interaction.
+    CURSORINFO ci = { sizeof(ci) };
+    if (GetCursorInfo(&ci)) {
+        HANDLE h = GetCursorHandle(ci.hCursor);
+        if (!hookAll && h != NULL) {
+            callback(
+                CPP_CURSOR_UPDATED_DEFAULT,
+                static_cast<int>(reinterpret_cast<intptr_t>(h)),
+                {});
+        } else {
+            HDC hdc = GetDC(nullptr);
+            int width = 0, height = 0, hotX = 0, hotY = 0;
+            std::unique_ptr<uint32_t[]> image = std::move(
+                CreateMouseCursorFromHCursor(
+                    hdc,
+                    ci.hCursor,
+                    &width,
+                    &height,
+                    &hotX,
+                    &hotY));
+            ReleaseDC(nullptr, hdc);
 
-        unsigned int hash = JSHash(image.get(), width * height);
-        std::vector<uint8_t> datawith8bitbytes = ConvertUint32ToUint8(image.get(), width, height, hotX, hotY, hash);
-        cachedcursors[callback_id].insert(hash);
-        callback(CPP_CURSOR_UPDATED_IMAGE, hash, datawith8bitbytes);
+            if (image != nullptr && width > 0 && height > 0) {
+                unsigned int hash = CursorBitmapHash(
+                    image.get(), width * height, width, height, hotX, hotY);
+                std::vector<uint8_t> datawith8bitbytes = ConvertUint32ToUint8(
+                    image.get(), width, height, hotX, hotY, hash);
+                cachedcursors[callback_id].insert(hash);
+                callback(CPP_CURSOR_UPDATED_IMAGE, hash, datawith8bitbytes);
+            }
+        }
     }
 
     if (!IsCursorVisible()) {
