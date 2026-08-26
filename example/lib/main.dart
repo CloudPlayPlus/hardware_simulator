@@ -179,7 +179,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           for (int i = 17; i < 21; i++) {
             hash = hash * 256 + cursorImage[i];
           }
-          updateCursorImage(cursorImage.sublist(25), width, height, hash);
+          updateCursorImage(cursorImage.sublist(29), width, height, hash);
         }
       } else if (message == HardwareSimulator.CURSOR_VISIBLE) {
         // 获取显示器ID和鼠标位置信息

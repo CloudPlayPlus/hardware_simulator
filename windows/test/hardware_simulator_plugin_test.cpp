@@ -16,10 +16,13 @@
 
 uint32_t CursorBitmapHash(const uint32_t* pixels, int pixel_count,
     uint32_t width, uint32_t height, uint32_t hotx, uint32_t hoty,
-    uint32_t system_cursor_id);
+    uint32_t system_cursor_id, float source_device_pixel_ratio);
 std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* pixels,
     uint32_t width, uint32_t height, uint32_t hotx, uint32_t hoty,
-    uint32_t hash, uint32_t system_cursor_id);
+    uint32_t hash, uint32_t system_cursor_id,
+    float source_device_pixel_ratio);
+bool ShouldSyncCursorImage(HCURSOR cursor, float source_device_pixel_ratio,
+    HCURSOR previous_cursor, float previous_source_device_pixel_ratio);
 
 namespace hardware_simulator {
 namespace test {
@@ -52,18 +55,34 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
 
 TEST(CursorEncoding, PreservesSystemCursorMetadataAndHashIdentity) {
   const uint32_t pixels[] = {0xFF112233};
-  const auto custom_hash = CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 0);
-  const auto system_hash = CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 32513);
+  const auto custom_hash = CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 0, 2.0f);
+  const auto system_hash =
+      CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 32513, 2.0f);
+  const auto different_dpr_hash =
+      CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 32513, 1.0f);
 
   EXPECT_NE(custom_hash, system_hash);
-  const auto frame =
-      EncodeCursorBitmapFrame(pixels, 1, 1, 0, 0, system_hash, 32513);
-  ASSERT_EQ(frame.size(), 29u);
+  EXPECT_NE(system_hash, different_dpr_hash);
+  const auto frame = EncodeCursorBitmapFrame(
+      pixels, 1, 1, 0, 0, system_hash, 32513, 2.0f);
+  ASSERT_EQ(frame.size(), 33u);
   EXPECT_EQ(frame[0], 9);
   EXPECT_EQ(frame[21], 0x01);
   EXPECT_EQ(frame[22], 0x7F);
   EXPECT_EQ(frame[23], 0x00);
   EXPECT_EQ(frame[24], 0x00);
+  EXPECT_EQ(frame[25], 0x00);
+  EXPECT_EQ(frame[26], 0x00);
+  EXPECT_EQ(frame[27], 0x00);
+  EXPECT_EQ(frame[28], 0x40);
+}
+
+TEST(CursorEncoding, ResendsUnchangedHandleWhenMonitorDpiChanges) {
+  const auto cursor = reinterpret_cast<HCURSOR>(1);
+  EXPECT_FALSE(ShouldSyncCursorImage(cursor, 1.0f, cursor, 1.0f));
+  EXPECT_TRUE(ShouldSyncCursorImage(cursor, 2.0f, cursor, 1.0f));
+  EXPECT_TRUE(ShouldSyncCursorImage(
+      reinterpret_cast<HCURSOR>(2), 1.0f, cursor, 1.0f));
 }
 
 TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {

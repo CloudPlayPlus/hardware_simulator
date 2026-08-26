@@ -2427,6 +2427,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let hotSpotX: UInt32
     let hotSpotY: UInt32
     let systemCursorId: Int?
+    let sourceDevicePixelRatioBits: UInt32
   }
 
   static func cursorImageSignature(
@@ -2449,6 +2450,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       pixelHeight: pixelHeight,
       pointSize: pointSize
     )
+    let sourceDevicePixelRatio = cursorDevicePixelRatio(
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      pointSize: pointSize
+    )
 
     return CursorImageSignature(
       imageHash: imageHash,
@@ -2456,7 +2462,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       pixelHeight: UInt32(clamping: pixelHeight),
       hotSpotX: hotSpotPixels.x,
       hotSpotY: hotSpotPixels.y,
-      systemCursorId: systemCursorId
+      systemCursorId: systemCursorId,
+      sourceDevicePixelRatioBits: sourceDevicePixelRatio.bitPattern
     )
   }
 
@@ -2526,6 +2533,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     )
   }
 
+  static func cursorDevicePixelRatio(
+    pixelWidth: Int,
+    pixelHeight: Int,
+    pointSize: NSSize
+  ) -> Float32 {
+    let scaleX = pointSize.width > 0
+      ? CGFloat(pixelWidth) / pointSize.width
+      : 1
+    let scaleY = pointSize.height > 0
+      ? CGFloat(pixelHeight) / pointSize.height
+      : 1
+    let average = (scaleX + scaleY) / 2
+    guard average.isFinite, average > 0 else { return 1 }
+    return Float32(min(max(average, 0.25), 8))
+  }
+
   private static func cursorCoordinate(_ value: CGFloat) -> UInt32 {
     guard value.isFinite, value > 0 else { return 0 }
     return UInt32(min(value.rounded(), CGFloat(UInt32.max)))
@@ -2569,6 +2592,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       pixelHeight: bitmapRep.pixelsHigh,
       pointSize: pointSize
     )
+    let sourceDevicePixelRatio = Self.cursorDevicePixelRatio(
+      pixelWidth: bitmapRep.pixelsWide,
+      pixelHeight: bitmapRep.pixelsHigh,
+      pointSize: pointSize
+    )
 
     var hashInput: [UInt8] = []
     appendUInt32BE(UInt32(clamping: bitmapRep.pixelsWide), to: &hashInput)
@@ -2576,6 +2604,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     appendUInt32BE(hotSpotPixels.x, to: &hashInput)
     appendUInt32BE(hotSpotPixels.y, to: &hashInput)
     appendUInt32LE(systemCursorId, to: &hashInput)
+    appendUInt32LE(sourceDevicePixelRatio.bitPattern, to: &hashInput)
     hashInput.append(contentsOf: pixels)
     let messageHash = JSHash(buffer: hashInput, size: hashInput.count)
 
@@ -2586,6 +2615,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     appendUInt32BE(hotSpotPixels.y, to: &bytes)
     appendUInt32BE(messageHash, to: &bytes)
     appendUInt32LE(systemCursorId, to: &bytes)
+    appendUInt32LE(sourceDevicePixelRatio.bitPattern, to: &bytes)
     bytes.append(contentsOf: pixels)
     return (messageHash, Data(bytes))
   }
