@@ -347,6 +347,17 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual([signature: 1][normalized], 1)
   }
 
+  func testCursorVisibilityEvidenceOnlyChangesWithBitmap() {
+    XCTAssertFalse(HardwareSimulatorPlugin.cursorBitmapChangedForVisibility(
+      previousImageHash: "same-bitmap",
+      currentImageHash: "same-bitmap"
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.cursorBitmapChangedForVisibility(
+      previousImageHash: "old-bitmap",
+      currentImageHash: "new-bitmap"
+    ))
+  }
+
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
     let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
 

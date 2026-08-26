@@ -2415,6 +2415,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var cursorVisibilityTimer: DispatchSourceTimer?
   var lastCursorVisible: Bool?
   var lastWindowServerCursorVisible: Bool?
+  var previousCursorVisibilityImageHash: String?
   // 远程注入移动后 WindowServer getter 可能一直停留在 false；新的非透明纹理
   // 证明系统已经重新绘制光标，不能被同一个滞留值立即覆盖。
   var cursorTextureProvesVisible = false
@@ -2457,6 +2458,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       hotSpotY: hotSpotPixels.y,
       systemCursorId: systemCursorId
     )
+  }
+
+  static func cursorBitmapChangedForVisibility(
+    previousImageHash: String?,
+    currentImageHash: String
+  ) -> Bool {
+    previousImageHash != currentImageHash
   }
 
   var previousCursorImageSignature: CursorImageSignature?
@@ -2975,7 +2983,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         return;
     }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
-    updateCursorVisibilityAfterTextureChange(cursorImage)
+    if Self.cursorBitmapChangedForVisibility(
+      previousImageHash: previousCursorVisibilityImageHash,
+      currentImageHash: cursorImageHashes
+    ) {
+      updateCursorVisibilityAfterTextureChange(cursorImage)
+      previousCursorVisibilityImageHash = cursorImageHashes
+    }
 #endif
     //system default
     if let cursorIndex = systemCursorId {
