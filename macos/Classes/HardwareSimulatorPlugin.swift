@@ -2932,7 +2932,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     updateCursorVisibilityAfterTextureChange(cursorImage)
 #endif
     //system default
-    if let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
+    if let cursorIndex = defaultCursorHasher?.systemCursorId(for: currentCursor) {
         var updatedAllCallbacks = true
         for callbackID in cursorChangedCallbacks {
             if !(hookAllCursorImage[callbackID] ?? false) {
@@ -4031,7 +4031,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               let cursorImage = currentCursor.image
               let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
               let systemCursorId =
-                defaultCursorHasher?.getHashMap()[cursorImageHashes]
+                defaultCursorHasher?.systemCursorId(for: currentCursor)
               if !hookAll, let cursorIndex = systemCursorId {
                   let message: [String: Any] = [
                       "callbackID": callbackID,
@@ -4137,7 +4137,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 }
 
 class CursorHasher {
-    private var cursorHashMap: [String: Int] = [:]
+    private struct CursorSignature: Hashable {
+        let imageHash: String
+        let hotSpotX: Double
+        let hotSpotY: Double
+    }
+
+    private var cursorIds: [CursorSignature: Int] = [:]
     
     init() {
         calculateHashesForDefaultCursors()
@@ -4166,8 +4172,7 @@ class CursorHasher {
       ]
 
       for (cursor,index) in defaultCursors {
-          let hash = sha256ForAllBitmapReps(in: cursor.image)
-          cursorHashMap[hash] = index
+          cursorIds[signature(for: cursor)] = index
           
           // 打印每个光标的尺寸
           if let rep = cursor.image.representations.first as? NSBitmapImageRep {
@@ -4175,9 +4180,17 @@ class CursorHasher {
           }
       }
     }
-    
-    func getHashMap() -> [String: Int] {
-        return cursorHashMap
+
+    private func signature(for cursor: NSCursor) -> CursorSignature {
+        CursorSignature(
+          imageHash: sha256ForAllBitmapReps(in: cursor.image),
+          hotSpotX: Double(cursor.hotSpot.x),
+          hotSpotY: Double(cursor.hotSpot.y)
+        )
+    }
+
+    func systemCursorId(for cursor: NSCursor) -> Int? {
+        return cursorIds[signature(for: cursor)]
     }
 }
 

@@ -282,6 +282,20 @@ class RunnerTests: XCTestCase {
     XCTAssertNotEqual(custom.hash, encoded.hash)
   }
 
+  func testSystemCursorMetadataRequiresMatchingHotSpot() {
+    let hasher = CursorHasher()
+    XCTAssertEqual(hasher.systemCursorId(for: .arrow), 32512)
+
+    let custom = NSCursor(
+      image: NSCursor.arrow.image,
+      hotSpot: NSPoint(
+        x: NSCursor.arrow.hotSpot.x + 1,
+        y: NSCursor.arrow.hotSpot.y
+      )
+    )
+    XCTAssertNil(hasher.systemCursorId(for: custom))
+  }
+
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
     let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
 
