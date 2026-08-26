@@ -260,17 +260,26 @@ class RunnerTests: XCTestCase {
 
     let encoded = try XCTUnwrap(plugin.encodeCursorBitmap(
       image: image,
-      hotSpot: NSPoint(x: 7.5, y: 4)
+      hotSpot: NSPoint(x: 7.5, y: 4),
+      systemCursorId: 32513
     ))
     let bytes = [UInt8](encoded.payload)
 
-    XCTAssertEqual(bytes.count, 21 + 64 * 48 * 4)
+    XCTAssertEqual(bytes.count, 25 + 64 * 48 * 4)
     XCTAssertEqual(bytes[0], 9)
     XCTAssertEqual(readUInt32BE(bytes, offset: 1), 64)
     XCTAssertEqual(readUInt32BE(bytes, offset: 5), 48)
     XCTAssertEqual(readUInt32BE(bytes, offset: 9), 15)
     XCTAssertEqual(readUInt32BE(bytes, offset: 13), 8)
     XCTAssertEqual(readUInt32BE(bytes, offset: 17), encoded.hash)
+    XCTAssertEqual(readUInt32LE(bytes, offset: 21), 32513)
+
+    let custom = try XCTUnwrap(plugin.encodeCursorBitmap(
+      image: image,
+      hotSpot: NSPoint(x: 7.5, y: 4),
+      systemCursorId: 0
+    ))
+    XCTAssertNotEqual(custom.hash, encoded.hash)
   }
 
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
@@ -424,6 +433,13 @@ class RunnerTests: XCTestCase {
 
   private func readUInt32BE(_ bytes: [UInt8], offset: Int) -> UInt32 {
     bytes[offset..<offset + 4].reduce(0) { ($0 << 8) | UInt32($1) }
+  }
+
+  private func readUInt32LE(_ bytes: [UInt8], offset: Int) -> UInt32 {
+    UInt32(bytes[offset]) |
+      (UInt32(bytes[offset + 1]) << 8) |
+      (UInt32(bytes[offset + 2]) << 16) |
+      (UInt32(bytes[offset + 3]) << 24)
   }
 
 }

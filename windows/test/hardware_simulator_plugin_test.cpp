@@ -14,6 +14,13 @@
 #include "windows_editing_event_monitor.h"
 #include "windows_text_input_injector.h"
 
+uint32_t CursorBitmapHash(const uint32_t* pixels, int pixel_count,
+    uint32_t width, uint32_t height, uint32_t hotx, uint32_t hoty,
+    uint32_t system_cursor_id);
+std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* pixels,
+    uint32_t width, uint32_t height, uint32_t hotx, uint32_t hoty,
+    uint32_t hash, uint32_t system_cursor_id);
+
 namespace hardware_simulator {
 namespace test {
 
@@ -41,6 +48,22 @@ TEST(HardwareSimulatorPlugin, GetPlatformVersion) {
   // Since the exact string varies by host, just ensure that it's a string
   // with the expected format.
   EXPECT_TRUE(result_string.rfind("Windows ", 0) == 0);
+}
+
+TEST(CursorEncoding, PreservesSystemCursorMetadataAndHashIdentity) {
+  const uint32_t pixels[] = {0xFF112233};
+  const auto custom_hash = CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 0);
+  const auto system_hash = CursorBitmapHash(pixels, 1, 1, 1, 0, 0, 32513);
+
+  EXPECT_NE(custom_hash, system_hash);
+  const auto frame =
+      EncodeCursorBitmapFrame(pixels, 1, 1, 0, 0, system_hash, 32513);
+  ASSERT_EQ(frame.size(), 29u);
+  EXPECT_EQ(frame[0], 9);
+  EXPECT_EQ(frame[21], 0x01);
+  EXPECT_EQ(frame[22], 0x7F);
+  EXPECT_EQ(frame[23], 0x00);
+  EXPECT_EQ(frame[24], 0x00);
 }
 
 TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {

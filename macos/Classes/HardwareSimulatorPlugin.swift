@@ -2490,9 +2490,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     bytes.append(UInt8(value & 0xFF))
   }
 
+  private func appendUInt32LE(_ value: UInt32, to bytes: inout [UInt8]) {
+    bytes.append(UInt8(value & 0xFF))
+    bytes.append(UInt8((value >> 8) & 0xFF))
+    bytes.append(UInt8((value >> 16) & 0xFF))
+    bytes.append(UInt8((value >> 24) & 0xFF))
+  }
+
   func encodeCursorBitmap(
     image: NSImage,
-    hotSpot: NSPoint
+    hotSpot: NSPoint,
+    systemCursorId: UInt32 = 0
   ) -> (hash: UInt32, payload: Data)? {
     guard let bitmapRep = image.representations.first(where: {
       $0 is NSBitmapImageRep
@@ -2519,6 +2527,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     appendUInt32BE(UInt32(clamping: bitmapRep.pixelsHigh), to: &hashInput)
     appendUInt32BE(hotSpotPixels.x, to: &hashInput)
     appendUInt32BE(hotSpotPixels.y, to: &hashInput)
+    appendUInt32LE(systemCursorId, to: &hashInput)
     hashInput.append(contentsOf: pixels)
     let messageHash = JSHash(buffer: hashInput, size: hashInput.count)
 
@@ -2528,6 +2537,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     appendUInt32BE(hotSpotPixels.x, to: &bytes)
     appendUInt32BE(hotSpotPixels.y, to: &bytes)
     appendUInt32BE(messageHash, to: &bytes)
+    appendUInt32LE(systemCursorId, to: &bytes)
     bytes.append(contentsOf: pixels)
     return (messageHash, Data(bytes))
   }
@@ -2937,7 +2947,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                 // For hookAll=true, treat it as if it's not a default cursor
                 guard let encoded = encodeCursorBitmap(
                   image: cursorImage,
-                  hotSpot: hotSpot
+                  hotSpot: hotSpot,
+                  systemCursorId: UInt32(clamping: cursorIndex)
                 ) else {
                   updatedAllCallbacks = false
                   continue
@@ -4019,8 +4030,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           if let currentCursor = NSCursor.currentSystem {
               let cursorImage = currentCursor.image
               let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
-              if !hookAll,
-                 let cursorIndex = defaultCursorHasher?.getHashMap()[cursorImageHashes] {
+              let systemCursorId =
+                defaultCursorHasher?.getHashMap()[cursorImageHashes]
+              if !hookAll, let cursorIndex = systemCursorId {
                   let message: [String: Any] = [
                       "callbackID": callbackID,
                       "message": CursorConstants.cursorUpdatedDefault,
@@ -4030,7 +4042,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                   methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
               } else if let encoded = encodeCursorBitmap(
                 image: cursorImage,
-                hotSpot: currentCursor.hotSpot
+                hotSpot: currentCursor.hotSpot,
+                systemCursorId: UInt32(clamping: systemCursorId ?? 0)
               ) {
                   let messageHash = encoded.hash
                   jsHashWithImageHash[cursorImageHashes] = messageHash
