@@ -274,7 +274,8 @@ uint32_t CursorBitmapHash(const uint32_t* pixels,
     uint32_t width,
     uint32_t height,
     uint32_t hotx,
-    uint32_t hoty) {
+    uint32_t hoty,
+    uint32_t system_cursor_id) {
     uint32_t hash = 1315423911;
     const auto mix = [&hash](uint32_t value) {
         hash ^= ((hash << 5) + value + (hash >> 2));
@@ -283,6 +284,7 @@ uint32_t CursorBitmapHash(const uint32_t* pixels,
     mix(height);
     mix(hotx);
     mix(hoty);
+    mix(system_cursor_id);
     for (int i = 0; i < pixel_count; i++) {
         mix(pixels[i]);
     }
@@ -296,15 +298,15 @@ unsigned char test_endian(void) {
     return (test_endian[0] == 0);
 }
 
-std::vector<uint8_t> ConvertUint32ToUint8(const uint32_t* inputArray,
+std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* inputArray,
     uint32_t width,
     uint32_t height,
     uint32_t hotx,
     uint32_t hoty,
-    uint32_t hash) {
+    uint32_t hash,
+    uint32_t system_cursor_id) {
     std::vector<uint8_t> outputArray;
-    outputArray.reserve(width * height * sizeof(uint32_t) + sizeof(hash) * 3 +
-        1);
+    outputArray.reserve(width * height * sizeof(uint32_t) + 25);
 
     // 9 means it is cursor data. This is used by CloudPlayPlus.
     outputArray.push_back(static_cast<uint8_t>(9));
@@ -380,6 +382,12 @@ std::vector<uint8_t> ConvertUint32ToUint8(const uint32_t* inputArray,
         }
     }
 
+    // New cursor semantic fields use explicit little-endian wire order.
+    outputArray.push_back(static_cast<uint8_t>(system_cursor_id & 0xFF));
+    outputArray.push_back(static_cast<uint8_t>((system_cursor_id >> 8) & 0xFF));
+    outputArray.push_back(static_cast<uint8_t>((system_cursor_id >> 16) & 0xFF));
+    outputArray.push_back(static_cast<uint8_t>((system_cursor_id >> 24) & 0xFF));
+
     // Add uint32_t values
     for (size_t i = 0; i < width * height; ++i) {
         uint32_t value = inputArray[i];
@@ -416,6 +424,8 @@ void SyncCursorImage() {
                 callback.second(CPP_CURSOR_UPDATED_DEFAULT, (int)reinterpret_cast<intptr_t>(h), {});
             } else {
                 // For hookAll=true, treat it as if h was NULL
+                const uint32_t system_cursor_id = static_cast<uint32_t>(
+                    reinterpret_cast<uintptr_t>(h));
                 HDC hdc = GetDC(nullptr);
                 int width = 0, height = 0, hotX = 0, hotY = 0;
                 std::unique_ptr<uint32_t[]> image = std::move(
@@ -423,7 +433,8 @@ void SyncCursorImage() {
                 ReleaseDC(nullptr, hdc);
 
                 unsigned int hash = CursorBitmapHash(
-                    image.get(), width * height, width, height, hotX, hotY);
+                    image.get(), width * height, width, height, hotX, hotY,
+                    system_cursor_id);
 
                 std::vector<uint8_t> datawith8bitbytes = {};
                 if (cachedcursors[callback.first].find(hash) != cachedcursors[callback.first].end()) {
@@ -431,8 +442,9 @@ void SyncCursorImage() {
                 }
                 else {
                     if (datawith8bitbytes.size() == 0) {
-                        datawith8bitbytes =
-                            ConvertUint32ToUint8(image.get(), width, height, hotX, hotY, hash);
+                        datawith8bitbytes = EncodeCursorBitmapFrame(
+                            image.get(), width, height, hotX, hotY, hash,
+                            system_cursor_id);
                     }
                     cachedcursors[callback.first].insert(hash);
                     callback.second(CPP_CURSOR_UPDATED_IMAGE, hash, datawith8bitbytes);
@@ -448,7 +460,7 @@ void SyncCursorImage() {
         ReleaseDC(nullptr, hdc);
 
         unsigned int hash = CursorBitmapHash(
-            image.get(), width * height, width, height, hotX, hotY);
+            image.get(), width * height, width, height, hotX, hotY, 0);
 
         std::vector<uint8_t> datawith8bitbytes = {};
         for (auto callback : callbacks) {
@@ -457,8 +469,8 @@ void SyncCursorImage() {
             }
             else {
                 if (datawith8bitbytes.size() == 0) {
-                    datawith8bitbytes =
-                        ConvertUint32ToUint8(image.get(), width, height, hotX, hotY, hash);
+                    datawith8bitbytes = EncodeCursorBitmapFrame(
+                        image.get(), width, height, hotX, hotY, hash, 0);
                 }
                 cachedcursors[callback.first].insert(hash);
                 callback.second(CPP_CURSOR_UPDATED_IMAGE, hash, datawith8bitbytes);
@@ -675,6 +687,9 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
                 static_cast<int>(reinterpret_cast<intptr_t>(h)),
                 {});
         } else {
+            const uint32_t system_cursor_id = h == NULL
+                ? 0
+                : static_cast<uint32_t>(reinterpret_cast<uintptr_t>(h));
             HDC hdc = GetDC(nullptr);
             int width = 0, height = 0, hotX = 0, hotY = 0;
             std::unique_ptr<uint32_t[]> image = std::move(
@@ -689,9 +704,11 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
 
             if (image != nullptr && width > 0 && height > 0) {
                 unsigned int hash = CursorBitmapHash(
-                    image.get(), width * height, width, height, hotX, hotY);
-                std::vector<uint8_t> datawith8bitbytes = ConvertUint32ToUint8(
-                    image.get(), width, height, hotX, hotY, hash);
+                    image.get(), width * height, width, height, hotX, hotY,
+                    system_cursor_id);
+                std::vector<uint8_t> datawith8bitbytes = EncodeCursorBitmapFrame(
+                    image.get(), width, height, hotX, hotY, hash,
+                    system_cursor_id);
                 cachedcursors[callback_id].insert(hash);
                 callback(CPP_CURSOR_UPDATED_IMAGE, hash, datawith8bitbytes);
             }
