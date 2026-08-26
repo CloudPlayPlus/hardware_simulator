@@ -296,6 +296,68 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(hasher.systemCursorId(for: custom))
   }
 
+  func testCursorImageSignatureIncludesEncodedHotSpotAndSystemCursorId() throws {
+    let image = try makeCursorImage(alphaValues: [255, 255, 255, 255])
+    let base = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: .zero,
+      systemCursorId: 32512
+    )
+    let differentHotSpot = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: NSPoint(x: 1, y: 0),
+      systemCursorId: 32512
+    )
+    let differentSystemCursor = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: .zero,
+      systemCursorId: 32513
+    )
+
+    XCTAssertNotEqual(base, differentHotSpot)
+    XCTAssertNotEqual(base, differentSystemCursor)
+  }
+
+  func testCursorImageSignatureNormalizesEquivalentHotSpots() throws {
+    let image = try makeCursorImage(alphaValues: [255, 255, 255, 255])
+    let signature = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: NSPoint(x: CGFloat.nan, y: CGFloat.infinity),
+      systemCursorId: nil
+    )
+    let normalized = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: .zero,
+      systemCursorId: nil
+    )
+    let negative = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: NSPoint(x: -1, y: -2),
+      systemCursorId: nil
+    )
+
+    XCTAssertEqual(signature, normalized)
+    XCTAssertEqual(negative, normalized)
+    XCTAssertEqual([signature: 1][normalized], 1)
+  }
+
+  func testCursorVisibilityEvidenceOnlyChangesWithBitmap() {
+    XCTAssertFalse(HardwareSimulatorPlugin.cursorBitmapChangedForVisibility(
+      previousImageHash: "same-bitmap",
+      currentImageHash: "same-bitmap"
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.cursorBitmapChangedForVisibility(
+      previousImageHash: "old-bitmap",
+      currentImageHash: "new-bitmap"
+    ))
+  }
+
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
     let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
 

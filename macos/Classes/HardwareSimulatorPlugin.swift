@@ -2415,14 +2415,62 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var cursorVisibilityTimer: DispatchSourceTimer?
   var lastCursorVisible: Bool?
   var lastWindowServerCursorVisible: Bool?
+  var previousCursorVisibilityImageHash: String?
   // 远程注入移动后 WindowServer getter 可能一直停留在 false；新的非透明纹理
   // 证明系统已经重新绘制光标，不能被同一个滞留值立即覆盖。
   var cursorTextureProvesVisible = false
 #endif
-  var previousCursorImageHashes: String = ""
+  struct CursorImageSignature: Hashable {
+    let imageHash: String
+    let pixelWidth: UInt32
+    let pixelHeight: UInt32
+    let hotSpotX: UInt32
+    let hotSpotY: UInt32
+    let systemCursorId: Int?
+  }
+
+  static func cursorImageSignature(
+    image: NSImage,
+    imageHash: String,
+    hotSpot: NSPoint,
+    systemCursorId: Int?
+  ) -> CursorImageSignature {
+    let bitmapRep = image.representations.first(where: {
+      $0 is NSBitmapImageRep
+    }) as? NSBitmapImageRep
+    let pixelWidth = bitmapRep?.pixelsWide ?? 0
+    let pixelHeight = bitmapRep?.pixelsHigh ?? 0
+    let pointSize = image.size.width > 0 && image.size.height > 0
+      ? image.size
+      : bitmapRep?.size ?? .zero
+    let hotSpotPixels = cursorHotSpotInPixels(
+      hotSpot,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      pointSize: pointSize
+    )
+
+    return CursorImageSignature(
+      imageHash: imageHash,
+      pixelWidth: UInt32(clamping: pixelWidth),
+      pixelHeight: UInt32(clamping: pixelHeight),
+      hotSpotX: hotSpotPixels.x,
+      hotSpotY: hotSpotPixels.y,
+      systemCursorId: systemCursorId
+    )
+  }
+
+  static func cursorBitmapChangedForVisibility(
+    previousImageHash: String?,
+    currentImageHash: String
+  ) -> Bool {
+    previousImageHash != currentImageHash
+  }
+
+  var previousCursorImageSignature: CursorImageSignature?
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
-  var jsHashWithImageHash = Dictionary<String, UInt32>()
+  var cursorHashByImageSignature = Dictionary<CursorImageSignature, UInt32>()
   var cursorHashesByCallback = Dictionary<Int, Set<UInt32>>()
   var hookAllCursorImage = Dictionary<Int, Bool>()
   let cursorMonitorMask: NSEvent.EventTypeMask = [
@@ -2922,17 +2970,29 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     let cursorImage = currentCursor.image
     let hotSpot = currentCursor.hotSpot
-
     let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
+    let systemCursorId = defaultCursorHasher?.systemCursorId(for: currentCursor)
+    let cursorImageSignature = Self.cursorImageSignature(
+      image: cursorImage,
+      imageHash: cursorImageHashes,
+      hotSpot: hotSpot,
+      systemCursorId: systemCursorId
+    )
 
-    if(cursorImageHashes == previousCursorImageHashes){
+    if cursorImageSignature == previousCursorImageSignature {
         return;
     }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
-    updateCursorVisibilityAfterTextureChange(cursorImage)
+    if Self.cursorBitmapChangedForVisibility(
+      previousImageHash: previousCursorVisibilityImageHash,
+      currentImageHash: cursorImageHashes
+    ) {
+      updateCursorVisibilityAfterTextureChange(cursorImage)
+      previousCursorVisibilityImageHash = cursorImageHashes
+    }
 #endif
     //system default
-    if let cursorIndex = defaultCursorHasher?.systemCursorId(for: currentCursor) {
+    if let cursorIndex = systemCursorId {
         var updatedAllCallbacks = true
         for callbackID in cursorChangedCallbacks {
             if !(hookAllCursorImage[callbackID] ?? false) {
@@ -2954,7 +3014,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                   continue
                 }
                 let messageHash = encoded.hash
-                jsHashWithImageHash[cursorImageHashes] = messageHash
+                cursorHashByImageSignature[cursorImageSignature] = messageHash
 
                 let message: [String: Any] = [
                     "callbackID": callbackID,
@@ -2967,17 +3027,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
             }
         }
         if updatedAllCallbacks {
-          previousCursorImageHashes = cursorImageHashes
+          previousCursorImageSignature = cursorImageSignature
         }
         return ;
     }
       
     //cache iamge
-    if jsHashWithImageHash.keys.contains(cursorImageHashes) {
-      //print("cache: \(jsHashWithImageHash[cursorImageHashes])");
-      guard let messageHash = jsHashWithImageHash[cursorImageHashes] else {
-        return
-      }
+    if let messageHash = cursorHashByImageSignature[cursorImageSignature] {
       var fullImageMessage: [String: Any]? = nil
       if cursorChangedCallbacks.contains(where: { !callbackHasCursorHash($0, messageHash) }) {
         guard let encoded = encodeCursorBitmap(
@@ -3007,7 +3063,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           markCursorHashSeen(callbackID, messageHash)
         }
       }
-      previousCursorImageHashes = cursorImageHashes
+      previousCursorImageSignature = cursorImageSignature
       return ;
     }
       
@@ -3018,7 +3074,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return
     }
     let messageHash = encoded.hash
-    jsHashWithImageHash[cursorImageHashes] = messageHash
+    cursorHashByImageSignature[cursorImageSignature] = messageHash
 
     for callbackID in cursorChangedCallbacks {
       let message: [String: Any] = [
@@ -3030,7 +3086,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       methodChannel?.invokeMethod("onCursorImageMessage", arguments: message)
       markCursorHashSeen(callbackID, messageHash)
     }
-    previousCursorImageHashes = cursorImageHashes
+    previousCursorImageSignature = cursorImageSignature
   }
   
   var activities: [String: NSObjectProtocol] = [:]
@@ -4032,6 +4088,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
               let systemCursorId =
                 defaultCursorHasher?.systemCursorId(for: currentCursor)
+              let cursorImageSignature = Self.cursorImageSignature(
+                image: cursorImage,
+                imageHash: cursorImageHashes,
+                hotSpot: currentCursor.hotSpot,
+                systemCursorId: systemCursorId
+              )
               if !hookAll, let cursorIndex = systemCursorId {
                   let message: [String: Any] = [
                       "callbackID": callbackID,
@@ -4046,7 +4108,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
                 systemCursorId: UInt32(clamping: systemCursorId ?? 0)
               ) {
                   let messageHash = encoded.hash
-                  jsHashWithImageHash[cursorImageHashes] = messageHash
+                  cursorHashByImageSignature[cursorImageSignature] = messageHash
 
                   let message: [String: Any] = [
                       "callbackID": callbackID,
