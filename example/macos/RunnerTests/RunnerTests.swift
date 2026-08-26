@@ -265,7 +265,7 @@ class RunnerTests: XCTestCase {
     ))
     let bytes = [UInt8](encoded.payload)
 
-    XCTAssertEqual(bytes.count, 25 + 64 * 48 * 4)
+    XCTAssertEqual(bytes.count, 29 + 64 * 48 * 4)
     XCTAssertEqual(bytes[0], 9)
     XCTAssertEqual(readUInt32BE(bytes, offset: 1), 64)
     XCTAssertEqual(readUInt32BE(bytes, offset: 5), 48)
@@ -273,6 +273,10 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(readUInt32BE(bytes, offset: 13), 8)
     XCTAssertEqual(readUInt32BE(bytes, offset: 17), encoded.hash)
     XCTAssertEqual(readUInt32LE(bytes, offset: 21), 32513)
+    XCTAssertEqual(
+      Float32(bitPattern: readUInt32LE(bytes, offset: 25)),
+      2.0
+    )
 
     let custom = try XCTUnwrap(plugin.encodeCursorBitmap(
       image: image,
@@ -280,6 +284,25 @@ class RunnerTests: XCTestCase {
       systemCursorId: 0
     ))
     XCTAssertNotEqual(custom.hash, encoded.hash)
+  }
+
+  func testCursorDevicePixelRatioFallsBackAndClamps() {
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.cursorDevicePixelRatio(
+        pixelWidth: 64,
+        pixelHeight: 48,
+        pointSize: NSSize(width: 32, height: 24)
+      ),
+      2
+    )
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.cursorDevicePixelRatio(
+        pixelWidth: 64,
+        pixelHeight: 48,
+        pointSize: .zero
+      ),
+      1
+    )
   }
 
   func testSystemCursorMetadataRequiresMatchingHotSpot() {
