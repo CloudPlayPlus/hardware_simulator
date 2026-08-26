@@ -296,6 +296,30 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(hasher.systemCursorId(for: custom))
   }
 
+  func testCursorImageSignatureIncludesHotSpotAndSystemCursorId() {
+    let base = HardwareSimulatorPlugin.CursorImageSignature(
+      imageHash: "same-bitmap",
+      hotSpotX: 1,
+      hotSpotY: 2,
+      systemCursorId: 32512
+    )
+    let differentHotSpot = HardwareSimulatorPlugin.CursorImageSignature(
+      imageHash: "same-bitmap",
+      hotSpotX: 2,
+      hotSpotY: 2,
+      systemCursorId: 32512
+    )
+    let differentSystemCursor = HardwareSimulatorPlugin.CursorImageSignature(
+      imageHash: "same-bitmap",
+      hotSpotX: 1,
+      hotSpotY: 2,
+      systemCursorId: 32513
+    )
+
+    XCTAssertNotEqual(base, differentHotSpot)
+    XCTAssertNotEqual(base, differentSystemCursor)
+  }
+
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
     let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
 
