@@ -2426,6 +2426,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let systemCursorId: Int?
   }
 
+  static func cursorImageSignature(
+    imageHash: String,
+    hotSpot: NSPoint,
+    systemCursorId: Int?
+  ) -> CursorImageSignature {
+    CursorImageSignature(
+      imageHash: imageHash,
+      hotSpotX: hotSpot.x.isFinite ? Double(hotSpot.x) : 0,
+      hotSpotY: hotSpot.y.isFinite ? Double(hotSpot.y) : 0,
+      systemCursorId: systemCursorId
+    )
+  }
+
   var previousCursorImageSignature: CursorImageSignature?
   var cursorChangedCallbacks = Set<Int>()
   var cursorPositionCallbacks = Set<Int>()
@@ -2931,10 +2944,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let hotSpot = currentCursor.hotSpot
     let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
     let systemCursorId = defaultCursorHasher?.systemCursorId(for: currentCursor)
-    let cursorImageSignature = CursorImageSignature(
+    let cursorImageSignature = Self.cursorImageSignature(
       imageHash: cursorImageHashes,
-      hotSpotX: Double(hotSpot.x),
-      hotSpotY: Double(hotSpot.y),
+      hotSpot: hotSpot,
       systemCursorId: systemCursorId
     )
 
@@ -4041,10 +4053,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
               let systemCursorId =
                 defaultCursorHasher?.systemCursorId(for: currentCursor)
-              let cursorImageSignature = CursorImageSignature(
+              let cursorImageSignature = Self.cursorImageSignature(
                 imageHash: cursorImageHashes,
-                hotSpotX: Double(currentCursor.hotSpot.x),
-                hotSpotY: Double(currentCursor.hotSpot.y),
+                hotSpot: currentCursor.hotSpot,
                 systemCursorId: systemCursorId
               )
               if !hookAll, let cursorIndex = systemCursorId {

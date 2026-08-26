@@ -320,6 +320,22 @@ class RunnerTests: XCTestCase {
     XCTAssertNotEqual(base, differentSystemCursor)
   }
 
+  func testCursorImageSignatureNormalizesNonfiniteHotSpot() {
+    let signature = HardwareSimulatorPlugin.cursorImageSignature(
+      imageHash: "same-bitmap",
+      hotSpot: NSPoint(x: CGFloat.nan, y: CGFloat.infinity),
+      systemCursorId: nil
+    )
+    let normalized = HardwareSimulatorPlugin.cursorImageSignature(
+      imageHash: "same-bitmap",
+      hotSpot: .zero,
+      systemCursorId: nil
+    )
+
+    XCTAssertEqual(signature, normalized)
+    XCTAssertEqual([signature: 1][normalized], 1)
+  }
+
   func testCursorVisibilityTreatsFullyTransparentBitmapAsHidden() throws {
     let image = try makeCursorImage(alphaValues: [0, 0, 0, 0])
 
