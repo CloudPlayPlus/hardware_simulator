@@ -2421,20 +2421,40 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 #endif
   struct CursorImageSignature: Hashable {
     let imageHash: String
-    let hotSpotX: Double
-    let hotSpotY: Double
+    let pixelWidth: UInt32
+    let pixelHeight: UInt32
+    let hotSpotX: UInt32
+    let hotSpotY: UInt32
     let systemCursorId: Int?
   }
 
   static func cursorImageSignature(
+    image: NSImage,
     imageHash: String,
     hotSpot: NSPoint,
     systemCursorId: Int?
   ) -> CursorImageSignature {
-    CursorImageSignature(
+    let bitmapRep = image.representations.first(where: {
+      $0 is NSBitmapImageRep
+    }) as? NSBitmapImageRep
+    let pixelWidth = bitmapRep?.pixelsWide ?? 0
+    let pixelHeight = bitmapRep?.pixelsHigh ?? 0
+    let pointSize = image.size.width > 0 && image.size.height > 0
+      ? image.size
+      : bitmapRep?.size ?? .zero
+    let hotSpotPixels = cursorHotSpotInPixels(
+      hotSpot,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      pointSize: pointSize
+    )
+
+    return CursorImageSignature(
       imageHash: imageHash,
-      hotSpotX: hotSpot.x.isFinite ? Double(hotSpot.x) : 0,
-      hotSpotY: hotSpot.y.isFinite ? Double(hotSpot.y) : 0,
+      pixelWidth: UInt32(clamping: pixelWidth),
+      pixelHeight: UInt32(clamping: pixelHeight),
+      hotSpotX: hotSpotPixels.x,
+      hotSpotY: hotSpotPixels.y,
       systemCursorId: systemCursorId
     )
   }
@@ -2945,6 +2965,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let cursorImageHashes = sha256ForAllBitmapReps(in: cursorImage)
     let systemCursorId = defaultCursorHasher?.systemCursorId(for: currentCursor)
     let cursorImageSignature = Self.cursorImageSignature(
+      image: cursorImage,
       imageHash: cursorImageHashes,
       hotSpot: hotSpot,
       systemCursorId: systemCursorId
@@ -4054,6 +4075,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
               let systemCursorId =
                 defaultCursorHasher?.systemCursorId(for: currentCursor)
               let cursorImageSignature = Self.cursorImageSignature(
+                image: cursorImage,
                 imageHash: cursorImageHashes,
                 hotSpot: currentCursor.hotSpot,
                 systemCursorId: systemCursorId

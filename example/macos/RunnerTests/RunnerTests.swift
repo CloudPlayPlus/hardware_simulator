@@ -296,23 +296,24 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(hasher.systemCursorId(for: custom))
   }
 
-  func testCursorImageSignatureIncludesHotSpotAndSystemCursorId() {
-    let base = HardwareSimulatorPlugin.CursorImageSignature(
+  func testCursorImageSignatureIncludesEncodedHotSpotAndSystemCursorId() throws {
+    let image = try makeCursorImage(alphaValues: [255, 255, 255, 255])
+    let base = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
       imageHash: "same-bitmap",
-      hotSpotX: 1,
-      hotSpotY: 2,
+      hotSpot: .zero,
       systemCursorId: 32512
     )
-    let differentHotSpot = HardwareSimulatorPlugin.CursorImageSignature(
+    let differentHotSpot = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
       imageHash: "same-bitmap",
-      hotSpotX: 2,
-      hotSpotY: 2,
+      hotSpot: NSPoint(x: 1, y: 0),
       systemCursorId: 32512
     )
-    let differentSystemCursor = HardwareSimulatorPlugin.CursorImageSignature(
+    let differentSystemCursor = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
       imageHash: "same-bitmap",
-      hotSpotX: 1,
-      hotSpotY: 2,
+      hotSpot: .zero,
       systemCursorId: 32513
     )
 
@@ -320,19 +321,29 @@ class RunnerTests: XCTestCase {
     XCTAssertNotEqual(base, differentSystemCursor)
   }
 
-  func testCursorImageSignatureNormalizesNonfiniteHotSpot() {
+  func testCursorImageSignatureNormalizesEquivalentHotSpots() throws {
+    let image = try makeCursorImage(alphaValues: [255, 255, 255, 255])
     let signature = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
       imageHash: "same-bitmap",
       hotSpot: NSPoint(x: CGFloat.nan, y: CGFloat.infinity),
       systemCursorId: nil
     )
     let normalized = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
       imageHash: "same-bitmap",
       hotSpot: .zero,
       systemCursorId: nil
     )
+    let negative = HardwareSimulatorPlugin.cursorImageSignature(
+      image: image,
+      imageHash: "same-bitmap",
+      hotSpot: NSPoint(x: -1, y: -2),
+      systemCursorId: nil
+    )
 
     XCTAssertEqual(signature, normalized)
+    XCTAssertEqual(negative, normalized)
     XCTAssertEqual([signature: 1][normalized], 1)
   }
 
