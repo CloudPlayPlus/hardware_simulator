@@ -304,13 +304,25 @@ float CurrentCursorDevicePixelRatio() {
     UINT dpi = 0;
     POINT cursor_position{};
     if (GetCursorPos(&cursor_position)) {
-        const HWND window = WindowFromPoint(cursor_position);
-        using GetDpiForWindowFunction = UINT(WINAPI*)(HWND);
-        static const auto get_dpi_for_window =
-            reinterpret_cast<GetDpiForWindowFunction>(GetProcAddress(
-                GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-        if (window != nullptr && get_dpi_for_window != nullptr) {
-            dpi = get_dpi_for_window(window);
+        const HMONITOR monitor = MonitorFromPoint(
+            cursor_position, MONITOR_DEFAULTTONEAREST);
+        using GetDpiForMonitorFunction = HRESULT(WINAPI*)(
+            HMONITOR, int, UINT*, UINT*);
+        static const HMODULE shcore_module = LoadLibraryW(L"shcore.dll");
+        static const auto get_dpi_for_monitor =
+            shcore_module == nullptr
+            ? nullptr
+            : reinterpret_cast<GetDpiForMonitorFunction>(GetProcAddress(
+                shcore_module, "GetDpiForMonitor"));
+        if (monitor != nullptr && get_dpi_for_monitor != nullptr) {
+            UINT dpi_x = 0;
+            UINT dpi_y = 0;
+            constexpr int kEffectiveDpi = 0;
+            if (SUCCEEDED(get_dpi_for_monitor(
+                monitor, kEffectiveDpi, &dpi_x, &dpi_y)) &&
+                dpi_x != 0 && dpi_y != 0) {
+                dpi = (dpi_x + dpi_y) / 2;
+            }
         }
     }
     if (dpi == 0) {
@@ -451,15 +463,30 @@ std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* inputArray,
 }
 
 static HCURSOR lastHCursor = nullptr;
+static float lastCursorDevicePixelRatio = 0.0f;
+
+bool ShouldSyncCursorImage(HCURSOR cursor,
+    float source_device_pixel_ratio,
+    HCURSOR previous_cursor,
+    float previous_source_device_pixel_ratio) {
+    return cursor != previous_cursor ||
+        source_device_pixel_ratio != previous_source_device_pixel_ratio;
+}
 
 void SyncCursorImage() {
     if (callbacks.empty()) {
         return;
     }
     CURSORINFO ci = { sizeof(ci) };
-    GetCursorInfo(&ci);
-    if (ci.hCursor == lastHCursor) return;
+    if (!GetCursorInfo(&ci)) return;
+    const float source_device_pixel_ratio =
+        CurrentCursorDevicePixelRatio();
+    if (!ShouldSyncCursorImage(ci.hCursor, source_device_pixel_ratio,
+        lastHCursor, lastCursorDevicePixelRatio)) {
+        return;
+    }
     lastHCursor = ci.hCursor;
+    lastCursorDevicePixelRatio = source_device_pixel_ratio;
     HANDLE h = GetCursorHandle(ci.hCursor);
     if (h != NULL) {
         for (auto callback : callbacks) {
@@ -474,9 +501,6 @@ void SyncCursorImage() {
                 std::unique_ptr<uint32_t[]> image = std::move(
                     CreateMouseCursorFromHCursor(hdc, ci.hCursor, &width, &height, &hotX, &hotY));
                 ReleaseDC(nullptr, hdc);
-                const float source_device_pixel_ratio =
-                    CurrentCursorDevicePixelRatio();
-
                 unsigned int hash = CursorBitmapHash(
                     image.get(), width * height, width, height, hotX, hotY,
                     system_cursor_id, source_device_pixel_ratio);
@@ -503,9 +527,6 @@ void SyncCursorImage() {
         std::unique_ptr<uint32_t[]> image = std::move(
             CreateMouseCursorFromHCursor(hdc, ci.hCursor, &width, &height, &hotX, &hotY));
         ReleaseDC(nullptr, hdc);
-        const float source_device_pixel_ratio =
-            CurrentCursorDevicePixelRatio();
-
         unsigned int hash = CursorBitmapHash(
             image.get(), width * height, width, height, hotX, hotY, 0,
             source_device_pixel_ratio);
