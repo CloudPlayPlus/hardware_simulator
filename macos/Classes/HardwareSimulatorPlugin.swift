@@ -30,6 +30,7 @@ struct MacOSTextInputDecision: Equatable {
 }
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
+  private static weak var registeredInstance: HardwareSimulatorPlugin?
   private var methodChannel: FlutterMethodChannel?
   private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
@@ -70,6 +71,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macTextInputSnapshotKnown = false
   private var macTextInputRequestSequence: UInt64 = 0
 #endif
+#if DEBUG
+  var cursorSeedRefreshHandlerForTesting: (() -> Void)?
+#endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
   private let macVirtualDisplayQueue = DispatchQueue(
@@ -94,6 +98,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
+    registeredInstance = instance
     instance.methodChannel = channel
     instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
@@ -2493,6 +2498,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     .otherMouseUp,
   ]
   static let cursorTransitionProbeDelaysMs = [16, 50]
+
+  static func shouldScheduleCursorTransitionProbes(
+    isDmgDistribution: Bool,
+    screenCaptureKitAvailable: Bool
+  ) -> Bool {
+    !isDmgDistribution || !screenCaptureKitAvailable
+  }
+
+  private static var cursorTransitionProbesEnabled: Bool {
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    let isDmgDistribution = true
+#else
+    let isDmgDistribution = false
+#endif
+    let screenCaptureKitAvailable: Bool
+    if #available(macOS 12.3, *) {
+      screenCaptureKitAvailable = true
+    } else {
+      screenCaptureKitAvailable = false
+    }
+    return shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: isDmgDistribution,
+      screenCaptureKitAvailable: screenCaptureKitAvailable
+    )
+  }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   static let cursorVisibilityPollIntervalMs = 200
 
@@ -2847,6 +2877,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case .leftMouseDown, .leftMouseUp,
          .rightMouseDown, .rightMouseUp,
          .otherMouseDown, .otherMouseUp:
+      guard Self.cursorTransitionProbesEnabled else { break }
       // Games commonly swap their cursor after handling the button event or
       // on the following render frame. Bounded follow-up probes catch that
       // transition without introducing a permanent high-frequency timer.
@@ -2861,6 +2892,23 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     default:
       break
     }
+  }
+
+  public static func screenCaptureCursorSeedDidChange() {
+    DispatchQueue.main.async {
+      registeredInstance?.handleScreenCaptureCursorSeedChanged()
+    }
+  }
+
+  func handleScreenCaptureCursorSeedChanged() {
+    guard !cursorChangedCallbacks.isEmpty else { return }
+#if DEBUG
+    if let cursorSeedRefreshHandlerForTesting {
+      cursorSeedRefreshHandlerForTesting()
+      return
+    }
+#endif
+    checkMouseCursor()
   }
 
   func getBitMapInt8(bitmapRep: NSBitmapImageRep) -> [UInt8]?{

@@ -65,6 +65,39 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(HardwareSimulatorPlugin.cursorTransitionProbeDelaysMs, [16, 50])
   }
 
+  func testCursorTransitionProbesRemainForStoreAndLegacyCapture() {
+    XCTAssertTrue(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: false,
+      screenCaptureKitAvailable: true
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: true,
+      screenCaptureKitAvailable: false
+    ))
+  }
+
+  func testDmgScreenCaptureKitReplacesCursorTransitionProbes() {
+    XCTAssertFalse(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: true,
+      screenCaptureKitAvailable: true
+    ))
+  }
+
+  func testScreenCaptureSeedCallbackRefreshesOnlyWithTextureHooks() {
+    let plugin = HardwareSimulatorPlugin()
+    var refreshes = 0
+    plugin.cursorSeedRefreshHandlerForTesting = {
+      refreshes += 1
+    }
+
+    plugin.handleScreenCaptureCursorSeedChanged()
+    XCTAssertEqual(refreshes, 0)
+
+    plugin.cursorChangedCallbacks.insert(41)
+    plugin.handleScreenCaptureCursorSeedChanged()
+    XCTAssertEqual(refreshes, 1)
+  }
+
   func testCursorHotSpotUsesBitmapRepresentationScale() {
     let hotSpot = HardwareSimulatorPlugin.cursorHotSpotInPixels(
       NSPoint(x: 7.5, y: 4),
