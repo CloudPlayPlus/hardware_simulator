@@ -65,6 +65,61 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(HardwareSimulatorPlugin.cursorTransitionProbeDelaysMs, [16, 50])
   }
 
+  func testCursorTransitionProbesRemainForStoreAndInactiveSeedProducer() {
+    XCTAssertTrue(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: false,
+      cursorSeedProducerActive: true
+    ))
+    XCTAssertTrue(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: true,
+      cursorSeedProducerActive: false
+    ))
+  }
+
+  func testDmgActiveSeedProducerReplacesCursorTransitionProbes() {
+    XCTAssertFalse(HardwareSimulatorPlugin.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: true,
+      cursorSeedProducerActive: true
+    ))
+  }
+
+  func testScreenCaptureSeedCallbackRefreshesOnlyWithTextureHooks() {
+    let plugin = HardwareSimulatorPlugin()
+    var refreshes = 0
+    plugin.cursorSeedRefreshHandlerForTesting = {
+      refreshes += 1
+    }
+
+    plugin.handleScreenCaptureCursorSeedChanged()
+    XCTAssertEqual(refreshes, 0)
+
+    plugin.cursorChangedCallbacks.insert(41)
+    plugin.handleScreenCaptureCursorSeedChanged()
+    XCTAssertEqual(refreshes, 1)
+  }
+
+  func testScreenCaptureSeedCallbacksReachEveryLivePluginInstance() {
+    HardwareSimulatorPlugin.resetRegisteredInstancesForTesting()
+    defer { HardwareSimulatorPlugin.resetRegisteredInstancesForTesting() }
+
+    let first = HardwareSimulatorPlugin()
+    let second = HardwareSimulatorPlugin()
+    let refreshed = expectation(description: "all plugin instances refresh")
+    refreshed.expectedFulfillmentCount = 2
+    for plugin in [first, second] {
+      plugin.cursorChangedCallbacks.insert(41)
+      plugin.cursorSeedRefreshHandlerForTesting = { refreshed.fulfill() }
+      HardwareSimulatorPlugin.registerInstanceForTesting(plugin)
+    }
+
+    HardwareSimulatorPlugin.screenCaptureCursorSeedProducerDidChange(true)
+    HardwareSimulatorPlugin.screenCaptureCursorSeedDidChange()
+    wait(for: [refreshed], timeout: 1)
+
+    XCTAssertTrue(first.cursorSeedProducerActiveForTesting)
+    XCTAssertTrue(second.cursorSeedProducerActiveForTesting)
+  }
+
   func testCursorHotSpotUsesBitmapRepresentationScale() {
     let hotSpot = HardwareSimulatorPlugin.cursorHotSpotInPixels(
       NSPoint(x: 7.5, y: 4),

@@ -30,11 +30,14 @@ struct MacOSTextInputDecision: Equatable {
 }
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
+  private static let registeredInstances =
+    NSHashTable<HardwareSimulatorPlugin>.weakObjects()
   private var methodChannel: FlutterMethodChannel?
   private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
+  private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
   private let displayBoundsCacheLock = NSLock()
   private var displayBoundsCache: [Int: CGRect] = [:]
@@ -70,6 +73,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macTextInputSnapshotKnown = false
   private var macTextInputRequestSequence: UInt64 = 0
 #endif
+#if DEBUG
+  var cursorSeedRefreshHandlerForTesting: (() -> Void)?
+  var cursorSeedProducerActiveForTesting: Bool {
+    cursorSeedProducerActive
+  }
+
+  static func resetRegisteredInstancesForTesting() {
+    registeredInstances.removeAllObjects()
+  }
+
+  static func registerInstanceForTesting(_ instance: HardwareSimulatorPlugin) {
+    registeredInstances.add(instance)
+  }
+#endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
   private let macVirtualDisplayQueue = DispatchQueue(
@@ -94,6 +111,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
+    registeredInstances.add(instance)
     instance.methodChannel = channel
     instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
@@ -2493,6 +2511,25 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     .otherMouseUp,
   ]
   static let cursorTransitionProbeDelaysMs = [16, 50]
+
+  static func shouldScheduleCursorTransitionProbes(
+    isDmgDistribution: Bool,
+    cursorSeedProducerActive: Bool
+  ) -> Bool {
+    !isDmgDistribution || !cursorSeedProducerActive
+  }
+
+  private var cursorTransitionProbesEnabled: Bool {
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    let isDmgDistribution = true
+#else
+    let isDmgDistribution = false
+#endif
+    return Self.shouldScheduleCursorTransitionProbes(
+      isDmgDistribution: isDmgDistribution,
+      cursorSeedProducerActive: cursorSeedProducerActive
+    )
+  }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   static let cursorVisibilityPollIntervalMs = 200
 
@@ -2847,6 +2884,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case .leftMouseDown, .leftMouseUp,
          .rightMouseDown, .rightMouseUp,
          .otherMouseDown, .otherMouseUp:
+      guard cursorTransitionProbesEnabled else { break }
       // Games commonly swap their cursor after handling the button event or
       // on the following render frame. Bounded follow-up probes catch that
       // transition without introducing a permanent high-frequency timer.
@@ -2861,6 +2899,33 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     default:
       break
     }
+  }
+
+  public static func screenCaptureCursorSeedDidChange() {
+    DispatchQueue.main.async {
+      for instance in registeredInstances.allObjects {
+        instance.handleScreenCaptureCursorSeedChanged()
+      }
+    }
+  }
+
+  public static func screenCaptureCursorSeedProducerDidChange(_ active: Bool) {
+    DispatchQueue.main.async {
+      for instance in registeredInstances.allObjects {
+        instance.cursorSeedProducerActive = active
+      }
+    }
+  }
+
+  func handleScreenCaptureCursorSeedChanged() {
+    guard !cursorChangedCallbacks.isEmpty else { return }
+#if DEBUG
+    if let cursorSeedRefreshHandlerForTesting {
+      cursorSeedRefreshHandlerForTesting()
+      return
+    }
+#endif
+    checkMouseCursor()
   }
 
   func getBitMapInt8(bitmapRep: NSBitmapImageRep) -> [UInt8]?{
