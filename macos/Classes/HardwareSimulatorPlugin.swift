@@ -30,12 +30,14 @@ struct MacOSTextInputDecision: Equatable {
 }
 
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
-  private static weak var registeredInstance: HardwareSimulatorPlugin?
+  private static let registeredInstances =
+    NSHashTable<HardwareSimulatorPlugin>.weakObjects()
   private var methodChannel: FlutterMethodChannel?
   private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
   private var defaultCursorHasher: CursorHasher?
+  private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
   private let displayBoundsCacheLock = NSLock()
   private var displayBoundsCache: [Int: CGRect] = [:]
@@ -73,6 +75,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 #endif
 #if DEBUG
   var cursorSeedRefreshHandlerForTesting: (() -> Void)?
+  var cursorSeedProducerActiveForTesting: Bool {
+    cursorSeedProducerActive
+  }
+
+  static func resetRegisteredInstancesForTesting() {
+    registeredInstances.removeAllObjects()
+  }
+
+  static func registerInstanceForTesting(_ instance: HardwareSimulatorPlugin) {
+    registeredInstances.add(instance)
+  }
 #endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
@@ -98,7 +111,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "hardware_simulator", binaryMessenger: registrar.messenger)
     let instance = HardwareSimulatorPlugin()
-    registeredInstance = instance
+    registeredInstances.add(instance)
     instance.methodChannel = channel
     instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
@@ -2501,26 +2514,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   static func shouldScheduleCursorTransitionProbes(
     isDmgDistribution: Bool,
-    screenCaptureKitAvailable: Bool
+    cursorSeedProducerActive: Bool
   ) -> Bool {
-    !isDmgDistribution || !screenCaptureKitAvailable
+    !isDmgDistribution || !cursorSeedProducerActive
   }
 
-  private static var cursorTransitionProbesEnabled: Bool {
+  private var cursorTransitionProbesEnabled: Bool {
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     let isDmgDistribution = true
 #else
     let isDmgDistribution = false
 #endif
-    let screenCaptureKitAvailable: Bool
-    if #available(macOS 12.3, *) {
-      screenCaptureKitAvailable = true
-    } else {
-      screenCaptureKitAvailable = false
-    }
-    return shouldScheduleCursorTransitionProbes(
+    return Self.shouldScheduleCursorTransitionProbes(
       isDmgDistribution: isDmgDistribution,
-      screenCaptureKitAvailable: screenCaptureKitAvailable
+      cursorSeedProducerActive: cursorSeedProducerActive
     )
   }
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
@@ -2877,7 +2884,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case .leftMouseDown, .leftMouseUp,
          .rightMouseDown, .rightMouseUp,
          .otherMouseDown, .otherMouseUp:
-      guard Self.cursorTransitionProbesEnabled else { break }
+      guard cursorTransitionProbesEnabled else { break }
       // Games commonly swap their cursor after handling the button event or
       // on the following render frame. Bounded follow-up probes catch that
       // transition without introducing a permanent high-frequency timer.
@@ -2896,7 +2903,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   public static func screenCaptureCursorSeedDidChange() {
     DispatchQueue.main.async {
-      registeredInstance?.handleScreenCaptureCursorSeedChanged()
+      for instance in registeredInstances.allObjects {
+        instance.handleScreenCaptureCursorSeedChanged()
+      }
+    }
+  }
+
+  public static func screenCaptureCursorSeedProducerDidChange(_ active: Bool) {
+    DispatchQueue.main.async {
+      for instance in registeredInstances.allObjects {
+        instance.cursorSeedProducerActive = active
+      }
     }
   }
 
