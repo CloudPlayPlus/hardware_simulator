@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
@@ -168,12 +166,12 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   Future<void> lockCursor() async {
     // if not implemented, just care about main monitor.
-    print("lockCursor called but not supported.");
+    debugPrint("lockCursor called but not supported.");
   }
 
   Future<void> unlockCursor() async {
     // if not implemented, just care about main monitor.
-    print("unlockCursor called but not supported.");
+    debugPrint("unlockCursor called but not supported.");
   }
 
   Future<void> unlockCursorAndReseed(
@@ -184,7 +182,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   void addCursorMoved(CursorMovedCallback callback) async {
-    print("addCursorMoved called but not supported.");
+    debugPrint("addCursorMoved called but not supported.");
   }
 
   void removeCursorMoved(CursorMovedCallback callback) {
@@ -407,7 +405,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<void> performPenMove(double x, double y, bool hasButton,
-      double pressure, double rotation, double tilt, int screenId) async {
+      double pressure, double rotation, double tilt, int screenId,
+      {bool isInContact = true}) async {
     throw UnimplementedError('performPenMove() has not been implemented.');
   }
 
