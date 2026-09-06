@@ -1065,8 +1065,9 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
           0);
     }
   }
-  CursorMonitor::initializeSourceDevicePixelRatio(
-      plugin->flutter_view_window_);
+  plugin->cursor_source_device_pixel_ratio_ =
+      CursorMonitor::sourceDevicePixelRatioForWindow(
+          plugin->flutter_view_window_);
 
   plugin->channel_->SetMethodCallHandler(
       [plugin_pointer](const auto &call, auto result) {
@@ -1736,7 +1737,7 @@ void HardwareSimulatorPlugin::HandleMethodCall(
                 channel_->InvokeMethod("onCursorImageMessage", 
                     std::make_unique<flutter::EncodableValue>(encoded_message));
             }
-        }, callbackID, hookAll);
+        }, callbackID, hookAll, cursor_source_device_pixel_ratio_);
         result->Success(nullptr);
   } else if (method_call.method_name().compare("unhookCursorImage") == 0) {
         auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));
