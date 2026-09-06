@@ -18,7 +18,9 @@ using CursorPositionCallback = std::function<void(int, int, double, double)>;
 class CursorMonitor {
 public:
     static HWINEVENTHOOK Global_HOOK;
-    static void startHook(CursorChangedCallback callback, long long callback_id, bool hookAll);
+    static float sourceDevicePixelRatioForWindow(HWND app_window);
+    static void startHook(CursorChangedCallback callback, long long callback_id,
+        bool hookAll, float source_device_pixel_ratio);
     static void endHook(long long callback_id);
     static void syncNow();
 

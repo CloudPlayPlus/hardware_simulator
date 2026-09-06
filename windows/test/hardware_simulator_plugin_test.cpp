@@ -21,8 +21,11 @@ std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* pixels,
     uint32_t width, uint32_t height, uint32_t hotx, uint32_t hoty,
     uint32_t hash, uint32_t system_cursor_id,
     float source_device_pixel_ratio);
-bool ShouldSyncCursorImage(HCURSOR cursor, float source_device_pixel_ratio,
-    HCURSOR previous_cursor, float previous_source_device_pixel_ratio);
+bool ShouldSyncCursorImage(HCURSOR cursor, HCURSOR previous_cursor);
+void BindCursorSourceDevicePixelRatio(long long callback_id,
+    float source_device_pixel_ratio);
+float CursorSourceDevicePixelRatioForCallback(long long callback_id);
+void UnbindCursorSourceDevicePixelRatio(long long callback_id);
 
 namespace hardware_simulator {
 namespace test {
@@ -77,12 +80,22 @@ TEST(CursorEncoding, PreservesSystemCursorMetadataAndHashIdentity) {
   EXPECT_EQ(frame[28], 0x40);
 }
 
-TEST(CursorEncoding, ResendsUnchangedHandleWhenMonitorDpiChanges) {
+TEST(CursorEncoding, ResendsOnlyWhenCursorHandleChanges) {
   const auto cursor = reinterpret_cast<HCURSOR>(1);
-  EXPECT_FALSE(ShouldSyncCursorImage(cursor, 1.0f, cursor, 1.0f));
-  EXPECT_TRUE(ShouldSyncCursorImage(cursor, 2.0f, cursor, 1.0f));
-  EXPECT_TRUE(ShouldSyncCursorImage(
-      reinterpret_cast<HCURSOR>(2), 1.0f, cursor, 1.0f));
+  EXPECT_FALSE(ShouldSyncCursorImage(cursor, cursor));
+  EXPECT_TRUE(ShouldSyncCursorImage(reinterpret_cast<HCURSOR>(2), cursor));
+}
+
+TEST(CursorEncoding, RebindsScaleForSequentialCallbackRegistrations) {
+  constexpr long long callback_id = 42;
+
+  BindCursorSourceDevicePixelRatio(callback_id, 1.0f);
+  EXPECT_FLOAT_EQ(CursorSourceDevicePixelRatioForCallback(callback_id), 1.0f);
+  UnbindCursorSourceDevicePixelRatio(callback_id);
+
+  BindCursorSourceDevicePixelRatio(callback_id, 2.0f);
+  EXPECT_FLOAT_EQ(CursorSourceDevicePixelRatioForCallback(callback_id), 2.0f);
+  UnbindCursorSourceDevicePixelRatio(callback_id);
 }
 
 TEST(PointerCoordinates, PreservesNegativeVirtualDesktopOrigin) {

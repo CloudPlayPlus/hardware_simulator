@@ -99,6 +99,7 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   POINT locked_cursor_pos_ = {0};  // 记录锁定时的鼠标位置
   HWND main_window_ = nullptr;
   HWND flutter_view_window_ = nullptr;
+  float cursor_source_device_pixel_ratio_ = 1.0f;
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
   
   // Raw Input related members

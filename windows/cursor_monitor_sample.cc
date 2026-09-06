@@ -300,7 +300,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
            b = 0;
            break;
        }
-   });
+   }, 1, true, 1.0f);
 
    return TRUE;
 }
