@@ -1065,6 +1065,8 @@ void HardwareSimulatorPlugin::RegisterWithRegistrar(
           0);
     }
   }
+  CursorMonitor::initializeSourceDevicePixelRatio(
+      plugin->flutter_view_window_);
 
   plugin->channel_->SetMethodCallHandler(
       [plugin_pointer](const auto &call, auto result) {

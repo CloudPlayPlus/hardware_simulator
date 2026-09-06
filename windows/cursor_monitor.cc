@@ -20,6 +20,10 @@ static std::map<long long, CursorChangedCallback> callbacks;
 static std::map<long long, bool> hookAllCursorImage;
 static bool lastCursorVisible = true;
 static bool hasLastCursorVisible = false;
+// Cursor bitmaps are snapshots too, so keep their scale tied to the app's
+// startup DPI instead of changing metadata while reusing the same pixels.
+static float sourceDevicePixelRatio = 1.0f;
+static bool hasSourceDevicePixelRatio = false;
 
 // Position monitoring callbacks and state
 static std::map<long long, CursorPositionCallback> positionCallbacks;
@@ -300,30 +304,10 @@ uint32_t CursorBitmapHash(const uint32_t* pixels,
     return (hash & 0x7FFFFFFF);
 }
 
-float CurrentCursorDevicePixelRatio() {
+float DevicePixelRatioForWindow(HWND window) {
     UINT dpi = 0;
-    POINT cursor_position{};
-    if (GetCursorPos(&cursor_position)) {
-        const HMONITOR monitor = MonitorFromPoint(
-            cursor_position, MONITOR_DEFAULTTONEAREST);
-        using GetDpiForMonitorFunction = HRESULT(WINAPI*)(
-            HMONITOR, int, UINT*, UINT*);
-        static const HMODULE shcore_module = LoadLibraryW(L"shcore.dll");
-        static const auto get_dpi_for_monitor =
-            shcore_module == nullptr
-            ? nullptr
-            : reinterpret_cast<GetDpiForMonitorFunction>(GetProcAddress(
-                shcore_module, "GetDpiForMonitor"));
-        if (monitor != nullptr && get_dpi_for_monitor != nullptr) {
-            UINT dpi_x = 0;
-            UINT dpi_y = 0;
-            constexpr int kEffectiveDpi = 0;
-            if (SUCCEEDED(get_dpi_for_monitor(
-                monitor, kEffectiveDpi, &dpi_x, &dpi_y)) &&
-                dpi_x != 0 && dpi_y != 0) {
-                dpi = (dpi_x + dpi_y) / 2;
-            }
-        }
+    if (window != nullptr) {
+        dpi = GetDpiForWindow(window);
     }
     if (dpi == 0) {
         HDC screen_dc = GetDC(nullptr);
@@ -334,6 +318,21 @@ float CurrentCursorDevicePixelRatio() {
     }
     if (dpi == 0) dpi = 96;
     return std::clamp(dpi / 96.0f, 0.25f, 8.0f);
+}
+
+void CursorMonitor::initializeSourceDevicePixelRatio(HWND app_window) {
+    if (hasSourceDevicePixelRatio) {
+        return;
+    }
+    sourceDevicePixelRatio = DevicePixelRatioForWindow(app_window);
+    hasSourceDevicePixelRatio = true;
+}
+
+float StartupCursorDevicePixelRatio() {
+    if (!hasSourceDevicePixelRatio) {
+        CursorMonitor::initializeSourceDevicePixelRatio(nullptr);
+    }
+    return sourceDevicePixelRatio;
 }
 
 
@@ -463,14 +462,9 @@ std::vector<uint8_t> EncodeCursorBitmapFrame(const uint32_t* inputArray,
 }
 
 static HCURSOR lastHCursor = nullptr;
-static float lastCursorDevicePixelRatio = 0.0f;
 
-bool ShouldSyncCursorImage(HCURSOR cursor,
-    float source_device_pixel_ratio,
-    HCURSOR previous_cursor,
-    float previous_source_device_pixel_ratio) {
-    return cursor != previous_cursor ||
-        source_device_pixel_ratio != previous_source_device_pixel_ratio;
+bool ShouldSyncCursorImage(HCURSOR cursor, HCURSOR previous_cursor) {
+    return cursor != previous_cursor;
 }
 
 void SyncCursorImage() {
@@ -479,14 +473,12 @@ void SyncCursorImage() {
     }
     CURSORINFO ci = { sizeof(ci) };
     if (!GetCursorInfo(&ci)) return;
-    const float source_device_pixel_ratio =
-        CurrentCursorDevicePixelRatio();
-    if (!ShouldSyncCursorImage(ci.hCursor, source_device_pixel_ratio,
-        lastHCursor, lastCursorDevicePixelRatio)) {
+    if (!ShouldSyncCursorImage(ci.hCursor, lastHCursor)) {
         return;
     }
     lastHCursor = ci.hCursor;
-    lastCursorDevicePixelRatio = source_device_pixel_ratio;
+    const float source_device_pixel_ratio =
+        StartupCursorDevicePixelRatio();
     HANDLE h = GetCursorHandle(ci.hCursor);
     if (h != NULL) {
         for (auto callback : callbacks) {
@@ -774,7 +766,7 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
 
             if (image != nullptr && width > 0 && height > 0) {
                 const float source_device_pixel_ratio =
-                    CurrentCursorDevicePixelRatio();
+                    StartupCursorDevicePixelRatio();
                 unsigned int hash = CursorBitmapHash(
                     image.get(), width * height, width, height, hotX, hotY,
                     system_cursor_id, source_device_pixel_ratio);
