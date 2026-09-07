@@ -92,8 +92,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let macVirtualDisplayQueue = DispatchQueue(
     label: "com.cloudplayplus.hardware-simulator.virtual-display"
   )
-  private var macVirtualDisplayProcesses: [Int: Process] = [:]
-  private var macVirtualDisplaySerials: [Int: Int] = [:]
+  private var macVirtualDisplaySessions: [Int: MacVirtualDisplaySession] = [:]
   private var macDisplayConfigurationBackup: [MacDisplayBackupItem]? = nil
   private var macLastVirtualDisplayError: String? = nil
   private var macSkyLightHandle: UnsafeMutableRawPointer?
@@ -212,6 +211,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let width: Int
     let height: Int
     let refreshRate: Int
+  }
+
+  private struct MacVirtualDisplaySession {
+    let process: Process
+    let input: Pipe
+    let output: Pipe
+    let serial: Int
+    var configs: [MacVirtualDisplayConfig]
+  }
+
+  private enum MacVirtualDisplayModeApplyResult: Equatable {
+    case complete
+    case backingOnly
+    case failed
   }
 
   private struct MacDisplayBackupItem {
@@ -450,7 +463,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return configs
   }
 
-  private func readMacHelperDisplayId(from output: Pipe, timeout: DispatchTime) -> String? {
+  private func readMacHelperLine(from output: Pipe, timeout: DispatchTime) -> String? {
     let handle = output.fileHandleForReading
     let semaphore = DispatchSemaphore(value: 0)
     let lock = NSLock()
@@ -551,14 +564,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func nextMacVirtualDisplaySerial() -> Int {
-    let usedSerials = Set(macVirtualDisplaySerials.values)
+    let usedSerials = Set(macVirtualDisplaySessions.values.map(\.serial))
     for slot in 1...255 {
       let serial = macVirtualDisplaySerialBase + slot
       if !usedSerials.contains(serial) {
         return serial
       }
     }
-    return macVirtualDisplaySerialBase + macVirtualDisplaySerials.count + 1
+    return macVirtualDisplaySerialBase + macVirtualDisplaySessions.count + 1
   }
 
   private func spawnMacVirtualDisplay(
@@ -572,6 +585,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     let process = Process()
+    let input = Pipe()
     let output = Pipe()
     let serial = nextMacVirtualDisplaySerial()
     let requested = MacVirtualDisplayConfig(
@@ -599,6 +613,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       ]
     })
     process.arguments = arguments
+    process.standardInput = input
     process.standardOutput = output
     process.standardError = FileHandle.standardError
 
@@ -609,7 +624,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     guard
-      let text = readMacHelperDisplayId(
+      let text = readMacHelperLine(
         from: output,
         timeout: .now() + .seconds(10)
       )
@@ -624,15 +639,29 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     process.terminationHandler = { [weak self] _ in
       self?.macVirtualDisplayQueue.async {
-        self?.macVirtualDisplayProcesses.removeValue(forKey: displayId)
-        self?.macVirtualDisplaySerials.removeValue(forKey: displayId)
+        guard
+          let session = self?.macVirtualDisplaySessions[displayId],
+          session.process === process
+        else {
+          return
+        }
+        self?.macVirtualDisplaySessions.removeValue(forKey: displayId)
       }
     }
     withMacVirtualDisplayProcesses {
-      macVirtualDisplayProcesses[displayId] = process
-      macVirtualDisplaySerials[displayId] = serial
+      macVirtualDisplaySessions[displayId] = MacVirtualDisplaySession(
+        process: process,
+        input: input,
+        output: output,
+        serial: serial,
+        configs: displayConfigs
+      )
     }
-    Thread.sleep(forTimeInterval: 1.0)
+    // WindowServer may publish the display id before activation and HiDPI
+    // modes are ready. Wait for that one-time setup before selecting the mode;
+    // later SET commands update this same display in place.
+    Thread.sleep(forTimeInterval: 2.0)
+    _ = selectMacVirtualDisplayMode(displayId: displayId, config: requested)
     return displayId
   }
 
@@ -642,13 +671,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     ) == true {
       _ = restoreMacDisplayConfiguration()
     }
-    let process: Process? = withMacVirtualDisplayProcesses {
-      macVirtualDisplaySerials.removeValue(forKey: displayId)
-      return macVirtualDisplayProcesses.removeValue(forKey: displayId)
+    let session: MacVirtualDisplaySession? = withMacVirtualDisplayProcesses {
+      macVirtualDisplaySessions.removeValue(forKey: displayId)
     }
-    guard let process else {
+    guard let session else {
       return false
     }
+    try? session.input.fileHandleForWriting.close()
+    let process = session.process
     if process.isRunning {
       process.terminate()
     }
@@ -657,17 +687,73 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func terminateAllMacVirtualDisplays() {
     withMacVirtualDisplayProcesses {
-      for process in macVirtualDisplayProcesses.values where process.isRunning {
-        process.terminate()
+      for session in macVirtualDisplaySessions.values {
+        try? session.input.fileHandleForWriting.close()
+        if session.process.isRunning {
+          session.process.terminate()
+        }
       }
-      macVirtualDisplayProcesses.removeAll()
-      macVirtualDisplaySerials.removeAll()
+      macVirtualDisplaySessions.removeAll()
     }
   }
 
   private func macVirtualDisplayIdsSnapshot() -> Set<Int> {
     return withMacVirtualDisplayProcesses {
-      Set(macVirtualDisplayProcesses.keys)
+      Set(macVirtualDisplaySessions.keys)
+    }
+  }
+
+  private func macVirtualDisplayConfigsSnapshot(
+    _ displayId: Int
+  ) -> [MacVirtualDisplayConfig]? {
+    withMacVirtualDisplayProcesses {
+      macVirtualDisplaySessions[displayId]?.configs
+    }
+  }
+
+  private func applyMacVirtualDisplayMode(
+    displayId: Int,
+    config: MacVirtualDisplayConfig
+  ) -> MacVirtualDisplayModeApplyResult {
+    withMacVirtualDisplayProcesses {
+      guard var session = macVirtualDisplaySessions[displayId] else {
+        return .failed
+      }
+      let command = "SET \(config.width) \(config.height) \(config.refreshRate)\n"
+      guard let data = command.data(using: .utf8) else {
+        return .failed
+      }
+      if #available(macOS 10.15.4, *) {
+        do {
+          try session.input.fileHandleForWriting.write(contentsOf: data)
+        } catch {
+          return .failed
+        }
+      } else {
+        session.input.fileHandleForWriting.write(data)
+      }
+      guard
+        let response = readMacHelperLine(
+          from: session.output,
+          timeout: .now() + .seconds(6)
+        )
+      else {
+        return .failed
+      }
+      let applyResult: MacVirtualDisplayModeApplyResult
+      switch response {
+      case "OK \(displayId)":
+        applyResult = .complete
+      case "BACKING \(displayId)":
+        applyResult = .backingOnly
+      default:
+        return .failed
+      }
+      if !session.configs.contains(config) {
+        session.configs.append(config)
+        macVirtualDisplaySessions[displayId] = session
+      }
+      return applyResult
     }
   }
 
@@ -699,6 +785,72 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return Int(refresh.rounded())
     }
     return 60
+  }
+
+  private func macDisplayBackingMatches(
+    displayId: Int,
+    config: MacVirtualDisplayConfig
+  ) -> Bool {
+    guard let mode = CGDisplayCopyDisplayMode(CGDirectDisplayID(displayId)) else {
+      return false
+    }
+    return mode.pixelWidth == config.width && mode.pixelHeight == config.height
+  }
+
+  private func macDisplayMatchesTargetMode(
+    displayId: Int,
+    config: MacVirtualDisplayConfig
+  ) -> Bool {
+    guard let mode = CGDisplayCopyDisplayMode(CGDirectDisplayID(displayId)) else {
+      return false
+    }
+    let useHiDPI = config.width.isMultiple(of: 2) &&
+      config.height.isMultiple(of: 2)
+    let logicalWidth = useHiDPI ? config.width / 2 : config.width
+    let logicalHeight = useHiDPI ? config.height / 2 : config.height
+    return mode.width == logicalWidth &&
+      mode.height == logicalHeight &&
+      mode.pixelWidth == config.width &&
+      mode.pixelHeight == config.height
+  }
+
+  private func selectMacVirtualDisplayMode(
+    displayId: Int,
+    config: MacVirtualDisplayConfig
+  ) -> Bool {
+    let cgDisplayId = CGDirectDisplayID(displayId)
+    let useHiDPI = config.width.isMultiple(of: 2) &&
+      config.height.isMultiple(of: 2)
+    let logicalWidth = useHiDPI ? config.width / 2 : config.width
+    let logicalHeight = useHiDPI ? config.height / 2 : config.height
+    let options = [
+      kCGDisplayShowDuplicateLowResolutionModes as String: true,
+    ] as CFDictionary
+    var requestedSelection = false
+
+    for _ in 0..<20 {
+      if macDisplayMatchesTargetMode(displayId: displayId, config: config) {
+        return true
+      }
+      if !requestedSelection,
+        let modes = CGDisplayCopyAllDisplayModes(cgDisplayId, options)
+          as? [CGDisplayMode],
+        let target = modes.first(where: { mode in
+          mode.width == logicalWidth &&
+            mode.height == logicalHeight &&
+            mode.pixelWidth == config.width &&
+            mode.pixelHeight == config.height
+        })
+      {
+        // macOS 26 can report an error even when WindowServer completes the
+        // transition asynchronously. Issue the request once, then trust the
+        // observed final mode below rather than the immediate return value.
+        _ = CGDisplaySetDisplayMode(cgDisplayId, target, nil)
+        requestedSelection = true
+      }
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    return macDisplayMatchesTargetMode(displayId: displayId, config: config)
   }
 
   private func macDisplayList() -> [[String: Any]] {
@@ -746,6 +898,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   private func macDisplayConfigs(_ displayId: CGDirectDisplayID) -> [[String: Int]] {
     var configs: [[String: Int]] = []
+    if let virtualConfigs = macVirtualDisplayConfigsSnapshot(Int(displayId)) {
+      configs.append(contentsOf: virtualConfigs.map { config in
+        [
+          "width": config.width,
+          "height": config.height,
+          "refreshRate": config.refreshRate,
+        ]
+      })
+    }
     let options = [
       kCGDisplayShowDuplicateLowResolutionModes as String: true,
     ] as CFDictionary
@@ -790,6 +951,37 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     refreshRate: Int
   ) -> Bool {
     let cgDisplayId = CGDirectDisplayID(displayId)
+    let config = MacVirtualDisplayConfig(
+      width: width,
+      height: height,
+      refreshRate: refreshRate
+    )
+    if macVirtualDisplayIdsSnapshot().contains(displayId) {
+      if macDisplayBackingMatches(displayId: displayId, config: config) {
+        return selectMacVirtualDisplayMode(displayId: displayId, config: config)
+      }
+      let applyResult = applyMacVirtualDisplayMode(
+        displayId: displayId,
+        config: config
+      )
+      if applyResult != .failed,
+        selectMacVirtualDisplayMode(displayId: displayId, config: config)
+      {
+        return true
+      }
+      var configs = macVirtualDisplayConfigsSnapshot(displayId) ?? []
+      if !configs.contains(config) {
+        configs.append(config)
+      }
+      _ = terminateMacVirtualDisplay(displayId)
+      return spawnMacVirtualDisplay(
+        width: width,
+        height: height,
+        refreshRate: refreshRate,
+        configs: configs
+      ) > 0
+    }
+
     let options = [
       kCGDisplayShowDuplicateLowResolutionModes as String: true,
     ] as CFDictionary
@@ -804,21 +996,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    guard macVirtualDisplayIdsSnapshot().contains(displayId) else {
-      return false
-    }
-    let config = MacVirtualDisplayConfig(
-      width: width,
-      height: height,
-      refreshRate: refreshRate
-    )
-    _ = terminateMacVirtualDisplay(displayId)
-    return spawnMacVirtualDisplay(
-      width: width,
-      height: height,
-      refreshRate: refreshRate,
-      configs: macCreateDisplayConfigs(primary: config, rawConfigs: nil)
-    ) > 0
+    return false
   }
 
   private func allMacDisplayIds(limit: Int = 32) -> [CGDirectDisplayID] {

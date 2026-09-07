@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 @interface CGVirtualDisplayMode : NSObject
@@ -39,23 +40,18 @@
 - (BOOL)applySettings:(CGVirtualDisplaySettings *)settings;
 @end
 
-extern CGError SLSBeginDisplayConfiguration(CGDisplayConfigRef *);
-extern CGError SLSConfigureDisplayEnabled(CGDisplayConfigRef,
-                                          CGDirectDisplayID,
-                                          bool);
-extern CGError SLSConfigureDisplayOrigin(CGDisplayConfigRef,
-                                         CGDirectDisplayID,
-                                         int32_t,
-                                         int32_t);
-extern CGError SLSCompleteDisplayConfiguration(CGDisplayConfigRef,
-                                               CGConfigureOption,
-                                               uint32_t);
-
 static CGVirtualDisplay *g_display = nil;
 static CGVirtualDisplayDescriptor *g_descriptor = nil;
 static volatile sig_atomic_t g_should_exit = 0;
 
+typedef NS_ENUM(NSInteger, TargetModeApplyResult) {
+  TargetModeApplyFailed = 0,
+  TargetModeApplyBackingOnly = 1,
+  TargetModeApplyComplete = 2,
+};
+
 static void handleSignal(int signo) {
+  (void)signo;
   g_should_exit = 1;
   dispatch_async(dispatch_get_main_queue(), ^{
     CFRunLoopStop(CFRunLoopGetMain());
@@ -78,114 +74,147 @@ static BOOL parentIsAlive(pid_t parentPID) {
   return kill(parentPID, 0) == 0 || errno == EPERM;
 }
 
-static void addMode(NSMutableArray *modes,
-                    unsigned int width,
-                    unsigned int height,
-                    double refreshRate,
-                    unsigned int maxWidth,
-                    unsigned int maxHeight) {
-  if (width == 0 || height == 0 || width > maxWidth || height > maxHeight) {
-    return;
-  }
+static CGVirtualDisplaySettings *targetModeSettings(int width,
+                                                    int height,
+                                                    int refreshRate) {
+  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+  int modeWidth = useHiDPI ? width / 2 : width;
+  int modeHeight = useHiDPI ? height / 2 : height;
   CGVirtualDisplayMode *mode =
-      [[CGVirtualDisplayMode alloc] initWithWidth:width
-                                           height:height
-                                      refreshRate:refreshRate];
-  if (mode != nil) {
-    [modes addObject:mode];
-  }
+      [[CGVirtualDisplayMode alloc] initWithWidth:(unsigned int)modeWidth
+                                           height:(unsigned int)modeHeight
+                                      refreshRate:(double)refreshRate];
+  if (mode == nil) return nil;
+
+  CGVirtualDisplaySettings *settings =
+      [[CGVirtualDisplaySettings alloc] init];
+  settings.hiDPI = useHiDPI ? 1 : 0;
+  settings.modes = @[ mode ];
+  return settings;
 }
 
-static void addModeConfig(NSMutableArray *configs,
-                          NSMutableSet *seen,
-                          unsigned int width,
-                          unsigned int height,
-                          int refreshRate,
-                          unsigned int *maxWidth,
-                          unsigned int *maxHeight) {
-  if (width == 0 || height == 0 || refreshRate <= 0) return;
-  NSString *key =
-      [NSString stringWithFormat:@"%ux%u@%d", width, height, refreshRate];
-  if ([seen containsObject:key]) return;
-  [seen addObject:key];
-  [configs addObject:@{
-    @"width" : @(width),
-    @"height" : @(height),
-    @"refreshRate" : @(refreshRate)
-  }];
-  if (maxWidth != NULL && width > *maxWidth) *maxWidth = width;
-  if (maxHeight != NULL && height > *maxHeight) *maxHeight = height;
+static BOOL displayHasBackingSize(CGDirectDisplayID displayID,
+                                  int width,
+                                  int height) {
+  CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+  if (mode == NULL) return NO;
+  BOOL matches = (int)CGDisplayModeGetPixelWidth(mode) == width &&
+                 (int)CGDisplayModeGetPixelHeight(mode) == height;
+  CGDisplayModeRelease(mode);
+  return matches;
 }
 
-static NSArray *buildModes(int width,
-                           int height,
-                           int refreshRate,
-                           int argc,
-                           const char *argv[],
-                           int startIndex,
-                           unsigned int *outMaxWidth,
-                           unsigned int *outMaxHeight) {
-  NSMutableArray *configs = [NSMutableArray array];
-  NSMutableSet *seen = [NSMutableSet set];
-  unsigned int maxWidth = (unsigned int)width;
-  unsigned int maxHeight = (unsigned int)height;
-  addModeConfig(configs,
-                seen,
-                (unsigned int)width,
-                (unsigned int)height,
-                refreshRate,
-                &maxWidth,
-                &maxHeight);
+static BOOL displayHasTargetMode(CGDirectDisplayID displayID,
+                                 int width,
+                                 int height) {
+  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+  int logicalWidth = useHiDPI ? width / 2 : width;
+  int logicalHeight = useHiDPI ? height / 2 : height;
+  CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+  if (mode == NULL) return NO;
+  BOOL matches = (int)CGDisplayModeGetWidth(mode) == logicalWidth &&
+                 (int)CGDisplayModeGetHeight(mode) == logicalHeight &&
+                 (int)CGDisplayModeGetPixelWidth(mode) == width &&
+                 (int)CGDisplayModeGetPixelHeight(mode) == height;
+  CGDisplayModeRelease(mode);
+  return matches;
+}
 
-  for (int i = startIndex; i + 2 < argc; i += 3) {
-    int modeWidth = 0;
-    int modeHeight = 0;
-    int modeRefreshRate = 0;
-    if (!parsePositiveInt(argv[i], &modeWidth) ||
-        !parsePositiveInt(argv[i + 1], &modeHeight) ||
-        !parsePositiveInt(argv[i + 2], &modeRefreshRate)) {
-      continue;
+static BOOL selectTargetMode(CGDirectDisplayID displayID,
+                             int width,
+                             int height) {
+  if (displayHasTargetMode(displayID, width, height)) return YES;
+
+  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+  int logicalWidth = useHiDPI ? width / 2 : width;
+  int logicalHeight = useHiDPI ? height / 2 : height;
+  NSDictionary *options =
+      @{(NSString *)kCGDisplayShowDuplicateLowResolutionModes : @YES};
+  CGDisplayModeRef selected = NULL;
+  for (int attempt = 0; attempt < 20 && selected == NULL; attempt++) {
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(
+        displayID, (__bridge CFDictionaryRef)options);
+    if (modes != NULL) {
+      CFIndex count = CFArrayGetCount(modes);
+      for (CFIndex i = 0; i < count; i++) {
+        CGDisplayModeRef mode =
+            (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+        if ((int)CGDisplayModeGetWidth(mode) == logicalWidth &&
+            (int)CGDisplayModeGetHeight(mode) == logicalHeight &&
+            (int)CGDisplayModeGetPixelWidth(mode) == width &&
+            (int)CGDisplayModeGetPixelHeight(mode) == height) {
+          selected = (CGDisplayModeRef)CFRetain(mode);
+          break;
+        }
+      }
+      CFRelease(modes);
     }
-    addModeConfig(configs,
-                  seen,
-                  (unsigned int)modeWidth,
-                  (unsigned int)modeHeight,
-                  modeRefreshRate,
-                  &maxWidth,
-                  &maxHeight);
+    if (selected == NULL) usleep(50000);
   }
+  if (selected == NULL) return NO;
 
-  NSMutableArray *modes = [NSMutableArray array];
-  for (NSDictionary *config in configs) {
-    addMode(modes,
-            [[config objectForKey:@"width"] unsignedIntValue],
-            [[config objectForKey:@"height"] unsignedIntValue],
-            [[config objectForKey:@"refreshRate"] doubleValue],
-            maxWidth,
-            maxHeight);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // This call can block or return kCGErrorIllegalArgument on macOS 26 even
+    // when WindowServer completes the transition. Keep it off the helper's
+    // main command loop and verify the observed mode below.
+    (void)CGDisplaySetDisplayMode(displayID, selected, NULL);
+    CFRelease(selected);
+  });
+  for (int attempt = 0; attempt < 40; attempt++) {
+    if (displayHasTargetMode(displayID, width, height)) return YES;
+    usleep(50000);
   }
-
-  if (outMaxWidth != NULL) *outMaxWidth = maxWidth;
-  if (outMaxHeight != NULL) *outMaxHeight = maxHeight;
-
-  return modes;
+  return displayHasTargetMode(displayID, width, height);
 }
 
-static void activateDisplay(CGDirectDisplayID displayID) {
-  CGDisplayConfigRef config = NULL;
-  if (SLSBeginDisplayConfiguration(&config) != kCGErrorSuccess ||
-      config == NULL) {
-    return;
+static TargetModeApplyResult applyTargetMode(CGVirtualDisplay *display,
+                                             int width,
+                                             int height,
+                                             int refreshRate) {
+  CGVirtualDisplaySettings *settings =
+      targetModeSettings(width, height, refreshRate);
+  if (display == nil || settings == nil || ![display applySettings:settings]) {
+    return TargetModeApplyFailed;
   }
 
-  SLSConfigureDisplayEnabled(config, displayID, true);
-  CGDirectDisplayID mainDisplay = CGMainDisplayID();
-  CGRect mainBounds = CGDisplayBounds(mainDisplay);
-  SLSConfigureDisplayOrigin(config,
-                            displayID,
-                            (int32_t)CGRectGetMaxX(mainBounds),
-                            0);
-  SLSCompleteDisplayConfiguration(config, kCGConfigureForSession, 0);
+  for (int attempt = 0; attempt < 20; attempt++) {
+    if (displayHasBackingSize(display.displayID, width, height)) {
+      return selectTargetMode(display.displayID, width, height)
+                 ? TargetModeApplyComplete
+                 : TargetModeApplyBackingOnly;
+    }
+    usleep(50000);
+  }
+  return TargetModeApplyFailed;
+}
+
+static void handleCommandLine(NSString *line) {
+  NSArray<NSString *> *rawParts =
+      [line componentsSeparatedByCharactersInSet:
+                [NSCharacterSet whitespaceCharacterSet]];
+  NSMutableArray<NSString *> *parts = [NSMutableArray array];
+  for (NSString *part in rawParts) {
+    if (part.length > 0) [parts addObject:part];
+  }
+
+  int width = 0;
+  int height = 0;
+  int refreshRate = 0;
+  BOOL valid = parts.count == 4 && [parts[0] isEqualToString:@"SET"] &&
+               parsePositiveInt([parts[1] UTF8String], &width) &&
+               parsePositiveInt([parts[2] UTF8String], &height) &&
+               parsePositiveInt([parts[3] UTF8String], &refreshRate);
+  TargetModeApplyResult result =
+      valid ? applyTargetMode(g_display, width, height, refreshRate)
+            : TargetModeApplyFailed;
+  if (result == TargetModeApplyComplete) {
+    fprintf(stdout, "OK %u\n", g_display.displayID);
+  } else if (result == TargetModeApplyBackingOnly) {
+    fprintf(stdout, "BACKING %u\n", g_display.displayID);
+  } else {
+    fprintf(stdout, "ERR\n");
+  }
+  fflush(stdout);
 }
 
 static void forceExtended(CGDirectDisplayID displayID) {
@@ -209,33 +238,6 @@ static void forceExtended(CGDirectDisplayID displayID) {
                            (int32_t)CGRectGetMaxX(mainBounds),
                            0);
   CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
-}
-
-static void preferNativeScale(CGDirectDisplayID displayID,
-                              int width,
-                              int height) {
-  NSDictionary *options =
-      @{(NSString *)kCGDisplayShowDuplicateLowResolutionModes : @YES};
-  CFArrayRef modes =
-      CGDisplayCopyAllDisplayModes(displayID, (__bridge CFDictionaryRef)options);
-  if (modes == NULL) return;
-
-  CGDisplayModeRef selected = NULL;
-  CFIndex count = CFArrayGetCount(modes);
-  for (CFIndex i = 0; i < count; i++) {
-    CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-    if ((int)CGDisplayModeGetWidth(mode) == width &&
-        (int)CGDisplayModeGetHeight(mode) == height &&
-        CGDisplayModeGetPixelWidth(mode) == CGDisplayModeGetWidth(mode) &&
-        CGDisplayModeGetPixelHeight(mode) == CGDisplayModeGetHeight(mode)) {
-      selected = mode;
-      break;
-    }
-  }
-  if (selected != NULL) {
-    CGDisplaySetDisplayMode(displayID, selected, NULL);
-  }
-  CFRelease(modes);
 }
 
 int main(int argc, const char *argv[]) {
@@ -268,27 +270,28 @@ int main(int argc, const char *argv[]) {
     signal(SIGTERM, handleSignal);
     signal(SIGINT, handleSignal);
     signal(SIGHUP, handleSignal);
-
-    unsigned int maxPixelsWide = (unsigned int)width;
-    unsigned int maxPixelsHigh = (unsigned int)height;
-    NSArray *modes = buildModes(width,
-                                height,
-                                refreshRate,
-                                argc,
-                                argv,
-                                6,
-                                &maxPixelsWide,
-                                &maxPixelsHigh);
+    signal(SIGPIPE, SIG_IGN);
 
     CGVirtualDisplayDescriptor *descriptor =
         [[CGVirtualDisplayDescriptor alloc] init];
     descriptor.name = @"CloudPlayPlus Virtual Display";
     descriptor.vendorID = 0x4350;
-    descriptor.productID = 0x5644;
+    // macOS persists the preferred mode by vendor+product and ignores serial.
+    // A fresh product identity prevents an old manual 1x choice from
+    // overriding the first (HiDPI) mode of this new display instance.
+    descriptor.productID = arc4random_uniform(UINT16_MAX - 1) + 1;
     descriptor.serialNum = (unsigned int)serialNum;
-    descriptor.maxPixelsWide = maxPixelsWide;
-    descriptor.maxPixelsHigh = maxPixelsHigh;
-    descriptor.sizeInMillimeters = CGSizeMake(597, 336);
+    // On macOS 26 the descriptor maximum becomes the preferred HiDPI backing
+    // size. Keep it equal to the requested target; a larger catalog maximum
+    // would silently start the display at that larger resolution instead.
+    descriptor.maxPixelsWide = (unsigned int)width;
+    descriptor.maxPixelsHigh = (unsigned int)height;
+    // Match the declared physical size to Retina density. A fixed 27-inch
+    // descriptor makes 2448x1848 look like a low-DPI panel and macOS prefers
+    // its 1x mode even when hiDPI is enabled.
+    double targetPPI = (width % 2 == 0 && height % 2 == 0) ? 220.0 : 110.0;
+    descriptor.sizeInMillimeters =
+        CGSizeMake(width * 25.4 / targetPPI, height * 25.4 / targetPPI);
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
     descriptor.redPrimary = CGPointMake(0.64, 0.33);
     descriptor.greenPrimary = CGPointMake(0.30, 0.60);
@@ -302,24 +305,21 @@ int main(int argc, const char *argv[]) {
       });
     };
 
-    CGVirtualDisplaySettings *settings =
-        [[CGVirtualDisplaySettings alloc] init];
-    settings.hiDPI = 1;
-    settings.modes = modes;
-
     fprintf(stderr,
             "[cloudplayplus_vd_helper] creating %dx%d@%d\n",
             width,
             height,
             refreshRate);
 
+    CGVirtualDisplaySettings *initialSettings =
+        targetModeSettings(width, height, refreshRate);
     __block CGVirtualDisplay *display = nil;
     __block BOOL settingsApplied = NO;
     dispatch_semaphore_t created = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
       display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
-      if (display != nil) {
-        settingsApplied = [display applySettings:settings];
+      if (display != nil && initialSettings != nil) {
+        settingsApplied = [display applySettings:initialSettings];
       }
       dispatch_semaphore_signal(created);
     });
@@ -349,15 +349,58 @@ int main(int argc, const char *argv[]) {
     CGDirectDisplayID displayID = display.displayID;
     fprintf(stderr, "[cloudplayplus_vd_helper] created display %u\n", displayID);
 
-    activateDisplay(displayID);
-    usleep(500000);
-    forceExtended(displayID);
-    usleep(250000);
-    preferNativeScale(displayID, width, height);
-
+    // Hand the stable display id to the app as soon as creation succeeds. The
+    // app owns backing verification and mode selection/retries from this point.
+    // A transient HiDPI selection failure must not destroy and recreate the
+    // virtual display just to obtain another id.
     fprintf(stdout, "%u\n", displayID);
     fflush(stdout);
-    close(STDOUT_FILENO);
+
+    // Display configuration can occasionally block inside WindowServer. Keep
+    // the helper command channel responsive and let the app verify/select the
+    // requested mode against the already-published display id. CGVirtualDisplay
+    // is already online after applySettings. Only break mirroring when macOS
+    // actually placed the new display into a mirror set; an unnecessary display
+    // configuration transaction can override the preferred HiDPI mode.
+    dispatch_async(
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          if (CGDisplayIsInMirrorSet(displayID)) forceExtended(displayID);
+          (void)selectTargetMode(displayID, width, height);
+          if (!displayHasBackingSize(displayID, width, height)) {
+            fprintf(stderr,
+                    "[cloudplayplus_vd_helper] backing mismatch for %dx%d\n",
+                    width,
+                    height);
+          }
+        });
+
+    NSFileHandle *inputHandle = [NSFileHandle fileHandleWithStandardInput];
+    __block NSMutableData *inputBuffer = [NSMutableData data];
+    inputHandle.readabilityHandler = ^(NSFileHandle *handle) {
+      NSData *chunk = handle.availableData;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (chunk.length == 0) {
+          g_should_exit = 1;
+          CFRunLoopStop(CFRunLoopGetMain());
+          return;
+        }
+        [inputBuffer appendData:chunk];
+        while (true) {
+          const void *bytes = inputBuffer.bytes;
+          const void *newline = memchr(bytes, '\n', inputBuffer.length);
+          if (newline == NULL) break;
+          NSUInteger lineLength =
+              (const uint8_t *)newline - (const uint8_t *)bytes;
+          NSData *lineData = [inputBuffer subdataWithRange:NSMakeRange(0, lineLength)];
+          [inputBuffer replaceBytesInRange:NSMakeRange(0, lineLength + 1)
+                                 withBytes:NULL
+                                    length:0];
+          NSString *line = [[NSString alloc] initWithData:lineData
+                                                 encoding:NSUTF8StringEncoding];
+          if (line != nil) handleCommandLine(line);
+        }
+      });
+    };
 
     pid_t parentPID = (pid_t)parentPIDInt;
     dispatch_source_t timer = dispatch_source_create(
@@ -379,6 +422,7 @@ int main(int argc, const char *argv[]) {
     }
 
     dispatch_source_cancel(timer);
+    inputHandle.readabilityHandler = nil;
     g_display = nil;
     g_descriptor = nil;
     return 0;
