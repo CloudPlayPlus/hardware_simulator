@@ -7,6 +7,29 @@ import 'package:hardware_simulator/hardware_simulator_platform_interface.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('failed disposal can be retried and successful disposal is idempotent',
+      () async {
+    final previousPlatform = HardwareSimulatorPlatform.instance;
+    HardwareSimulatorPlatform.instance = MethodChannelHardwareSimulator();
+    addTearDown(() => HardwareSimulatorPlatform.instance = previousPlatform);
+    const channel = MethodChannel('hardware_simulator');
+    var attempts = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'removeGameController' && ++attempts == 1) {
+        throw PlatformException(code: 'temporary_failure');
+      }
+      return null;
+    });
+    addTearDown(() => TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final controller = GameController(1);
+    await expectLater(controller.dispose(), throwsA(isA<PlatformException>()));
+    await controller.dispose();
+    await controller.dispose();
+    expect(attempts, 2);
+  });
   test('late feedback cannot reach a replacement controller in the same slot',
       () async {
     final previousPlatform = HardwareSimulatorPlatform.instance;

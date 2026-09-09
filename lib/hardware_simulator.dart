@@ -143,7 +143,13 @@ class GameController {
   Future<void> dispose() async {
     if (_disposed || controllerId < 0) return;
     _disposed = true;
-    await HardwareSimulatorPlatform.instance.removeGameController(controllerId);
+    try {
+      await HardwareSimulatorPlatform.instance
+          .removeGameController(controllerId);
+    } catch (_) {
+      _disposed = false;
+      rethrow;
+    }
   }
 
   Future<void> simulate(String action) async {
