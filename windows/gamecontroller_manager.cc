@@ -8,6 +8,35 @@ PVIGEM_CLIENT GameControllerManager::vigem_client = nullptr;
 bool GameControllerManager::initialized = false;
 std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
 
+namespace {
+struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; bool registered = false; };
+std::array<RumbleContext, 4> rumble_contexts;
+void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR small_motor, UCHAR, LPVOID user) {
+  const auto* context = static_cast<RumbleContext*>(user);
+  PostMessageW(context->window, context->message, static_cast<WPARAM>(context->token),
+      static_cast<LPARAM>((static_cast<unsigned>(large_motor) << 8) | small_motor));
+}
+}
+
+bool GameControllerManager::SubscribeRumble(int id, int token, HWND window, UINT message) {
+  if (id < 1 || id > 4 || !controllers[id - 1] || !window || !message) return false;
+  auto& context = rumble_contexts[id - 1];
+  if (context.registered) vigem_target_x360_unregister_notification(controllers[id - 1]);
+  context = {window, message, token, false};
+  const auto status = vigem_target_x360_register_notification(vigem_client, controllers[id - 1], OnRumble, &context);
+  context.registered = VIGEM_SUCCESS(status);
+  return context.registered;
+}
+
+void GameControllerManager::StopRumbleNotifications() {
+  for (int i = 0; i < 4; ++i) {
+    if (controllers[i] && rumble_contexts[i].registered) {
+      vigem_target_x360_unregister_notification(controllers[i]);
+      rumble_contexts[i].registered = false;
+    }
+  }
+}
+
 int GameControllerManager::InitializeVigem() {
   vigem_client = vigem_alloc();
   if (vigem_client == nullptr) {
@@ -65,6 +94,10 @@ bool GameControllerManager::RemoveGameController(int id) {
 
   int index = id - 1;
   if (controllers[index] != nullptr) {
+    if (rumble_contexts[index].registered) {
+      vigem_target_x360_unregister_notification(controllers[index]);
+      rumble_contexts[index].registered = false;
+    }
     const auto pir = vigem_target_remove(vigem_client, controllers[index]);
     //
     // Error handling
@@ -74,6 +107,8 @@ bool GameControllerManager::RemoveGameController(int id) {
                      static_cast<unsigned int>(pir));
         return false;
     }
+    vigem_target_free(controllers[index]);
+    controllers[index] = nullptr;
     CPPLOG_INFO("GAMEPAD", "Game controller removed from slot %d", id);
     return true;
   }

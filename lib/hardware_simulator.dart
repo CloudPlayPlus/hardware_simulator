@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'hardware_simulator_platform_interface.dart';
 export 'hardware_simulator_platform_interface.dart'
     show
+        GamepadRumbleEvent,
         DisplayCountChangedCallback,
         TrackpadScrollCallback,
         TrackpadScrollEvent,
@@ -122,6 +124,14 @@ class GameController {
   int controllerId;
 
   GameController(this.controllerId);
+  static int _nextRumbleToken = 0;
+  final int _rumbleToken = ++_nextRumbleToken;
+  bool _disposed = false;
+  Stream<GamepadRumbleEvent> get rumbleEvents =>
+      HardwareSimulatorPlatform.instance.gamepadRumbleEvents
+          .where((event) => !_disposed && event.token == _rumbleToken);
+  Future<void> enableRumbleFeedback() => HardwareSimulatorPlatform.instance
+      .subscribeGamepadRumble(controllerId, _rumbleToken);
 
   static Future<GameController?> createGameController() async {
     int id = await HardwareSimulatorPlatform.instance.createGameController();
@@ -131,7 +141,8 @@ class GameController {
   }
 
   Future<void> dispose() async {
-    if (controllerId < 0) return;
+    if (_disposed || controllerId < 0) return;
+    _disposed = true;
     await HardwareSimulatorPlatform.instance.removeGameController(controllerId);
   }
 

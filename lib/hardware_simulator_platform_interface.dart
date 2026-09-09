@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -415,6 +417,9 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performPenHover() has not been implemented.');
   }
 
+  Stream<GamepadRumbleEvent> get gamepadRumbleEvents => const Stream.empty();
+  Future<void> subscribeGamepadRumble(int id, int token) async {}
+
   Future<int> createGameController() async {
     throw UnimplementedError(
         'createGameController() has not been implemented.');
@@ -536,4 +541,11 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError(
         'updateStaticMonitors() has not been implemented.');
   }
+}
+
+class GamepadRumbleEvent {
+  const GamepadRumbleEvent(this.token, this.lowFrequency, this.highFrequency);
+  final int token;
+  final int lowFrequency;
+  final int highFrequency;
 }

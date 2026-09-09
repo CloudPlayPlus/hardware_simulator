@@ -5,12 +5,15 @@
 #include <memory>
 #include <string>
 
+#include <windows.h>
 #include <ViGEm/Client.h>
 
 class GameControllerManager {
 public:
   static int CreateGameController();
   static bool RemoveGameController(int id);
+  static bool SubscribeRumble(int id, int token, HWND window, UINT message);
+  static void StopRumbleNotifications();
   static bool DoControllerAction(int id, std::string& action);
 
 private:

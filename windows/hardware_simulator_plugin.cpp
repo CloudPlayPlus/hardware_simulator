@@ -1103,6 +1103,12 @@ HardwareSimulatorPlugin::HardwareSimulatorPlugin() {
 }
 
 HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
+    GameControllerManager::StopRumbleNotifications();
+    if (rumble_proc_id_ && registrar_) registrar_->UnregisterTopLevelWindowProcDelegate(*rumble_proc_id_);
+    if (rumble_window_ && rumble_message_id_) {
+      MSG message{};
+      while (PeekMessageW(&message, rumble_window_, rumble_message_id_, rumble_message_id_, PM_REMOVE)) {}
+    }
     StopWindowsEditingEventMonitor();
     if (flutter_view_window_ != nullptr) {
         RemoveWindowSubclass(
@@ -1778,6 +1784,28 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto callbackID = static_cast<int>(std::get<int>((args->find(flutter::EncodableValue("callbackID")))->second));
         removeDisplayCountChangedCallback(callbackID);
         result->Success(nullptr);
+  } else if (method_call.method_name() == "subscribeGamepadRumble") {
+    if (!rumble_proc_id_) {
+      rumble_message_id_ = RegisterWindowMessageW(L"CloudPlayPlus.GamepadRumble");
+      rumble_window_ = GetAncestor(registrar_->GetView()->GetNativeWindow(), GA_ROOT);
+      rumble_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
+          [this](HWND, UINT message, WPARAM token, LPARAM motors) -> std::optional<LRESULT> {
+            if (message != rumble_message_id_) return std::nullopt;
+            flutter::EncodableMap event;
+            event[flutter::EncodableValue("token")] = flutter::EncodableValue(static_cast<int64_t>(token));
+            event[flutter::EncodableValue("low")] = flutter::EncodableValue(static_cast<int>(((motors >> 8) & 255) * 257));
+            event[flutter::EncodableValue("high")] = flutter::EncodableValue(static_cast<int>((motors & 255) * 257));
+            channel_->InvokeMethod("onGamepadRumble", std::make_unique<flutter::EncodableValue>(event));
+            return 0;
+          });
+    }
+    const auto id = args->find(flutter::EncodableValue("id"));
+    const auto token = args->find(flutter::EncodableValue("token"));
+    if (id == args->end() || token == args->end() ||
+        !std::holds_alternative<int32_t>(id->second) || !std::holds_alternative<int32_t>(token->second) ||
+        !GameControllerManager::SubscribeRumble(std::get<int32_t>(id->second), std::get<int32_t>(token->second), rumble_window_, rumble_message_id_)) {
+      result->Error("rumble_unavailable", "Unable to subscribe to virtual gamepad feedback");
+    } else result->Success();
   } else if (method_call.method_name().compare("createGameController") == 0) {
         int hr = GameControllerManager::CreateGameController();
         result->Success(flutter::EncodableValue(hr));

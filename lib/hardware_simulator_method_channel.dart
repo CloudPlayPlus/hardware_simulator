@@ -13,10 +13,29 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @visibleForTesting
   final methodChannel = const MethodChannel('hardware_simulator');
   bool isinitialized = false;
+  final _rumbleEvents =
+      StreamController<GamepadRumbleEvent>.broadcast(sync: true);
+  @override
+  Stream<GamepadRumbleEvent> get gamepadRumbleEvents => _rumbleEvents.stream;
+  @override
+  Future<void> subscribeGamepadRumble(int id, int token) async {
+    if (!isinitialized) init();
+    await methodChannel.invokeMethod<void>(
+        'subscribeGamepadRumble', {'id': id, 'token': token});
+  }
 
   void init() {
     methodChannel.setMethodCallHandler((call) async {
-      if (call.method == "onCursorMoved") {
+      if (call.method == "onGamepadRumble") {
+        final args = call.arguments;
+        if (args is Map &&
+            args['token'] is int &&
+            args['low'] is int &&
+            args['high'] is int) {
+          _rumbleEvents.add(GamepadRumbleEvent(
+              args['token'] as int, args['low'] as int, args['high'] as int));
+        }
+      } else if (call.method == "onCursorMoved") {
         for (var callback in cursorMovedCallbacks) {
           callback(call.arguments['dx'], call.arguments['dy']);
         }
