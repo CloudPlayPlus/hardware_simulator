@@ -29,10 +29,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       if (call.method == "onGamepadRumble") {
         final args = call.arguments;
         if (args is Map &&
+            args['id'] is int &&
             args['token'] is int &&
             args['low'] is int &&
             args['high'] is int) {
-          _rumbleEvents.add(GamepadRumbleEvent(
+          _rumbleEvents.add(GamepadRumbleEvent(args['id'] as int,
               args['token'] as int, args['low'] as int, args['high'] as int));
         }
       } else if (call.method == "onCursorMoved") {

@@ -84,18 +84,24 @@ void main() {
     final events = <GamepadRumbleEvent>[];
     final subscription = replacement.rumbleEvents.listen(events.add);
     addTearDown(subscription.cancel);
-    for (final token in tokens) {
+    for (final (nativeId, token) in [
+      (1, tokens[0]),
+      (1, tokens[1]),
+      (2, tokens[1])
+    ]) {
       final done = Completer<void>();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .handlePlatformMessage(
         'hardware_simulator',
         const StandardMethodCodec().encodeMethodCall(MethodCall(
-            'onGamepadRumble', {'token': token, 'low': 65535, 'high': 0})),
+            'onGamepadRumble',
+            {'id': nativeId, 'token': token, 'low': 65535, 'high': 0})),
         (_) => done.complete(),
       );
       await done.future;
     }
     expect(events.length, 1);
+    expect(events.single.controllerId, 1);
     expect(events.single.lowFrequency, 65535);
     expect(events.single.highFrequency, 0);
     await replacement.dispose();

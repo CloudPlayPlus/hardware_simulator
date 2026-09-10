@@ -9,12 +9,13 @@ bool GameControllerManager::initialized = false;
 std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
 
 namespace {
-struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; bool registered = false; };
+struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; int id = 0; bool registered = false; };
 std::array<RumbleContext, 4> rumble_contexts;
 void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR small_motor, UCHAR, LPVOID user) {
   const auto* context = static_cast<RumbleContext*>(user);
   PostMessageW(context->window, context->message, static_cast<WPARAM>(context->token),
-      static_cast<LPARAM>((static_cast<unsigned>(large_motor) << 8) | small_motor));
+      static_cast<LPARAM>((static_cast<unsigned>(context->id) << 16) |
+          (static_cast<unsigned>(large_motor) << 8) | small_motor));
 }
 }
 
@@ -22,7 +23,7 @@ bool GameControllerManager::SubscribeRumble(int id, int token, HWND window, UINT
   if (id < 1 || id > 4 || !controllers[id - 1] || !window || !message) return false;
   auto& context = rumble_contexts[id - 1];
   if (context.registered) vigem_target_x360_unregister_notification(controllers[id - 1]);
-  context = {window, message, token, false};
+  context = {window, message, token, id, false};
   const auto status = vigem_target_x360_register_notification(vigem_client, controllers[id - 1], OnRumble, &context);
   context.registered = VIGEM_SUCCESS(status);
   return context.registered;

@@ -1806,6 +1806,7 @@ void HardwareSimulatorPlugin::HandleMethodCall(
           [this](HWND, UINT message, WPARAM token, LPARAM motors) -> std::optional<LRESULT> {
             if (message != rumble_message_id_) return std::nullopt;
             flutter::EncodableMap event;
+            event[flutter::EncodableValue("id")] = flutter::EncodableValue(static_cast<int>((motors >> 16) & 255));
             event[flutter::EncodableValue("token")] = flutter::EncodableValue(static_cast<int64_t>(token));
             event[flutter::EncodableValue("low")] = flutter::EncodableValue(static_cast<int>(((motors >> 8) & 255) * 257));
             event[flutter::EncodableValue("high")] = flutter::EncodableValue(static_cast<int>((motors & 255) * 257));

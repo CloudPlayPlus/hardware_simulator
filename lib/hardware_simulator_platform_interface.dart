@@ -544,7 +544,9 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 }
 
 class GamepadRumbleEvent {
-  const GamepadRumbleEvent(this.token, this.lowFrequency, this.highFrequency);
+  const GamepadRumbleEvent(
+      this.controllerId, this.token, this.lowFrequency, this.highFrequency);
+  final int controllerId;
   final int token;
   final int lowFrequency;
   final int highFrequency;
