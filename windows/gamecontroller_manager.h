@@ -13,6 +13,7 @@ public:
   static int CreateGameController();
   static bool RemoveGameController(int id);
   static bool SubscribeRumble(int id, int token, HWND window, UINT message);
+  static bool ResolveRumble(WPARAM cookie, int& id, int& token);
   static void StopRumbleNotifications();
   static bool DoControllerAction(int id, std::string& action);
 

@@ -25,5 +25,18 @@ int main() {
     return 1;
   }
   registry.Remove(new_cookie);
-  return registry.Lookup(new_cookie).has_value() ? 1 : 0;
+  if (registry.Lookup(new_cookie).has_value())
+    return 1;
+
+  // A queued message carries its cookie even if Dart restarts and reuses
+  // exactly the same slot and token. Revalidate at window-thread delivery.
+  const auto restarted_cookie = registry.Register({1, 2, 17, 1});
+  const auto restarted = registry.Lookup(restarted_cookie);
+  if (!restarted || restarted->token != copied_callback->token ||
+      restarted->controller_id != copied_callback->controller_id ||
+      registry.Lookup(old_cookie).has_value()) {
+    return 1;
+  }
+  registry.Remove(restarted_cookie);
+  return 0;
 }

@@ -27,10 +27,19 @@ void UnregisterRumble(PVIGEM_TARGET target, RumbleContext& context) {
 void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR small_motor, UCHAR, LPVOID user) {
   const auto context = RumbleCallbacks().Lookup(reinterpret_cast<uintptr_t>(user));
   if (!context) return;
-  PostMessageW(reinterpret_cast<HWND>(context->window), context->message, static_cast<WPARAM>(context->token),
-      static_cast<LPARAM>((static_cast<unsigned>(context->controller_id) << 16) |
-          (static_cast<unsigned>(large_motor) << 8) | small_motor));
+  PostMessageW(reinterpret_cast<HWND>(context->window), context->message, reinterpret_cast<WPARAM>(user),
+      static_cast<LPARAM>((static_cast<unsigned>(large_motor) << 8) | small_motor));
 }
+}
+
+bool GameControllerManager::ResolveRumble(WPARAM cookie, int& id, int& token) {
+  // Resolve on the same window thread that handles subscribe/remove. A
+  // callback may have copied its metadata before its registration was removed.
+  const auto context = RumbleCallbacks().Lookup(cookie);
+  if (!context) return false;
+  id = context->controller_id;
+  token = context->token;
+  return true;
 }
 
 bool GameControllerManager::SubscribeRumble(int id, int token, HWND window, UINT message) {

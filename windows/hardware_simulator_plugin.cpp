@@ -1803,10 +1803,13 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         return;
       }
       rumble_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
-          [this](HWND, UINT message, WPARAM token, LPARAM motors) -> std::optional<LRESULT> {
+          [this](HWND, UINT message, WPARAM cookie, LPARAM motors) -> std::optional<LRESULT> {
             if (message != rumble_message_id_) return std::nullopt;
+            int id = 0;
+            int token = 0;
+            if (!GameControllerManager::ResolveRumble(cookie, id, token)) return 0;
             flutter::EncodableMap event;
-            event[flutter::EncodableValue("id")] = flutter::EncodableValue(static_cast<int>((motors >> 16) & 255));
+            event[flutter::EncodableValue("id")] = flutter::EncodableValue(id);
             event[flutter::EncodableValue("token")] = flutter::EncodableValue(static_cast<int64_t>(token));
             event[flutter::EncodableValue("low")] = flutter::EncodableValue(static_cast<int>(((motors >> 8) & 255) * 257));
             event[flutter::EncodableValue("high")] = flutter::EncodableValue(static_cast<int>((motors & 255) * 257));
