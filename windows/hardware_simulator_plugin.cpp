@@ -1790,7 +1790,7 @@ void HardwareSimulatorPlugin::HandleMethodCall(
       return;
     }
     if (!rumble_proc_id_) {
-      const auto* view = registrar_ ? registrar_->GetView() : nullptr;
+      auto* view = registrar_ ? registrar_->GetView() : nullptr;
       const auto window = view ? view->GetNativeWindow() : nullptr;
       if (!window) {
         result->Error("rumble_unavailable", "No window for gamepad feedback");
