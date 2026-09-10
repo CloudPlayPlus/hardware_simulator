@@ -53,12 +53,14 @@ void main() {
     addTearDown(() => HardwareSimulatorPlatform.instance = previousPlatform);
     const channel = MethodChannel('hardware_simulator');
     final tokens = <int>[];
+    final actions = <Object?>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
       if (call.method == 'subscribeGamepadRumble') {
         tokens.add((call.arguments as Map)['token'] as int);
       }
       if (call.method == 'removeGameController') return 1;
+      if (call.method == 'doControlAction') actions.add(call.arguments);
       return null;
     });
     addTearDown(() => TestDefaultBinaryMessengerBinding
@@ -67,9 +69,16 @@ void main() {
     final first = GameController(1);
     await first.enableRumbleFeedback();
     await first.dispose();
+    await expectLater(first.simulate('0 0 0 0 0 0 0'), throwsStateError);
     final replacement = GameController(1);
     await replacement.enableRumbleFeedback();
     await expectLater(first.enableRumbleFeedback(), throwsStateError);
+    await expectLater(first.simulate('4096 0 0 0 0 0 0'), throwsStateError);
+    expect(actions, isEmpty);
+    await replacement.simulate('0 0 0 0 0 0 0');
+    expect(actions, [
+      {'id': 1, 'action': '0 0 0 0 0 0 0'}
+    ]);
     expect(tokens, hasLength(2));
     expect(tokens[0], isNot(tokens[1]));
     final events = <GamepadRumbleEvent>[];

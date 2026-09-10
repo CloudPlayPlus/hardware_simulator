@@ -123,6 +123,10 @@ bool GameControllerManager::RemoveGameController(int id) {
 }
 
 bool GameControllerManager::DoControllerAction(int id, std::string& action) {
+    if (id < 1 || id > 4 || controllers[id - 1] == nullptr) {
+        CPPLOG_WARN("GAMEPAD", "Cannot update unavailable game controller slot: %d", id);
+        return false;
+    }
     std::istringstream iss(action);
 
     _XINPUT_GAMEPAD gamepad;

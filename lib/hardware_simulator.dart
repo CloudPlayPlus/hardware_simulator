@@ -163,7 +163,9 @@ class GameController {
   }
 
   Future<void> simulate(String action) async {
-    HardwareSimulatorPlatform.instance.doControllerAction(controllerId, action);
+    if (_disposed) throw StateError('Game controller has been disposed');
+    await HardwareSimulatorPlatform.instance
+        .doControllerAction(controllerId, action);
   }
 }
 
