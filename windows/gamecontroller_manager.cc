@@ -1,5 +1,6 @@
 #include "gamecontroller_manager.h"
 #include "cpp_log_shim.h"
+#include "rumble_callback_registry.h"
 
 #include <sstream>
 #include <Xinput.h>
@@ -7,6 +8,63 @@
 PVIGEM_CLIENT GameControllerManager::vigem_client = nullptr;
 bool GameControllerManager::initialized = false;
 std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
+
+namespace {
+struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; int id = 0; bool registered = false; uintptr_t cookie = 0; };
+std::array<RumbleContext, 4> rumble_contexts;
+RumbleCallbackRegistry& RumbleCallbacks() {
+  // SDK callbacks can outlive plugin teardown. The registry has process
+  // lifetime, while its bounded active entries are removed on unregister.
+  static auto* registry = new RumbleCallbackRegistry();
+  return *registry;
+}
+void UnregisterRumble(PVIGEM_TARGET target, RumbleContext& context) {
+  RumbleCallbacks().Remove(context.cookie);
+  context.cookie = 0;
+  if (context.registered) vigem_target_x360_unregister_notification(target);
+  context.registered = false;
+}
+void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR small_motor, UCHAR, LPVOID user) {
+  const auto context = RumbleCallbacks().Lookup(reinterpret_cast<uintptr_t>(user));
+  if (!context) return;
+  PostMessageW(reinterpret_cast<HWND>(context->window), context->message, reinterpret_cast<WPARAM>(user),
+      static_cast<LPARAM>((static_cast<unsigned>(large_motor) << 8) | small_motor));
+}
+}
+
+bool GameControllerManager::ResolveRumble(WPARAM cookie, int& id, int& token) {
+  // Resolve on the same window thread that handles subscribe/remove. A
+  // callback may have copied its metadata before its registration was removed.
+  const auto context = RumbleCallbacks().Lookup(cookie);
+  if (!context) return false;
+  id = context->controller_id;
+  token = context->token;
+  return true;
+}
+
+bool GameControllerManager::SubscribeRumble(int id, int token, HWND window, UINT message) {
+  if (id < 1 || id > 4 || !controllers[id - 1] || !window || !message) return false;
+  auto& context = rumble_contexts[id - 1];
+  UnregisterRumble(controllers[id - 1], context);
+  const auto cookie = RumbleCallbacks().Register({reinterpret_cast<uintptr_t>(window), message, token, id});
+  if (!cookie) return false;
+  context = {window, message, token, id, false, cookie};
+  const auto status = vigem_target_x360_register_notification(vigem_client, controllers[id - 1], OnRumble, reinterpret_cast<LPVOID>(cookie));
+  context.registered = VIGEM_SUCCESS(status);
+  if (!context.registered) {
+    RumbleCallbacks().Remove(cookie);
+    context.cookie = 0;
+  }
+  return context.registered;
+}
+
+void GameControllerManager::StopRumbleNotifications() {
+  for (int i = 0; i < 4; ++i) {
+    if (controllers[i] && rumble_contexts[i].registered) {
+      UnregisterRumble(controllers[i], rumble_contexts[i]);
+    }
+  }
+}
 
 int GameControllerManager::InitializeVigem() {
   vigem_client = vigem_alloc();
@@ -65,6 +123,10 @@ bool GameControllerManager::RemoveGameController(int id) {
 
   int index = id - 1;
   if (controllers[index] != nullptr) {
+    const bool had_rumble = rumble_contexts[index].registered;
+    if (had_rumble) {
+      UnregisterRumble(controllers[index], rumble_contexts[index]);
+    }
     const auto pir = vigem_target_remove(vigem_client, controllers[index]);
     //
     // Error handling
@@ -72,8 +134,14 @@ bool GameControllerManager::RemoveGameController(int id) {
     if (!VIGEM_SUCCESS(pir)) {
         CPPLOG_ERROR("GAMEPAD", "Game controller removal failed: 0x%X",
                      static_cast<unsigned int>(pir));
+        const auto& context = rumble_contexts[index];
+        if (had_rumble && !SubscribeRumble(id, context.token, context.window, context.message)) {
+          CPPLOG_WARN("GAMEPAD", "Unable to restore gamepad rumble notification");
+        }
         return false;
     }
+    vigem_target_free(controllers[index]);
+    controllers[index] = nullptr;
     CPPLOG_INFO("GAMEPAD", "Game controller removed from slot %d", id);
     return true;
   }
@@ -83,6 +151,10 @@ bool GameControllerManager::RemoveGameController(int id) {
 }
 
 bool GameControllerManager::DoControllerAction(int id, std::string& action) {
+    if (id < 1 || id > 4 || controllers[id - 1] == nullptr) {
+        CPPLOG_WARN("GAMEPAD", "Cannot update unavailable game controller slot: %d", id);
+        return false;
+    }
     std::istringstream iss(action);
 
     _XINPUT_GAMEPAD gamepad;

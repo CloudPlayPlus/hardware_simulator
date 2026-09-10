@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'hardware_simulator_platform_interface.dart';
 export 'hardware_simulator_platform_interface.dart'
     show
+        GamepadRumbleEvent,
         DisplayCountChangedCallback,
         TrackpadScrollCallback,
         TrackpadScrollEvent,
@@ -122,6 +124,20 @@ class GameController {
   int controllerId;
 
   GameController(this.controllerId);
+  static int _nextRumbleToken = 0;
+  final int _rumbleToken = ++_nextRumbleToken;
+  bool _disposed = false;
+  Future<void>? _disposal;
+  Stream<GamepadRumbleEvent> get rumbleEvents =>
+      HardwareSimulatorPlatform.instance.gamepadRumbleEvents.where((event) =>
+          !_disposed &&
+          event.controllerId == controllerId &&
+          event.token == _rumbleToken);
+  Future<void> enableRumbleFeedback() async {
+    if (_disposed) throw StateError('Game controller has been disposed');
+    await HardwareSimulatorPlatform.instance
+        .subscribeGamepadRumble(controllerId, _rumbleToken);
+  }
 
   static Future<GameController?> createGameController() async {
     int id = await HardwareSimulatorPlatform.instance.createGameController();
@@ -130,13 +146,28 @@ class GameController {
     return GameController(id);
   }
 
-  Future<void> dispose() async {
-    if (controllerId < 0) return;
-    await HardwareSimulatorPlatform.instance.removeGameController(controllerId);
+  Future<void> dispose() {
+    if (_disposal != null) return _disposal!;
+    if (_disposed || controllerId < 0) return Future<void>.value();
+    _disposed = true;
+    return _disposal = _removeController();
+  }
+
+  Future<void> _removeController() async {
+    try {
+      await HardwareSimulatorPlatform.instance
+          .removeGameController(controllerId);
+    } catch (_) {
+      _disposed = false;
+      _disposal = null;
+      rethrow;
+    }
   }
 
   Future<void> simulate(String action) async {
-    HardwareSimulatorPlatform.instance.doControllerAction(controllerId, action);
+    if (_disposed) throw StateError('Game controller has been disposed');
+    await HardwareSimulatorPlatform.instance
+        .doControllerAction(controllerId, action);
   }
 }
 

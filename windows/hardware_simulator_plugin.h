@@ -81,6 +81,9 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   static void notifyDisplayCountChanged(int displayCount);
 
  private:
+  std::optional<int> rumble_proc_id_;
+  UINT rumble_message_id_ = 0;
+  HWND rumble_window_ = nullptr;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::unique_ptr<std::thread> monitor_thread_;
   std::unique_ptr<WindowsEditingEventMonitor> windows_editing_event_monitor_;
