@@ -172,6 +172,11 @@ if(include_${PROJECT_NAME}_tests)
   include(GoogleTest)
   gtest_discover_tests(${TEST_RUNNER})
 
+  add_executable(rumble_callback_registry_test
+    "test/rumble_callback_registry_test.cpp")
+  target_compile_features(rumble_callback_registry_test PRIVATE cxx_std_17)
+  add_test(NAME rumble_callback_registry_test COMMAND rumble_callback_registry_test)
+
   # The example opts into tests as part of its normal build. Run the registered
   # cases as well as compiling them so assertion failures fail validation.
   add_custom_target(${TEST_RUNNER}_run ALL
@@ -179,7 +184,7 @@ if(include_${PROJECT_NAME}_tests)
       --test-dir "${CMAKE_BINARY_DIR}"
       --build-config "$<CONFIG>"
       --output-on-failure
-    DEPENDS ${TEST_RUNNER}
+    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test
     USES_TERMINAL
   )
 endif()

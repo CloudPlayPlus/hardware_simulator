@@ -1,5 +1,6 @@
 #include "gamecontroller_manager.h"
 #include "cpp_log_shim.h"
+#include "rumble_callback_registry.h"
 
 #include <sstream>
 #include <Xinput.h>
@@ -9,12 +10,25 @@ bool GameControllerManager::initialized = false;
 std::array<PVIGEM_TARGET, 4> GameControllerManager::controllers = {};
 
 namespace {
-struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; int id = 0; bool registered = false; };
+struct RumbleContext { HWND window = nullptr; UINT message = 0; int token = 0; int id = 0; bool registered = false; uintptr_t cookie = 0; };
 std::array<RumbleContext, 4> rumble_contexts;
+RumbleCallbackRegistry& RumbleCallbacks() {
+  // SDK callbacks can outlive plugin teardown. The registry has process
+  // lifetime, while its bounded active entries are removed on unregister.
+  static auto* registry = new RumbleCallbackRegistry();
+  return *registry;
+}
+void UnregisterRumble(PVIGEM_TARGET target, RumbleContext& context) {
+  RumbleCallbacks().Remove(context.cookie);
+  context.cookie = 0;
+  if (context.registered) vigem_target_x360_unregister_notification(target);
+  context.registered = false;
+}
 void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR small_motor, UCHAR, LPVOID user) {
-  const auto* context = static_cast<RumbleContext*>(user);
-  PostMessageW(context->window, context->message, static_cast<WPARAM>(context->token),
-      static_cast<LPARAM>((static_cast<unsigned>(context->id) << 16) |
+  const auto context = RumbleCallbacks().Lookup(reinterpret_cast<uintptr_t>(user));
+  if (!context) return;
+  PostMessageW(reinterpret_cast<HWND>(context->window), context->message, static_cast<WPARAM>(context->token),
+      static_cast<LPARAM>((static_cast<unsigned>(context->controller_id) << 16) |
           (static_cast<unsigned>(large_motor) << 8) | small_motor));
 }
 }
@@ -22,18 +36,23 @@ void CALLBACK OnRumble(PVIGEM_CLIENT, PVIGEM_TARGET, UCHAR large_motor, UCHAR sm
 bool GameControllerManager::SubscribeRumble(int id, int token, HWND window, UINT message) {
   if (id < 1 || id > 4 || !controllers[id - 1] || !window || !message) return false;
   auto& context = rumble_contexts[id - 1];
-  if (context.registered) vigem_target_x360_unregister_notification(controllers[id - 1]);
-  context = {window, message, token, id, false};
-  const auto status = vigem_target_x360_register_notification(vigem_client, controllers[id - 1], OnRumble, &context);
+  UnregisterRumble(controllers[id - 1], context);
+  const auto cookie = RumbleCallbacks().Register({reinterpret_cast<uintptr_t>(window), message, token, id});
+  if (!cookie) return false;
+  context = {window, message, token, id, false, cookie};
+  const auto status = vigem_target_x360_register_notification(vigem_client, controllers[id - 1], OnRumble, reinterpret_cast<LPVOID>(cookie));
   context.registered = VIGEM_SUCCESS(status);
+  if (!context.registered) {
+    RumbleCallbacks().Remove(cookie);
+    context.cookie = 0;
+  }
   return context.registered;
 }
 
 void GameControllerManager::StopRumbleNotifications() {
   for (int i = 0; i < 4; ++i) {
     if (controllers[i] && rumble_contexts[i].registered) {
-      vigem_target_x360_unregister_notification(controllers[i]);
-      rumble_contexts[i].registered = false;
+      UnregisterRumble(controllers[i], rumble_contexts[i]);
     }
   }
 }
@@ -97,8 +116,7 @@ bool GameControllerManager::RemoveGameController(int id) {
   if (controllers[index] != nullptr) {
     const bool had_rumble = rumble_contexts[index].registered;
     if (had_rumble) {
-      vigem_target_x360_unregister_notification(controllers[index]);
-      rumble_contexts[index].registered = false;
+      UnregisterRumble(controllers[index], rumble_contexts[index]);
     }
     const auto pir = vigem_target_remove(vigem_client, controllers[index]);
     //
