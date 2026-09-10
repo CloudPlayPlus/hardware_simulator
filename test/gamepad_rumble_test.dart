@@ -7,29 +7,34 @@ import 'package:hardware_simulator/hardware_simulator_platform_interface.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('failed disposal can be retried and successful disposal is idempotent',
-      () async {
-    final previousPlatform = HardwareSimulatorPlatform.instance;
-    HardwareSimulatorPlatform.instance = MethodChannelHardwareSimulator();
-    addTearDown(() => HardwareSimulatorPlatform.instance = previousPlatform);
-    const channel = MethodChannel('hardware_simulator');
-    var attempts = 0;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-      if (call.method == 'removeGameController' && ++attempts == 1) {
-        throw PlatformException(code: 'temporary_failure');
-      }
-      return null;
+  for (final throwsError in [true, false]) {
+    test(
+        'failed disposal ($throwsError) can be retried and successful disposal is idempotent',
+        () async {
+      final previousPlatform = HardwareSimulatorPlatform.instance;
+      HardwareSimulatorPlatform.instance = MethodChannelHardwareSimulator();
+      addTearDown(() => HardwareSimulatorPlatform.instance = previousPlatform);
+      const channel = MethodChannel('hardware_simulator');
+      var attempts = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'removeGameController' && ++attempts == 1) {
+          if (throwsError) throw PlatformException(code: 'temporary_failure');
+          return 0; // Windows returns the boolean removal result as an integer.
+        }
+        return 1;
+      });
+      addTearDown(() => TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      final controller = GameController(1);
+      await expectLater(
+          controller.dispose(), throwsA(isA<PlatformException>()));
+      await controller.dispose();
+      await controller.dispose();
+      expect(attempts, 2);
     });
-    addTearDown(() => TestDefaultBinaryMessengerBinding
-        .instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, null));
-    final controller = GameController(1);
-    await expectLater(controller.dispose(), throwsA(isA<PlatformException>()));
-    await controller.dispose();
-    await controller.dispose();
-    expect(attempts, 2);
-  });
+  }
   test('late feedback cannot reach a replacement controller in the same slot',
       () async {
     final previousPlatform = HardwareSimulatorPlatform.instance;
@@ -42,6 +47,7 @@ void main() {
       if (call.method == 'subscribeGamepadRumble') {
         tokens.add((call.arguments as Map)['token'] as int);
       }
+      if (call.method == 'removeGameController') return 1;
       return null;
     });
     addTearDown(() => TestDefaultBinaryMessengerBinding

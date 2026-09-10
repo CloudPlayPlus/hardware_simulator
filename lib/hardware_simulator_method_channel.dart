@@ -652,9 +652,16 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   @override
   Future<void> removeGameController(int controllerId) async {
-    await methodChannel.invokeMethod('removeGameController', {
+    final removed =
+        await methodChannel.invokeMethod<int>('removeGameController', {
       'id': controllerId,
     });
+    if (removed != 1) {
+      throw PlatformException(
+        code: 'gamepad_remove_failed',
+        message: 'Unable to remove virtual gamepad $controllerId',
+      );
+    }
   }
 
   @override
