@@ -127,6 +127,7 @@ class GameController {
   static int _nextRumbleToken = 0;
   final int _rumbleToken = ++_nextRumbleToken;
   bool _disposed = false;
+  Future<void>? _disposal;
   Stream<GamepadRumbleEvent> get rumbleEvents =>
       HardwareSimulatorPlatform.instance.gamepadRumbleEvents
           .where((event) => !_disposed && event.token == _rumbleToken);
@@ -143,14 +144,20 @@ class GameController {
     return GameController(id);
   }
 
-  Future<void> dispose() async {
-    if (_disposed || controllerId < 0) return;
+  Future<void> dispose() {
+    if (_disposal != null) return _disposal!;
+    if (_disposed || controllerId < 0) return Future<void>.value();
     _disposed = true;
+    return _disposal = _removeController();
+  }
+
+  Future<void> _removeController() async {
     try {
       await HardwareSimulatorPlatform.instance
           .removeGameController(controllerId);
     } catch (_) {
       _disposed = false;
+      _disposal = null;
       rethrow;
     }
   }

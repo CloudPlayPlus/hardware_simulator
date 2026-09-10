@@ -16,9 +16,11 @@ void main() {
       addTearDown(() => HardwareSimulatorPlatform.instance = previousPlatform);
       const channel = MethodChannel('hardware_simulator');
       var attempts = 0;
+      final release = Completer<void>();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'removeGameController' && ++attempts == 1) {
+          await release.future;
           if (throwsError) throw PlatformException(code: 'temporary_failure');
           return 0; // Windows returns the boolean removal result as an integer.
         }
@@ -28,8 +30,17 @@ void main() {
           .instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null));
       final controller = GameController(1);
-      await expectLater(
-          controller.dispose(), throwsA(isA<PlatformException>()));
+      final first = controller.dispose();
+      final concurrent = controller.dispose();
+      expect(identical(first, concurrent), isTrue);
+      final firstFailure =
+          expectLater(first, throwsA(isA<PlatformException>()));
+      final concurrentFailure =
+          expectLater(concurrent, throwsA(isA<PlatformException>()));
+      await pumpEventQueue();
+      expect(attempts, 1);
+      release.complete();
+      await Future.wait([firstFailure, concurrentFailure]);
       await controller.dispose();
       await controller.dispose();
       expect(attempts, 2);
