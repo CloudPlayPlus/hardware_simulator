@@ -1785,9 +1785,23 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         removeDisplayCountChangedCallback(callbackID);
         result->Success(nullptr);
   } else if (method_call.method_name() == "subscribeGamepadRumble") {
+    if (!args) {
+      result->Error("rumble_unavailable", "Missing gamepad feedback arguments");
+      return;
+    }
     if (!rumble_proc_id_) {
+      const auto* view = registrar_ ? registrar_->GetView() : nullptr;
+      const auto window = view ? view->GetNativeWindow() : nullptr;
+      if (!window) {
+        result->Error("rumble_unavailable", "No window for gamepad feedback");
+        return;
+      }
       rumble_message_id_ = RegisterWindowMessageW(L"CloudPlayPlus.GamepadRumble");
-      rumble_window_ = GetAncestor(registrar_->GetView()->GetNativeWindow(), GA_ROOT);
+      rumble_window_ = GetAncestor(window, GA_ROOT);
+      if (!rumble_message_id_ || !rumble_window_) {
+        result->Error("rumble_unavailable", "Unable to initialize gamepad feedback window");
+        return;
+      }
       rumble_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
           [this](HWND, UINT message, WPARAM token, LPARAM motors) -> std::optional<LRESULT> {
             if (message != rumble_message_id_) return std::nullopt;

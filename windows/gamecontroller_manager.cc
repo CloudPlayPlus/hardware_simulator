@@ -94,7 +94,8 @@ bool GameControllerManager::RemoveGameController(int id) {
 
   int index = id - 1;
   if (controllers[index] != nullptr) {
-    if (rumble_contexts[index].registered) {
+    const bool had_rumble = rumble_contexts[index].registered;
+    if (had_rumble) {
       vigem_target_x360_unregister_notification(controllers[index]);
       rumble_contexts[index].registered = false;
     }
@@ -105,6 +106,10 @@ bool GameControllerManager::RemoveGameController(int id) {
     if (!VIGEM_SUCCESS(pir)) {
         CPPLOG_ERROR("GAMEPAD", "Game controller removal failed: 0x%X",
                      static_cast<unsigned int>(pir));
+        const auto& context = rumble_contexts[index];
+        if (had_rumble && !SubscribeRumble(id, context.token, context.window, context.message)) {
+          CPPLOG_WARN("GAMEPAD", "Unable to restore gamepad rumble notification");
+        }
         return false;
     }
     vigem_target_free(controllers[index]);

@@ -58,6 +58,8 @@ void main() {
     await first.dispose();
     final replacement = GameController(1);
     await replacement.enableRumbleFeedback();
+    await expectLater(first.enableRumbleFeedback(), throwsStateError);
+    expect(tokens, hasLength(2));
     expect(tokens[0], isNot(tokens[1]));
     final events = <GamepadRumbleEvent>[];
     final subscription = replacement.rumbleEvents.listen(events.add);

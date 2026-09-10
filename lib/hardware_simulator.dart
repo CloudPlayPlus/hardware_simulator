@@ -130,8 +130,11 @@ class GameController {
   Stream<GamepadRumbleEvent> get rumbleEvents =>
       HardwareSimulatorPlatform.instance.gamepadRumbleEvents
           .where((event) => !_disposed && event.token == _rumbleToken);
-  Future<void> enableRumbleFeedback() => HardwareSimulatorPlatform.instance
-      .subscribeGamepadRumble(controllerId, _rumbleToken);
+  Future<void> enableRumbleFeedback() async {
+    if (_disposed) throw StateError('Game controller has been disposed');
+    await HardwareSimulatorPlatform.instance
+        .subscribeGamepadRumble(controllerId, _rumbleToken);
+  }
 
   static Future<GameController?> createGameController() async {
     int id = await HardwareSimulatorPlatform.instance.createGameController();
