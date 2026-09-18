@@ -5,7 +5,9 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -29,21 +31,20 @@ class DesktopServiceInputClient {
   void Close();
 
  private:
-  enum class ServiceState {
-    kDisconnected,
-    kProbing,
-    kConnected,
-  };
-
   DesktopServiceInputClient() = default;
   ~DesktopServiceInputClient();
 
   DesktopServiceInputClient(const DesktopServiceInputClient&) = delete;
   DesktopServiceInputClient& operator=(const DesktopServiceInputClient&) = delete;
 
-  bool EnsureProbeThreadLocked();
-  void RequestProbeLocked();
-  void ProbeLoop();
+  friend class DesktopServiceInputClientTestPeer;
+  struct ControlConnection {
+    DesktopServiceInputClient* client;
+    ~ControlConnection() { client->ClosePipeLocked(); }
+  };
+  bool StartInputThreadLocked();
+  bool EnqueueLocked(const void* data, uint32_t size);
+  void InputLoop(HANDLE write_event);
   HANDLE TryConnect();
   bool EnsureConnectedLocked();
   bool SendRawLocked(const void* data, uint32_t size);
@@ -56,14 +57,21 @@ class DesktopServiceInputClient {
   void ClosePipeLocked();
 
   std::mutex mutex_;
-  std::condition_variable probe_cv_;
-  std::thread probe_thread_;
-  HANDLE pipe_ = INVALID_HANDLE_VALUE;
-  ServiceState state_ = ServiceState::kDisconnected;
+  std::condition_variable input_cv_;
+  std::thread input_thread_;
+  std::deque<std::vector<uint8_t>> input_queue_;
+  HANDLE interrupt_event_ = nullptr;
+  bool input_connected_ = false;
   bool stop_requested_ = false;
-  bool probe_requested_ = false;
-  bool probe_in_flight_ = false;
+  bool reset_requested_ = false;
   bool service_available_ = false;
+  std::wstring pipe_name_ = L"\\\\.\\pipe\\cloudplayplus_desktop_input";
+
+  // 配置查询独占另一条连接；其等待不能持有输入队列的锁。
+  std::mutex control_mutex_;
+  HANDLE pipe_ = INVALID_HANDLE_VALUE;
+  HANDLE control_write_event_ = nullptr;
+  HANDLE control_read_event_ = nullptr;
   uint32_t next_seq_ = 1;
 };
 

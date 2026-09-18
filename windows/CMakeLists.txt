@@ -121,6 +121,7 @@ endif()
 if(include_${PROJECT_NAME}_tests)
   set(TEST_RUNNER "${PROJECT_NAME}_test")
   enable_testing()
+  add_subdirectory(test)
 
   include(FetchContent)
   FetchContent_Declare(
@@ -184,7 +185,7 @@ if(include_${PROJECT_NAME}_tests)
       --test-dir "${CMAKE_BINARY_DIR}"
       --build-config "$<CONFIG>"
       --output-on-failure
-    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test
+    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test
     USES_TERMINAL
   )
 endif()

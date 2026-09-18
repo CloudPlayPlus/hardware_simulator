@@ -1,0 +1,17 @@
+name: Windows input transport
+on:
+  pull_request:
+    paths: ['windows/**', '.github/workflows/windows-input.yml']
+  push:
+    branches: [main]
+    paths: ['windows/**', '.github/workflows/windows-input.yml']
+permissions:
+  contents: read
+jobs:
+  input-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S windows/test -B build-input -A x64
+      - run: cmake --build build-input --config Release
+      - run: ctest --test-dir build-input -C Release --output-on-failure --timeout 30
