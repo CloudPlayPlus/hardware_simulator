@@ -1,12 +1,13 @@
 #include "desktop_service_input_client.h"
 
 #include <cstring>
+#include <chrono>
+
+#include "cpp_log_shim.h"
 
 namespace hardware_simulator {
 namespace {
 
-constexpr const wchar_t* kInputPipeName =
-    L"\\\\.\\pipe\\cloudplayplus_desktop_input";
 constexpr uint32_t kMsgKeyInput = 0x02;
 constexpr uint32_t kMsgMouseInput = 0x03;
 constexpr uint32_t kMsgGetCustomDisplayConfigs = 0x04;
@@ -114,6 +115,33 @@ bool IsValidConfig(const VirtualDisplay::DisplayConfig& config) {
   return config.width > 0 && config.height > 0 && config.refresh_rate > 0;
 }
 
+// 取消只是请求；完成前不能释放 OVERLAPPED 或发送缓冲区。
+bool CompleteIo(HANDLE pipe, OVERLAPPED& ov, DWORD timeout,
+                HANDLE interrupt, DWORD& transferred) {
+  HANDLE events[] = {ov.hEvent, interrupt};
+  const DWORD wait = WaitForMultipleObjects(interrupt ? 2 : 1, events,
+                                           FALSE, timeout);
+  if (wait == WAIT_OBJECT_0) {
+    return GetOverlappedResult(pipe, &ov, &transferred, FALSE) != FALSE;
+  }
+  CancelIoEx(pipe, &ov);
+  GetOverlappedResult(pipe, &ov, &transferred, TRUE);
+  return false;
+}
+
+bool WriteMessage(HANDLE pipe, HANDLE event, HANDLE interrupt,
+                  const void* data, uint32_t size) {
+  OVERLAPPED ov{};
+  ov.hEvent = event;
+  ResetEvent(event);
+  DWORD written = 0;
+  if (!WriteFile(pipe, data, size, &written, &ov)) {
+    if (GetLastError() != ERROR_IO_PENDING ||
+        !CompleteIo(pipe, ov, kWriteTimeoutMs, interrupt, written)) return false;
+  }
+  return written == size;
+}
+
 }  // namespace
 
 DesktopServiceInputClient& DesktopServiceInputClient::Instance() {
@@ -129,16 +157,19 @@ void DesktopServiceInputClient::SetServiceAvailable(bool available) {
   std::lock_guard<std::mutex> lock(mutex_);
   service_available_ = available;
   if (!service_available_) {
-    ClosePipeLocked();
-    probe_requested_ = false;
-    return;
+    reset_requested_ = true;
+    input_connected_ = false;
+    input_queue_.clear();
+    if (interrupt_event_) SetEvent(interrupt_event_);
+  } else {
+    StartInputThreadLocked();
   }
-  RequestProbeLocked();
+  input_cv_.notify_all();
 }
 
 bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (pipe_ == INVALID_HANDLE_VALUE) {
+  if (!input_connected_) {
     return false;
   }
 
@@ -160,7 +191,7 @@ bool DesktopServiceInputClient::SendTouchInput(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (pipe_ == INVALID_HANDLE_VALUE) {
+  if (!input_connected_) {
     return false;
   }
 
@@ -192,7 +223,7 @@ bool DesktopServiceInputClient::SendTouchInput(
   header.payload_size = sizeof(TouchInputPayload);
   memcpy(buffer, &header, sizeof(header));
   memcpy(buffer + sizeof(header), &payload, sizeof(payload));
-  return SendRawLocked(buffer, sizeof(buffer));
+  return EnqueueLocked(buffer, sizeof(buffer));
 }
 
 bool DesktopServiceInputClient::SendPenInput(
@@ -202,7 +233,7 @@ bool DesktopServiceInputClient::SendPenInput(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (pipe_ == INVALID_HANDLE_VALUE) {
+  if (!input_connected_) {
     return false;
   }
 
@@ -225,12 +256,13 @@ bool DesktopServiceInputClient::SendPenInput(
   header.payload_size = sizeof(PenInputPayload);
   memcpy(buffer, &header, sizeof(header));
   memcpy(buffer + sizeof(header), &payload, sizeof(payload));
-  return SendRawLocked(buffer, sizeof(buffer));
+  return EnqueueLocked(buffer, sizeof(buffer));
 }
 
 bool DesktopServiceInputClient::GetCustomDisplayConfigs(
     std::vector<VirtualDisplay::DisplayConfig>& configs) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(control_mutex_);
+  ControlConnection connection{this};
   if (!EnsureConnectedLocked()) {
     return false;
   }
@@ -276,7 +308,8 @@ bool DesktopServiceInputClient::SetCustomDisplayConfigs(
         static_cast<uint32_t>(configs[i].refresh_rate);
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(control_mutex_);
+  ControlConnection connection{this};
   if (!EnsureConnectedLocked()) {
     return false;
   }
@@ -293,111 +326,136 @@ bool DesktopServiceInputClient::SetCustomDisplayConfigs(
 }
 
 void DesktopServiceInputClient::Close() {
-  std::thread probe_thread;
+  std::thread input_thread;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    ClosePipeLocked();
     stop_requested_ = true;
-    probe_requested_ = false;
-    probe_cv_.notify_all();
-    if (probe_thread_.joinable()) {
-      probe_thread = std::move(probe_thread_);
+    service_available_ = false;
+    input_connected_ = false;
+    input_queue_.clear();
+    if (interrupt_event_) SetEvent(interrupt_event_);
+    input_cv_.notify_all();
+    if (input_thread_.joinable()) {
+      input_thread = std::move(input_thread_);
     }
   }
-
-  if (probe_thread.joinable()) {
-    probe_thread.join();
+  if (input_thread.joinable()) input_thread.join();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (interrupt_event_) CloseHandle(interrupt_event_);
+    interrupt_event_ = nullptr;
   }
+  std::lock_guard<std::mutex> lock(control_mutex_);
+  ClosePipeLocked();
 }
 
-bool DesktopServiceInputClient::EnsureProbeThreadLocked() {
-  if (probe_thread_.joinable()) {
-    return true;
+bool DesktopServiceInputClient::StartInputThreadLocked() {
+  if (input_thread_.joinable()) return true;
+  interrupt_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!interrupt_event_) return false;
+  HANDLE write_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!write_event) {
+    CloseHandle(interrupt_event_);
+    interrupt_event_ = nullptr;
+    return false;
   }
-
   stop_requested_ = false;
   try {
-    probe_thread_ = std::thread(&DesktopServiceInputClient::ProbeLoop, this);
+    input_thread_ = std::thread(&DesktopServiceInputClient::InputLoop, this,
+                                 write_event);
   } catch (...) {
+    CloseHandle(write_event);
+    CloseHandle(interrupt_event_);
+    interrupt_event_ = nullptr;
     return false;
   }
   return true;
 }
 
-void DesktopServiceInputClient::RequestProbeLocked() {
-  if (pipe_ != INVALID_HANDLE_VALUE ||
-      !service_available_ ||
-      probe_requested_ ||
-      probe_in_flight_ ||
-      !EnsureProbeThreadLocked()) {
-    return;
-  }
-
-  state_ = ServiceState::kProbing;
-  probe_requested_ = true;
-  probe_cv_.notify_one();
+bool DesktopServiceInputClient::EnqueueLocked(const void* data, uint32_t size) {
+  if (!input_connected_) return false;
+  const bool wake = input_queue_.empty();
+  const auto* bytes = static_cast<const uint8_t*>(data);
+  input_queue_.emplace_back(bytes, bytes + size);
+  if (wake) input_cv_.notify_one();
+  return true;
 }
 
-void DesktopServiceInputClient::ProbeLoop() {
+void DesktopServiceInputClient::InputLoop(HANDLE write_event) {
+  HANDLE input_pipe = INVALID_HANDLE_VALUE;
+  bool failure_reported = false;
+  std::unique_lock<std::mutex> lock(mutex_);
   for (;;) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    probe_cv_.wait(lock, [this] {
-      return stop_requested_ || probe_requested_;
-    });
-
-    if (stop_requested_) {
-      break;
-    }
-
-    probe_requested_ = false;
-    if (pipe_ != INVALID_HANDLE_VALUE) {
-      state_ = ServiceState::kConnected;
+    if (stop_requested_) break;
+    if (!service_available_ || reset_requested_) {
+      input_connected_ = false;
+      input_queue_.clear();
+      if (input_pipe != INVALID_HANDLE_VALUE) CloseHandle(input_pipe);
+      input_pipe = INVALID_HANDLE_VALUE;
+      ResetEvent(interrupt_event_);
+      reset_requested_ = false;
+      input_cv_.wait(lock, [this] { return stop_requested_ || service_available_; });
       continue;
     }
-
-    state_ = ServiceState::kProbing;
-    probe_in_flight_ = true;
-    lock.unlock();
-
-    HANDLE pipe = TryConnect();
-
-    lock.lock();
-    probe_in_flight_ = false;
-
-    if (stop_requested_) {
-      if (pipe != INVALID_HANDLE_VALUE) {
-        CloseHandle(pipe);
+    if (input_pipe == INVALID_HANDLE_VALUE) {
+      lock.unlock();
+      input_pipe = TryConnect();
+      lock.lock();
+      if (stop_requested_ || !service_available_ || reset_requested_) continue;
+      input_connected_ = input_pipe != INVALID_HANDLE_VALUE;
+      if (!input_connected_) {
+        input_cv_.wait_for(lock, std::chrono::milliseconds(250), [this] {
+          return stop_requested_ || !service_available_;
+        });
       }
-      break;
+      continue;
     }
-
-    if (!service_available_) {
-      if (pipe != INVALID_HANDLE_VALUE) {
-        CloseHandle(pipe);
+    if (input_queue_.empty()) {
+      input_cv_.wait(lock, [this] {
+        return stop_requested_ || !service_available_ || !input_queue_.empty() ||
+               reset_requested_;
+      });
+      continue;
+    }
+    auto packet = std::move(input_queue_.front());
+    input_queue_.pop_front();
+    lock.unlock();
+    const bool ok = WriteMessage(input_pipe, write_event, interrupt_event_,
+                                 packet.data(), static_cast<uint32_t>(packet.size()));
+    lock.lock();
+    if (!ok) {
+      // 不重放结果不确定的输入，避免重复点击或跨连接执行旧输入。
+      input_connected_ = false;
+      input_queue_.clear();
+      CloseHandle(input_pipe);
+      input_pipe = INVALID_HANDLE_VALUE;
+      if (!failure_reported) {
+        CPPLOG_WARN("service_input", "Input pipe write failed; reconnecting");
+        failure_reported = true;
       }
-      state_ = ServiceState::kDisconnected;
-    } else if (pipe != INVALID_HANDLE_VALUE) {
-      if (pipe_ == INVALID_HANDLE_VALUE) {
-        pipe_ = pipe;
-        state_ = ServiceState::kConnected;
-      } else {
-        CloseHandle(pipe);
-      }
+      input_cv_.wait_for(lock, std::chrono::milliseconds(250), [this] {
+        return stop_requested_ || !service_available_;
+      });
     } else {
-      state_ = ServiceState::kDisconnected;
+      failure_reported = false;
     }
   }
+  input_connected_ = false;
+  input_queue_.clear();
+  lock.unlock();
+  if (input_pipe != INVALID_HANDLE_VALUE) CloseHandle(input_pipe);
+  CloseHandle(write_event);
 }
 
 HANDLE DesktopServiceInputClient::TryConnect() {
-  HANDLE pipe = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0,
+  HANDLE pipe = CreateFileW(pipe_name_.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                             nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
                             nullptr);
   if (pipe == INVALID_HANDLE_VALUE) {
     const DWORD err = GetLastError();
     if (err == ERROR_PIPE_BUSY &&
-        WaitNamedPipeW(kInputPipeName, kConnectBusyWaitMs)) {
-      pipe = CreateFileW(kInputPipeName, GENERIC_READ | GENERIC_WRITE, 0,
+        WaitNamedPipeW(pipe_name_.c_str(), kConnectBusyWaitMs)) {
+      pipe = CreateFileW(pipe_name_.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                          nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
                          nullptr);
     }
@@ -417,8 +475,12 @@ HANDLE DesktopServiceInputClient::TryConnect() {
 }
 
 bool DesktopServiceInputClient::EnsureConnectedLocked() {
-  if (!service_available_) {
-    return false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!service_available_ || stop_requested_) {
+      ClosePipeLocked();
+      return false;
+    }
   }
   if (pipe_ != INVALID_HANDLE_VALUE) {
     return true;
@@ -427,49 +489,20 @@ bool DesktopServiceInputClient::EnsureConnectedLocked() {
   HANDLE pipe = TryConnect();
   if (pipe != INVALID_HANDLE_VALUE) {
     pipe_ = pipe;
-    state_ = ServiceState::kConnected;
+    control_write_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    control_read_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!control_write_event_ || !control_read_event_) {
+      ClosePipeLocked();
+      return false;
+    }
     return true;
   }
-
-  RequestProbeLocked();
   return false;
 }
 
 bool DesktopServiceInputClient::SendRawLocked(const void* data, uint32_t size) {
-  OVERLAPPED overlapped = {};
-  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!overlapped.hEvent) {
+  if (!WriteMessage(pipe_, control_write_event_, nullptr, data, size)) {
     ClosePipeLocked();
-    RequestProbeLocked();
-    return false;
-  }
-
-  DWORD written = 0;
-  BOOL ok = WriteFile(pipe_, data, size, &written, &overlapped);
-  if (!ok) {
-    const DWORD err = GetLastError();
-    if (err == ERROR_IO_PENDING) {
-      DWORD wait = WaitForSingleObject(overlapped.hEvent, kWriteTimeoutMs);
-      if (wait != WAIT_OBJECT_0 ||
-          !GetOverlappedResult(pipe_, &overlapped, &written, FALSE)) {
-        CancelIo(pipe_);
-        CloseHandle(overlapped.hEvent);
-        ClosePipeLocked();
-        RequestProbeLocked();
-        return false;
-      }
-    } else {
-      CloseHandle(overlapped.hEvent);
-      ClosePipeLocked();
-      RequestProbeLocked();
-      return false;
-    }
-  }
-
-  CloseHandle(overlapped.hEvent);
-  if (written != size) {
-    ClosePipeLocked();
-    RequestProbeLocked();
     return false;
   }
   return true;
@@ -527,12 +560,8 @@ bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data) {
   data.resize(kMaxMessageSize);
 
   OVERLAPPED overlapped = {};
-  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!overlapped.hEvent) {
-    ClosePipeLocked();
-    RequestProbeLocked();
-    return false;
-  }
+  overlapped.hEvent = control_read_event_;
+  ResetEvent(control_read_event_);
 
   DWORD bytes_read = 0;
   BOOL ok = ReadFile(pipe_, data.data(), static_cast<DWORD>(data.size()),
@@ -540,27 +569,18 @@ bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data) {
   if (!ok) {
     const DWORD err = GetLastError();
     if (err == ERROR_IO_PENDING) {
-      DWORD wait = WaitForSingleObject(overlapped.hEvent, kControlTimeoutMs);
-      if (wait != WAIT_OBJECT_0 ||
-          !GetOverlappedResult(pipe_, &overlapped, &bytes_read, FALSE)) {
-        CancelIo(pipe_);
-        CloseHandle(overlapped.hEvent);
+      if (!CompleteIo(pipe_, overlapped, kControlTimeoutMs, nullptr, bytes_read)) {
         ClosePipeLocked();
-        RequestProbeLocked();
         return false;
       }
     } else {
-      CloseHandle(overlapped.hEvent);
       ClosePipeLocked();
-      RequestProbeLocked();
       return false;
     }
   }
 
-  CloseHandle(overlapped.hEvent);
   if (bytes_read == 0) {
     ClosePipeLocked();
-    RequestProbeLocked();
     return false;
   }
 
@@ -583,7 +603,7 @@ bool DesktopServiceInputClient::SendKeyboardLocked(const KEYBDINPUT& input) {
 
   memcpy(buffer, &header, sizeof(header));
   memcpy(buffer + sizeof(header), &payload, sizeof(payload));
-  return SendRawLocked(buffer, sizeof(buffer));
+  return EnqueueLocked(buffer, sizeof(buffer));
 }
 
 bool DesktopServiceInputClient::SendMouseLocked(const MOUSEINPUT& input) {
@@ -602,7 +622,7 @@ bool DesktopServiceInputClient::SendMouseLocked(const MOUSEINPUT& input) {
 
   memcpy(buffer, &header, sizeof(header));
   memcpy(buffer + sizeof(header), &payload, sizeof(payload));
-  return SendRawLocked(buffer, sizeof(buffer));
+  return EnqueueLocked(buffer, sizeof(buffer));
 }
 
 void DesktopServiceInputClient::ClosePipeLocked() {
@@ -610,9 +630,10 @@ void DesktopServiceInputClient::ClosePipeLocked() {
     CloseHandle(pipe_);
     pipe_ = INVALID_HANDLE_VALUE;
   }
-  if (state_ == ServiceState::kConnected) {
-    state_ = ServiceState::kDisconnected;
-  }
+  if (control_write_event_) CloseHandle(control_write_event_);
+  if (control_read_event_) CloseHandle(control_read_event_);
+  control_write_event_ = nullptr;
+  control_read_event_ = nullptr;
 }
 
 }  // namespace hardware_simulator
