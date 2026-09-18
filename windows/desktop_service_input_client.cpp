@@ -156,15 +156,9 @@ bool CoalesceMouse(std::vector<uint8_t>& previous,
   constexpr DWORD allowed = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
                             MOUSEEVENTF_VIRTUALDESK;
   if (a.flags != b.flags || !(b.flags & MOUSEEVENTF_MOVE) ||
-      (b.flags & ~allowed) || a.data || b.data) return false;
-  if (!(b.flags & MOUSEEVENTF_ABSOLUTE)) {
-    const int64_t dx = static_cast<int64_t>(a.dx) + b.dx;
-    const int64_t dy = static_cast<int64_t>(a.dy) + b.dy;
-    if (dx < INT32_MIN || dx > INT32_MAX || dy < INT32_MIN || dy > INT32_MAX)
-      return false;
-    b.dx = static_cast<int32_t>(dx);
-    b.dy = static_cast<int32_t>(dy);
-  }
+      !(b.flags & MOUSEEVENTF_ABSOLUTE) || (b.flags & ~allowed) ||
+      a.data || b.data) return false;
+  // 相对移动的加速逐包计算，不能用位移求和替代原始采样。
   memcpy(previous.data() + sizeof(before), &b, sizeof(b));
   return true;
 }
