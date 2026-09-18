@@ -142,27 +142,6 @@ bool WriteMessage(HANDLE pipe, HANDLE event, HANDLE interrupt,
   return written == size;
 }
 
-bool CoalesceMouse(std::vector<uint8_t>& previous,
-                   const void* data, uint32_t size) {
-  if (size != sizeof(MsgHeader) + sizeof(MouseInputPayload) ||
-      previous.size() != size) return false;
-  MsgHeader before{}, after{};
-  memcpy(&before, previous.data(), sizeof(before));
-  memcpy(&after, data, sizeof(after));
-  if (before.type != kMsgMouseInput || after.type != kMsgMouseInput) return false;
-  MouseInputPayload a{}, b{};
-  memcpy(&a, previous.data() + sizeof(before), sizeof(a));
-  memcpy(&b, static_cast<const uint8_t*>(data) + sizeof(after), sizeof(b));
-  constexpr DWORD allowed = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
-                            MOUSEEVENTF_VIRTUALDESK;
-  if (a.flags != b.flags || !(b.flags & MOUSEEVENTF_MOVE) ||
-      !(b.flags & MOUSEEVENTF_ABSOLUTE) || (b.flags & ~allowed) ||
-      a.data || b.data) return false;
-  // 相对移动的加速逐包计算，不能用位移求和替代原始采样。
-  memcpy(previous.data() + sizeof(before), &b, sizeof(b));
-  return true;
-}
-
 }  // namespace
 
 DesktopServiceInputClient& DesktopServiceInputClient::Instance() {
@@ -395,9 +374,6 @@ bool DesktopServiceInputClient::StartInputThreadLocked() {
 
 bool DesktopServiceInputClient::EnqueueLocked(const void* data, uint32_t size) {
   if (!input_connected_) return false;
-  if (!input_queue_.empty() && CoalesceMouse(input_queue_.back(), data, size)) {
-    return true;
-  }
   const bool wake = input_queue_.empty();
   const auto* bytes = static_cast<const uint8_t*>(data);
   input_queue_.emplace_back(bytes, bytes + size);

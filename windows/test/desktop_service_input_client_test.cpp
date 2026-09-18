@@ -13,7 +13,7 @@ namespace hardware_simulator {
 class DesktopServiceInputClientTestPeer {
  public:
   static void Run() {
-    // 队列积压时合并位移，离散事件和触摸保持边界。
+    // 异步排队逐条保留原始输入，绝对和相对移动都不能被合并。
     DesktopServiceInputClient queued;
     queued.input_connected_ = true;
     INPUT move{};
@@ -44,14 +44,16 @@ class DesktopServiceInputClientTestPeer {
     CHECK(queued.SendInputMessage(move));
     move.mi.dx = 456;
     CHECK(queued.SendInputMessage(move));
-    CHECK(queued.input_queue_.size() == 7);
+    CHECK(queued.input_queue_.size() == 8);
+    memcpy(&dx, queued.input_queue_[6].data() + 12, sizeof(dx));
+    CHECK(dx == 123);
     memcpy(&dx, queued.input_queue_.back().data() + 12, sizeof(dx));
     CHECK(dx == 456);
     move.mi.dwFlags = MOUSEEVENTF_MOVE;
     move.mi.dx = 2;
     CHECK(queued.SendInputMessage(move));
     CHECK(queued.SendInputMessage(move));
-    CHECK(queued.input_queue_.size() == 9);
+    CHECK(queued.input_queue_.size() == 10);
 
     // 真正的命名管道：服务端停止读取，发送调用仍然快速返回。
     DesktopServiceInputClient client;
