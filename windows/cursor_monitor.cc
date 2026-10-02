@@ -1,4 +1,5 @@
 #include "cursor_monitor.h"
+#include "cursor_position_snapshot.h"
 #include "cpp_log_shim.h"
 #include "hardware_simulator_plugin.h"
 
@@ -25,6 +26,7 @@ static bool hasLastCursorVisible = false;
 // Position monitoring callbacks and state
 static std::map<long long, CursorPositionCallback> positionCallbacks;
 static POINT lastCursorPos = {0, 0};
+static bool hasLastCursorPos = false;
 
 void BindCursorSourceDevicePixelRatio(long long callback_id,
     float source_device_pixel_ratio) {
@@ -540,40 +542,28 @@ struct MousePosition {
     int screenId;
     float xPercent;
     float yPercent;
+    POINT position;
 };
 
-MousePosition GetMousePositionAndScreenId() {
-    POINT cursorPos;
-    GetCursorPos(&cursorPos);
-
-    HMONITOR hMonitor = MonitorFromPoint(cursorPos, MONITOR_DEFAULTTONEAREST);
-
-    MONITORINFOEX monitorInfo;
-    monitorInfo.cbSize = sizeof(MONITORINFOEX);
-    GetMonitorInfo(hMonitor, &monitorInfo);
+std::optional<MousePosition> GetMousePositionAndScreenId() {
+    const auto snapshot = ReadCursorPositionSnapshot();
+    if (!snapshot) return std::nullopt;
 
     // Use HardwareSimulatorPlugin's static monitors
     const auto& monitors_info = hardware_simulator::HardwareSimulatorPlugin::GetStaticMonitors();
     int screenId = -1;
     for (const auto& info : monitors_info) {
-        if (info.rect.left == monitorInfo.rcMonitor.left &&
-            info.rect.top == monitorInfo.rcMonitor.top &&
-            info.rect.right == monitorInfo.rcMonitor.right &&
-            info.rect.bottom == monitorInfo.rcMonitor.bottom) {
+        if (info.rect.left == snapshot->monitor.left &&
+            info.rect.top == snapshot->monitor.top &&
+            info.rect.right == snapshot->monitor.right &&
+            info.rect.bottom == snapshot->monitor.bottom) {
             screenId = info.screen_id;
             break;
         }
     }
 
-    float xPercent = (cursorPos.x - monitorInfo.rcMonitor.left) / 
-                     (float)(monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left);
-    float yPercent = (cursorPos.y - monitorInfo.rcMonitor.top) / 
-                     (float)(monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top);
-    
-    //xPercent = std::max(0.0f, std::min(1.0f, xPercent));
-    //yPercent = std::max(0.0f, std::min(1.0f, yPercent));
-    
-    return {screenId, xPercent, yPercent};
+    return MousePosition{screenId, snapshot->x_percent, snapshot->y_percent,
+                         snapshot->position};
 }
 
 uint16_t EncodeUnitU16(float value) {
@@ -599,30 +589,31 @@ std::vector<uint8_t> CursorPositionPayload(float x, float y) {
     return outputArray;
 }
 
-bool IsCursorVisible() {
+std::optional<bool> IsCursorVisible() {
     CURSORINFO ci = { 0 };
     ci.cbSize = sizeof(CURSORINFO);
 
     if (GetCursorInfo(&ci)) {
         return (ci.flags & CURSOR_SUPPRESSED) == 0;
     }
-    return true;
+    return std::nullopt;
 }
 
 void SyncCursorVisibility() {
-    bool visible = IsCursorVisible();
-    if (hasLastCursorVisible && visible == lastCursorVisible) {
+    const auto visible = IsCursorVisible();
+    if (!visible || (hasLastCursorVisible && *visible == lastCursorVisible)) {
         return;
     }
 
+    const auto mousePos = GetMousePositionAndScreenId();
+    if (!mousePos) return;
     hasLastCursorVisible = true;
-    lastCursorVisible = visible;
-    MousePosition mousePos = GetMousePositionAndScreenId();
-    std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
+    lastCursorVisible = *visible;
+    std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos->xPercent, mousePos->yPercent);
     for (auto callback : callbacks) {
         callback.second(
-            visible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
-            mousePos.screenId,
+            *visible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
+            mousePos->screenId,
             positionBytes);
     }
 }
@@ -649,24 +640,20 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
         std::string str;
         switch (event) {
         case EVENT_OBJECT_HIDE:
-            hasLastCursorVisible = true;
-            lastCursorVisible = false;
-            for (auto callback : callbacks) {
-                MousePosition mousePos = GetMousePositionAndScreenId();
-                std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
-                callback.second(CPP_CURSOR_INVISIBLE, mousePos.screenId, positionBytes);
-            }
-            break;
         case EVENT_OBJECT_SHOW:
+        {
+            const auto mousePos = GetMousePositionAndScreenId();
+            if (!mousePos) break;
             hasLastCursorVisible = true;
-            lastCursorVisible = true;
+            lastCursorVisible = event == EVENT_OBJECT_SHOW;
+            const auto positionBytes = CursorPositionPayload(mousePos->xPercent, mousePos->yPercent);
             for (auto callback : callbacks) {
-                MousePosition mousePos = GetMousePositionAndScreenId();
-                std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
-                callback.second(CPP_CURSOR_VISIBLE, mousePos.screenId, positionBytes);
+                callback.second(lastCursorVisible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
+                                mousePos->screenId, positionBytes);
             }
-            SyncCursorImage();
+            if (lastCursorVisible) SyncCursorImage();
             break;
+        }
         case EVENT_OBJECT_NAMECHANGE:
         {
             SyncCursorImage();
@@ -675,19 +662,18 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
         case EVENT_OBJECT_LOCATIONCHANGE:
         {
             if (positionCallbacks.size() > 0) {
-                POINT currentPos;
-                GetCursorPos(&currentPos);
+                const auto mousePos = GetMousePositionAndScreenId();
+                if (!mousePos) break;
+                const auto currentPos = mousePos->position;
                 
                 // Check if position has changed
-                if (currentPos.x != lastCursorPos.x || currentPos.y != lastCursorPos.y) {
+                if (!hasLastCursorPos || currentPos.x != lastCursorPos.x || currentPos.y != lastCursorPos.y) {
                     lastCursorPos = currentPos;
-                    
-                    // Get mouse position and screen info
-                    MousePosition mousePos = GetMousePositionAndScreenId();
+                    hasLastCursorPos = true;
                     
                     // Notify all position callbacks with direct double values
                     for (auto& callback : positionCallbacks) {
-                        callback.second(CPP_CURSOR_POSITION_CHANGED, mousePos.screenId, mousePos.xPercent, mousePos.yPercent);
+                        callback.second(CPP_CURSOR_POSITION_CHANGED, mousePos->screenId, mousePos->xPercent, mousePos->yPercent);
                     }
                 }
             }
@@ -774,10 +760,13 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
         }
     }
 
-    if (!IsCursorVisible()) {
-        MousePosition mousePos = GetMousePositionAndScreenId();
-        std::vector<uint8_t> positionBytes = CursorPositionPayload(mousePos.xPercent, mousePos.yPercent);
-        callback(CPP_CURSOR_INVISIBLE, mousePos.screenId, positionBytes);
+    const auto visible = IsCursorVisible();
+    if (visible && !*visible) {
+        const auto mousePos = GetMousePositionAndScreenId();
+        if (mousePos) {
+            const auto positionBytes = CursorPositionPayload(mousePos->xPercent, mousePos->yPercent);
+            callback(CPP_CURSOR_INVISIBLE, mousePos->screenId, positionBytes);
+        }
     }
 }
 
@@ -794,11 +783,16 @@ void CursorMonitor::startPositionHook(CursorPositionCallback callback, long long
     positionCallbacks[callback_id] = callback;
     EnsureCursorEventHook();
     if (wasEmpty) {
-        GetCursorPos(&lastCursorPos);
+        hasLastCursorPos = false;
     }
 
-    MousePosition mousePos = GetMousePositionAndScreenId();
-    callback(CPP_CURSOR_POSITION_CHANGED, mousePos.screenId, mousePos.xPercent, mousePos.yPercent);
+    const auto mousePos = GetMousePositionAndScreenId();
+    if (!mousePos) return;
+    if (wasEmpty) {
+        lastCursorPos = mousePos->position;
+        hasLastCursorPos = true;
+    }
+    callback(CPP_CURSOR_POSITION_CHANGED, mousePos->screenId, mousePos->xPercent, mousePos->yPercent);
 }
 
 void CursorMonitor::endPositionHook(long long callback_id) {

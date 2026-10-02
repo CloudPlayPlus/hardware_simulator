@@ -24,6 +24,7 @@ list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.h"
   "cursor_monitor.cc"
   "cursor_monitor.h"
+  "cursor_position_snapshot.h"
   "cpp_log_shim.h"
   "gamecontroller_manager.cc"
   "gamecontroller_manager.h"
@@ -185,7 +186,7 @@ if(include_${PROJECT_NAME}_tests)
       --test-dir "${CMAKE_BINARY_DIR}"
       --build-config "$<CONFIG>"
       --output-on-failure
-    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test
+    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test cursor_position_snapshot_test
     USES_TERMINAL
   )
 endif()
