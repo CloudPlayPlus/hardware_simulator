@@ -23,3 +23,10 @@ jobs:
             -o "$RUNNER_TEMP/cloudplayplus_vd_helper"
           xcrun swiftc -frontend -parse macos/Classes/HardwareSimulatorPlugin.swift
           bash -n macos/VirtualDisplayHelper/test_mode_updates.sh
+          xcrun clang -O2 -fobjc-arc -ObjC -mmacosx-version-min=14.0 \
+            -Wall -Wextra -Werror \
+            -framework Foundation -framework CoreGraphics \
+            -F/System/Library/PrivateFrameworks -framework SkyLight \
+            macos/VirtualDisplayHelper/test_mode_selection.m \
+            -o "$RUNNER_TEMP/test_mode_selection"
+          "$RUNNER_TEMP/test_mode_selection"

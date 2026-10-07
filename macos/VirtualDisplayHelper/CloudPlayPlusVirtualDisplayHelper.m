@@ -109,6 +109,25 @@ static BOOL displayHasTargetMode(CGDirectDisplayID displayID,
   return matches;
 }
 
+// 接管 selected 引用；调用返回前不能确认 mode 或开始下一次 applySettings。
+static BOOL waitForModeSelection(CGDirectDisplayID displayID,
+                                 CGDisplayModeRef selected,
+                                 dispatch_time_t deadline) {
+  dispatch_semaphore_t completed = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    (void)CGDisplaySetDisplayMode(displayID, selected, NULL);
+    CFRelease(selected);
+    dispatch_semaphore_signal(completed);
+  });
+  if (dispatch_semaphore_wait(completed, deadline) == 0) return YES;
+
+  // 无法取消阻塞的 CoreGraphics 调用。退出持有显示器的进程，防止旧请求
+  // 在 1× 回退或后续 SET 成功后覆盖 mode；父进程按现有失败路径清理 / 重建。
+  g_should_exit = 1;
+  CFRunLoopStop(CFRunLoopGetMain());
+  return NO;
+}
+
 static BOOL selectTargetMode(CGDirectDisplayID displayID,
                              int width,
                              int height,
@@ -142,14 +161,13 @@ static BOOL selectTargetMode(CGDirectDisplayID displayID,
   }
   if (selected == NULL) return NO;
 
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    // This call can block or return kCGErrorIllegalArgument on macOS 26 even
-    // when WindowServer completes the transition. Keep it off the helper's
-    // main command loop and verify the observed mode below.
-    (void)CGDisplaySetDisplayMode(displayID, selected, NULL);
-    CFRelease(selected);
-  });
-  for (int attempt = 0; attempt < 40; attempt++) {
+  NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 2.0;
+  if (!waitForModeSelection(displayID, selected,
+                           dispatch_time(DISPATCH_TIME_NOW, 2LL * NSEC_PER_SEC))) {
+    return NO;
+  }
+  // 返回值可能为 1001，但 WindowServer 仍会异步完成切换；核验实际 mode。
+  while (NSProcessInfo.processInfo.systemUptime < deadline) {
     if (displayHasTargetMode(displayID, width, height, useHiDPI)) return YES;
     usleep(50000);
   }
@@ -161,7 +179,7 @@ static BOOL applyTargetMode(CGVirtualDisplay *display,
                             int width,
                             int height,
                             int refreshRate) {
-  if (display == nil) return NO;
+  if (display == nil || g_should_exit) return NO;
   BOOL preferHiDPI = width % 2 == 0 && height % 2 == 0;
   for (int attempt = preferHiDPI ? 0 : 1; attempt < 2; attempt++) {
     BOOL useHiDPI = attempt == 0;
@@ -171,6 +189,7 @@ static BOOL applyTargetMode(CGVirtualDisplay *display,
         selectTargetMode(display.displayID, width, height, useHiDPI)) {
       return YES;
     }
+    if (g_should_exit) return NO;
     if (useHiDPI) {
       CPPLOGM_WARN("VIRTUAL_DISPLAY", @"HiDPI unavailable; trying 1x for %dx%d",
                    width, height);
@@ -352,7 +371,7 @@ int main(int argc, const char *argv[]) {
           return;
         }
         [inputBuffer appendData:chunk];
-        while (true) {
+        while (!g_should_exit) {
           const void *bytes = inputBuffer.bytes;
           const void *newline = memchr(bytes, '\n', inputBuffer.length);
           if (newline == NULL) break;
