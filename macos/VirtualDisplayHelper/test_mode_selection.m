@@ -6,6 +6,18 @@
 static dispatch_semaphore_t allowSelection;
 static dispatch_semaphore_t selectionReturned;
 static BOOL blockSelection = NO;
+static BOOL currentModeUsable = NO;
+
+static CGDisplayModeRef testCopyDisplayMode(CGDirectDisplayID displayID) {
+  (void)displayID;
+  return (CGDisplayModeRef)CFRetain(CFSTR("current mode"));
+}
+static size_t testModeWidth(CGDisplayModeRef mode) { (void)mode; return 924; }
+static size_t testModeHeight(CGDisplayModeRef mode) { (void)mode; return 496; }
+static size_t testPixelWidth(CGDisplayModeRef mode) { (void)mode; return 1848; }
+static size_t testPixelHeight(CGDisplayModeRef mode) { (void)mode; return 992; }
+static bool testModeUsable(CGDisplayModeRef mode) { (void)mode; return currentModeUsable; }
+static void testModeRelease(CGDisplayModeRef mode) { CFRelease(mode); }
 
 static CGError testSetDisplayMode(CGDirectDisplayID displayID,
                                   CGDisplayModeRef mode,
@@ -21,6 +33,13 @@ static CGError testSetDisplayMode(CGDirectDisplayID displayID,
 }
 
 #define CGDisplaySetDisplayMode testSetDisplayMode
+#define CGDisplayCopyDisplayMode testCopyDisplayMode
+#define CGDisplayModeGetWidth testModeWidth
+#define CGDisplayModeGetHeight testModeHeight
+#define CGDisplayModeGetPixelWidth testPixelWidth
+#define CGDisplayModeGetPixelHeight testPixelHeight
+#define CGDisplayModeIsUsableForDesktopGUI testModeUsable
+#define CGDisplayModeRelease testModeRelease
 #define main virtualDisplayHelperMain
 #import "CloudPlayPlusVirtualDisplayHelper.m"
 #undef main
@@ -28,6 +47,12 @@ static CGError testSetDisplayMode(CGDirectDisplayID displayID,
 
 int main(void) {
   @autoreleasepool {
+    // 尺寸匹配但不可用于桌面的当前模式，不能被快速路径接受。
+    assert(!displayHasTargetMode(1, 1848, 992, YES));
+    currentModeUsable = YES;
+    assert(displayHasTargetMode(1, 1848, 992, YES));
+    assert(!displayHasTargetMode(1, 1848, 992, NO));
+
     allowSelection = dispatch_semaphore_create(0);
     selectionReturned = dispatch_semaphore_create(0);
     // fake setter 不访问 mode 内容；生产函数接管这一份引用。

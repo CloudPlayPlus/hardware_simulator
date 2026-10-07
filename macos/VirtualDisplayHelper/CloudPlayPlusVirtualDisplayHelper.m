@@ -101,7 +101,8 @@ static BOOL displayHasTargetMode(CGDirectDisplayID displayID,
   int logicalHeight = useHiDPI ? height / 2 : height;
   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
   if (mode == NULL) return NO;
-  BOOL matches = (int)CGDisplayModeGetWidth(mode) == logicalWidth &&
+  BOOL matches = CGDisplayModeIsUsableForDesktopGUI(mode) &&
+                 (int)CGDisplayModeGetWidth(mode) == logicalWidth &&
                  (int)CGDisplayModeGetHeight(mode) == logicalHeight &&
                  (int)CGDisplayModeGetPixelWidth(mode) == width &&
                  (int)CGDisplayModeGetPixelHeight(mode) == height;
