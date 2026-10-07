@@ -1,0 +1,25 @@
+name: macOS virtual display
+on:
+  pull_request:
+    paths: ['macos/**', '.github/workflows/macos-virtual-display.yml']
+  push:
+    branches: [main]
+    paths: ['macos/**', '.github/workflows/macos-virtual-display.yml']
+permissions:
+  contents: read
+jobs:
+  native-checks:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile helper and check Swift syntax
+        run: |
+          xcrun clang -O2 -DNDEBUG -fobjc-arc -ObjC -mmacosx-version-min=14.0 \
+            -Wall -Wextra -Werror \
+            -framework Foundation -framework CoreGraphics \
+            -F/System/Library/PrivateFrameworks -framework SkyLight \
+            macos/VirtualDisplayHelper/CloudPlayPlusVirtualDisplayHelper.m \
+            -o "$RUNNER_TEMP/cloudplayplus_vd_helper"
+          xcrun swiftc -frontend -parse macos/Classes/HardwareSimulatorPlugin.swift
+          bash -n macos/VirtualDisplayHelper/test_mode_updates.sh

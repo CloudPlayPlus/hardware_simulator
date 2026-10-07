@@ -7,6 +7,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef CPP_LOG_AVAILABLE
+#import <cpp_log/cpp_log_apple.h>
+#else
+#define CPPLOGM_WARN(...) do {} while (0)
+#endif
+
 @interface CGVirtualDisplayMode : NSObject
 - (instancetype)initWithWidth:(unsigned int)width
                        height:(unsigned int)height
@@ -44,12 +50,6 @@ static CGVirtualDisplay *g_display = nil;
 static CGVirtualDisplayDescriptor *g_descriptor = nil;
 static volatile sig_atomic_t g_should_exit = 0;
 
-typedef NS_ENUM(NSInteger, TargetModeApplyResult) {
-  TargetModeApplyFailed = 0,
-  TargetModeApplyBackingOnly = 1,
-  TargetModeApplyComplete = 2,
-};
-
 static void handleSignal(int signo) {
   (void)signo;
   g_should_exit = 1;
@@ -76,8 +76,8 @@ static BOOL parentIsAlive(pid_t parentPID) {
 
 static CGVirtualDisplaySettings *targetModeSettings(int width,
                                                     int height,
-                                                    int refreshRate) {
-  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+                                                    int refreshRate,
+                                                    BOOL useHiDPI) {
   int modeWidth = useHiDPI ? width / 2 : width;
   int modeHeight = useHiDPI ? height / 2 : height;
   CGVirtualDisplayMode *mode =
@@ -93,21 +93,10 @@ static CGVirtualDisplaySettings *targetModeSettings(int width,
   return settings;
 }
 
-static BOOL displayHasBackingSize(CGDirectDisplayID displayID,
-                                  int width,
-                                  int height) {
-  CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
-  if (mode == NULL) return NO;
-  BOOL matches = (int)CGDisplayModeGetPixelWidth(mode) == width &&
-                 (int)CGDisplayModeGetPixelHeight(mode) == height;
-  CGDisplayModeRelease(mode);
-  return matches;
-}
-
 static BOOL displayHasTargetMode(CGDirectDisplayID displayID,
                                  int width,
-                                 int height) {
-  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+                                 int height,
+                                 BOOL useHiDPI) {
   int logicalWidth = useHiDPI ? width / 2 : width;
   int logicalHeight = useHiDPI ? height / 2 : height;
   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
@@ -122,10 +111,9 @@ static BOOL displayHasTargetMode(CGDirectDisplayID displayID,
 
 static BOOL selectTargetMode(CGDirectDisplayID displayID,
                              int width,
-                             int height) {
-  if (displayHasTargetMode(displayID, width, height)) return YES;
-
-  BOOL useHiDPI = width % 2 == 0 && height % 2 == 0;
+                             int height,
+                             BOOL useHiDPI) {
+  if (displayHasTargetMode(displayID, width, height, useHiDPI)) return YES;
   int logicalWidth = useHiDPI ? width / 2 : width;
   int logicalHeight = useHiDPI ? height / 2 : height;
   NSDictionary *options =
@@ -139,7 +127,8 @@ static BOOL selectTargetMode(CGDirectDisplayID displayID,
       for (CFIndex i = 0; i < count; i++) {
         CGDisplayModeRef mode =
             (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-        if ((int)CGDisplayModeGetWidth(mode) == logicalWidth &&
+        if (CGDisplayModeIsUsableForDesktopGUI(mode) &&
+            (int)CGDisplayModeGetWidth(mode) == logicalWidth &&
             (int)CGDisplayModeGetHeight(mode) == logicalHeight &&
             (int)CGDisplayModeGetPixelWidth(mode) == width &&
             (int)CGDisplayModeGetPixelHeight(mode) == height) {
@@ -161,31 +150,33 @@ static BOOL selectTargetMode(CGDirectDisplayID displayID,
     CFRelease(selected);
   });
   for (int attempt = 0; attempt < 40; attempt++) {
-    if (displayHasTargetMode(displayID, width, height)) return YES;
+    if (displayHasTargetMode(displayID, width, height, useHiDPI)) return YES;
     usleep(50000);
   }
-  return displayHasTargetMode(displayID, width, height);
+  return displayHasTargetMode(displayID, width, height, useHiDPI);
 }
 
-static TargetModeApplyResult applyTargetMode(CGVirtualDisplay *display,
-                                             int width,
-                                             int height,
-                                             int refreshRate) {
-  CGVirtualDisplaySettings *settings =
-      targetModeSettings(width, height, refreshRate);
-  if (display == nil || settings == nil || ![display applySettings:settings]) {
-    return TargetModeApplyFailed;
-  }
-
-  for (int attempt = 0; attempt < 20; attempt++) {
-    if (displayHasBackingSize(display.displayID, width, height)) {
-      return selectTargetMode(display.displayID, width, height)
-                 ? TargetModeApplyComplete
-                 : TargetModeApplyBackingOnly;
+// 每次请求重新优先尝试 HiDPI；不可用时保持像素尺寸，回退精确 1×。
+static BOOL applyTargetMode(CGVirtualDisplay *display,
+                            int width,
+                            int height,
+                            int refreshRate) {
+  if (display == nil) return NO;
+  BOOL preferHiDPI = width % 2 == 0 && height % 2 == 0;
+  for (int attempt = preferHiDPI ? 0 : 1; attempt < 2; attempt++) {
+    BOOL useHiDPI = attempt == 0;
+    CGVirtualDisplaySettings *settings =
+        targetModeSettings(width, height, refreshRate, useHiDPI);
+    if (settings != nil && [display applySettings:settings] &&
+        selectTargetMode(display.displayID, width, height, useHiDPI)) {
+      return YES;
     }
-    usleep(50000);
+    if (useHiDPI) {
+      CPPLOGM_WARN("VIRTUAL_DISPLAY", @"HiDPI unavailable; trying 1x for %dx%d",
+                   width, height);
+    }
   }
-  return TargetModeApplyFailed;
+  return NO;
 }
 
 static void handleCommandLine(NSString *line) {
@@ -204,13 +195,9 @@ static void handleCommandLine(NSString *line) {
                parsePositiveInt([parts[1] UTF8String], &width) &&
                parsePositiveInt([parts[2] UTF8String], &height) &&
                parsePositiveInt([parts[3] UTF8String], &refreshRate);
-  TargetModeApplyResult result =
-      valid ? applyTargetMode(g_display, width, height, refreshRate)
-            : TargetModeApplyFailed;
-  if (result == TargetModeApplyComplete) {
+  BOOL applied = valid && applyTargetMode(g_display, width, height, refreshRate);
+  if (applied) {
     fprintf(stdout, "OK %u\n", g_display.displayID);
-  } else if (result == TargetModeApplyBackingOnly) {
-    fprintf(stdout, "BACKING %u\n", g_display.displayID);
   } else {
     fprintf(stdout, "ERR\n");
   }
@@ -305,21 +292,21 @@ int main(int argc, const char *argv[]) {
       });
     };
 
-    fprintf(stderr,
-            "[cloudplayplus_vd_helper] creating %dx%d@%d\n",
-            width,
-            height,
-            refreshRate);
-
     CGVirtualDisplaySettings *initialSettings =
-        targetModeSettings(width, height, refreshRate);
+        targetModeSettings(width, height, refreshRate,
+                           width % 2 == 0 && height % 2 == 0);
     __block CGVirtualDisplay *display = nil;
     __block BOOL settingsApplied = NO;
     dispatch_semaphore_t created = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
       display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
-      if (display != nil && initialSettings != nil) {
-        settingsApplied = [display applySettings:initialSettings];
+      if (display != nil) {
+        settingsApplied = initialSettings != nil && [display applySettings:initialSettings];
+        if (!settingsApplied) {
+          CGVirtualDisplaySettings *fallback =
+              targetModeSettings(width, height, refreshRate, NO);
+          settingsApplied = fallback != nil && [display applySettings:fallback];
+        }
       }
       dispatch_semaphore_signal(created);
     });
@@ -327,18 +314,14 @@ int main(int argc, const char *argv[]) {
     if (dispatch_semaphore_wait(created,
                                 dispatch_time(DISPATCH_TIME_NOW,
                                               8LL * NSEC_PER_SEC)) != 0) {
-      fprintf(stderr, "[cloudplayplus_vd_helper] create timeout\n");
+      CPPLOGM_WARN("VIRTUAL_DISPLAY", @"Create timed out");
       fprintf(stdout, "0\n");
       fflush(stdout);
       return 1;
     }
 
     if (display == nil || !settingsApplied || display.displayID == 0) {
-      fprintf(stderr,
-              "[cloudplayplus_vd_helper] create failed display=%p applied=%d id=%u\n",
-              display,
-              settingsApplied,
-              display ? display.displayID : 0);
+      CPPLOGM_WARN("VIRTUAL_DISPLAY", @"Create failed (applied=%d)", settingsApplied);
       fprintf(stdout, "0\n");
       fflush(stdout);
       return 1;
@@ -347,31 +330,15 @@ int main(int argc, const char *argv[]) {
     g_descriptor = descriptor;
     g_display = display;
     CGDirectDisplayID displayID = display.displayID;
-    fprintf(stderr, "[cloudplayplus_vd_helper] created display %u\n", displayID);
 
-    // Hand the stable display id to the app as soon as creation succeeds. The
-    // app owns backing verification and mode selection/retries from this point.
-    // A transient HiDPI selection failure must not destroy and recreate the
-    // virtual display just to obtain another id.
+    // 初始 ID 仅表示对象已分配。主进程等待发布后发送首次 SET，
+    // 由命令处理统一选择缩放并核验；避免后台选择与后续 SET 并发修改 mode。
     fprintf(stdout, "%u\n", displayID);
     fflush(stdout);
 
-    // Display configuration can occasionally block inside WindowServer. Keep
-    // the helper command channel responsive and let the app verify/select the
-    // requested mode against the already-published display id. CGVirtualDisplay
-    // is already online after applySettings. Only break mirroring when macOS
-    // actually placed the new display into a mirror set; an unnecessary display
-    // configuration transaction can override the preferred HiDPI mode.
     dispatch_async(
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
           if (CGDisplayIsInMirrorSet(displayID)) forceExtended(displayID);
-          (void)selectTargetMode(displayID, width, height);
-          if (!displayHasBackingSize(displayID, width, height)) {
-            fprintf(stderr,
-                    "[cloudplayplus_vd_helper] backing mismatch for %dx%d\n",
-                    width,
-                    height);
-          }
         });
 
     NSFileHandle *inputHandle = [NSFileHandle fileHandleWithStandardInput];
