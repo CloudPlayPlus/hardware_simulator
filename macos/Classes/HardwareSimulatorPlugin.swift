@@ -221,12 +221,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     var configs: [MacVirtualDisplayConfig]
   }
 
-  private enum MacVirtualDisplayModeApplyResult: Equatable {
-    case complete
-    case backingOnly
-    case failed
-  }
-
   private struct MacDisplayBackupItem {
     let displayId: CGDirectDisplayID
     let mode: CGDisplayMode?
@@ -657,11 +651,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         configs: displayConfigs
       )
     }
-    // WindowServer may publish the display id before activation and HiDPI
-    // modes are ready. Wait for that one-time setup before selecting the mode;
-    // later SET commands update this same display in place.
+    // 初始 ID 不代表尺寸已就绪；让 helper 统一完成 HiDPI / 1× 选择，
+    // 再由主进程核验实际像素尺寸。失败必须回收，不能留下误报成功的显示器。
     Thread.sleep(forTimeInterval: 2.0)
-    _ = selectMacVirtualDisplayMode(displayId: displayId, config: requested)
+    guard applyMacVirtualDisplayMode(displayId: displayId, config: requested),
+      macDisplayBackingMatches(displayId: displayId, config: requested)
+    else {
+      _ = terminateMacVirtualDisplay(displayId)
+      return -1
+    }
     return displayId
   }
 
@@ -714,20 +712,20 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private func applyMacVirtualDisplayMode(
     displayId: Int,
     config: MacVirtualDisplayConfig
-  ) -> MacVirtualDisplayModeApplyResult {
+  ) -> Bool {
     withMacVirtualDisplayProcesses {
       guard var session = macVirtualDisplaySessions[displayId] else {
-        return .failed
+        return false
       }
       let command = "SET \(config.width) \(config.height) \(config.refreshRate)\n"
       guard let data = command.data(using: .utf8) else {
-        return .failed
+        return false
       }
       if #available(macOS 10.15.4, *) {
         do {
           try session.input.fileHandleForWriting.write(contentsOf: data)
         } catch {
-          return .failed
+          return false
         }
       } else {
         session.input.fileHandleForWriting.write(data)
@@ -735,25 +733,19 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       guard
         let response = readMacHelperLine(
           from: session.output,
-          timeout: .now() + .seconds(6)
+          timeout: .now() + .seconds(8)
         )
       else {
-        return .failed
+        return false
       }
-      let applyResult: MacVirtualDisplayModeApplyResult
-      switch response {
-      case "OK \(displayId)":
-        applyResult = .complete
-      case "BACKING \(displayId)":
-        applyResult = .backingOnly
-      default:
-        return .failed
+      guard response == "OK \(displayId)" else {
+        return false
       }
       if !session.configs.contains(config) {
         session.configs.append(config)
         macVirtualDisplaySessions[displayId] = session
       }
-      return applyResult
+      return true
     }
   }
 
@@ -795,62 +787,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
     return mode.pixelWidth == config.width && mode.pixelHeight == config.height
-  }
-
-  private func macDisplayMatchesTargetMode(
-    displayId: Int,
-    config: MacVirtualDisplayConfig
-  ) -> Bool {
-    guard let mode = CGDisplayCopyDisplayMode(CGDirectDisplayID(displayId)) else {
-      return false
-    }
-    let useHiDPI = config.width.isMultiple(of: 2) &&
-      config.height.isMultiple(of: 2)
-    let logicalWidth = useHiDPI ? config.width / 2 : config.width
-    let logicalHeight = useHiDPI ? config.height / 2 : config.height
-    return mode.width == logicalWidth &&
-      mode.height == logicalHeight &&
-      mode.pixelWidth == config.width &&
-      mode.pixelHeight == config.height
-  }
-
-  private func selectMacVirtualDisplayMode(
-    displayId: Int,
-    config: MacVirtualDisplayConfig
-  ) -> Bool {
-    let cgDisplayId = CGDirectDisplayID(displayId)
-    let useHiDPI = config.width.isMultiple(of: 2) &&
-      config.height.isMultiple(of: 2)
-    let logicalWidth = useHiDPI ? config.width / 2 : config.width
-    let logicalHeight = useHiDPI ? config.height / 2 : config.height
-    let options = [
-      kCGDisplayShowDuplicateLowResolutionModes as String: true,
-    ] as CFDictionary
-    var requestedSelection = false
-
-    for _ in 0..<20 {
-      if macDisplayMatchesTargetMode(displayId: displayId, config: config) {
-        return true
-      }
-      if !requestedSelection,
-        let modes = CGDisplayCopyAllDisplayModes(cgDisplayId, options)
-          as? [CGDisplayMode],
-        let target = modes.first(where: { mode in
-          mode.width == logicalWidth &&
-            mode.height == logicalHeight &&
-            mode.pixelWidth == config.width &&
-            mode.pixelHeight == config.height
-        })
-      {
-        // macOS 26 can report an error even when WindowServer completes the
-        // transition asynchronously. Issue the request once, then trust the
-        // observed final mode below rather than the immediate return value.
-        _ = CGDisplaySetDisplayMode(cgDisplayId, target, nil)
-        requestedSelection = true
-      }
-      Thread.sleep(forTimeInterval: 0.05)
-    }
-    return macDisplayMatchesTargetMode(displayId: displayId, config: config)
   }
 
   private func macDisplayList() -> [[String: Any]] {
@@ -957,15 +893,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       refreshRate: refreshRate
     )
     if macVirtualDisplayIdsSnapshot().contains(displayId) {
-      if macDisplayBackingMatches(displayId: displayId, config: config) {
-        return selectMacVirtualDisplayMode(displayId: displayId, config: config)
-      }
-      let applyResult = applyMacVirtualDisplayMode(
-        displayId: displayId,
-        config: config
-      )
-      if applyResult != .failed,
-        selectMacVirtualDisplayMode(displayId: displayId, config: config)
+      if applyMacVirtualDisplayMode(displayId: displayId, config: config),
+        macDisplayBackingMatches(displayId: displayId, config: config)
       {
         return true
       }

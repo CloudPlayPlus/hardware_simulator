@@ -2,50 +2,47 @@
 
 ## 背景
 
-macOS Direct 版本通过独立 helper 持有私有 `CGVirtualDisplay` 对象。分辨率目录与当前
-生效 mode 是两个不同概念：
-
-- 分辨率目录由 Flutter / `hardware_simulator` 保存，用于 UI 展示和输入校验；
-- helper 每次只向 `CGVirtualDisplaySettings` 提交当前目标 mode。
-
-不要把整个分辨率目录同时提交给 WindowServer。macOS 26 会为这种 rich mode list
-生成不可程序化切换的 HiDPI mode，`CGDisplaySetDisplayMode` 可能返回
-`kCGErrorIllegalArgument`，并且系统保存的历史 mode 可能覆盖本次请求。
+macOS Direct 通过独立 helper 持有私有 `CGVirtualDisplay` 对象。请求宽高始终表示
+实际 backing pixel 尺寸。分辨率目录由 Flutter / 插件保存；helper 每次只提交当前目标
+mode，不把完整目录交给 WindowServer，避免历史偏好或合成 mode 覆盖本次请求。
 
 ## Helper 命令合同
 
-helper 启动后：
+1. stdout 首行返回十进制 display ID；它只表示对象已分配，尚未承诺尺寸正确。
+2. stdin 接受 `SET <width> <height> <refreshRate>`；宽高与刷新率必须为正整数。
+3. helper 依次尝试精确 HiDPI / 1×，最终 mode 核验成功才返回 `OK <原 displayID>`。
+4. 参数非法、无法应用或最终尺寸仍不符时返回 `ERR`。不再返回需要父进程补选的 `BACKING`。
+5. 主进程在 `macVirtualDisplayQueue` 上串行写命令、读回复；单次回复最多等待 8 秒。
+   helper 每个缩放候选最多轮询 1 秒等枚举；切换调用及结果核验共享 2 秒预算。创建后的首次 SET 同样走此流程。
 
-1. stdout 第一行返回十进制 `CGDirectDisplayID`；
-2. stdin 接受一行一个命令：`SET <width> <height> <refreshRate>`；
-3. 成功后 stdout 返回 `OK <原 displayID>`；
-4. backing pixel 已更新、但 HiDPI mode 尚未选中时返回 `BACKING <原 displayID>`；
-5. 参数非法、`applySettings` 失败或最终 backing pixel 尺寸不一致时返回 `ERR`。
-
-同一时刻只允许一个未完成命令。父进程必须在
-`macVirtualDisplayQueue` 上串行写命令和读回复。
+stdout 只用于命令协议；诊断不得混入协议。主进程在 `OK` 后再次核验实际像素尺寸。
+创建核验失败时回收新 helper 并返回 -1，不能忽略 mode 选择失败而报告创建成功。
 
 ## Mode 与回退
 
-- 创建和更新都只提交单个目标 mode。宽高均为偶数时设置 `hiDPI = 1`，并以请求尺寸
-  的一半作为逻辑 mode，使 backing pixel 尺寸等于请求值；例如请求 2448×1848 时，
-  macOS 使用 1224×924 @2×。这样既保持串流分辨率，又避免 1× 下字体过小。
-- descriptor 的最大像素尺寸等于首次请求尺寸，物理尺寸按 220 PPI 计算。低 DPI 的
-  固定物理尺寸会让 macOS 26 默认选择 1× mode；按 Retina 密度声明后无需强制切换。
-- 每次新建使用新的 product ID，隔离 WindowServer 按 vendor+product 保存的历史 mode
-  偏好；Display ID 仍由同一个 helper 持有，分辨率原地更新不会改变 product ID。
-- 奇数尺寸无法精确表达为 2× mode，回退到 `hiDPI = 0` 的 1× mode。
-- helper 通过 `applySettings` 原地更新 backing pixel 尺寸，并尝试选择“逻辑尺寸减半、
-  backing pixel 等于请求尺寸”的 HiDPI mode；主 App 进程会再次核验和补选。不再调用
-  `preferNativeScale` 强制切换 1×。
-- macOS 26 上 `CGDisplaySetDisplayMode` 可能返回 `kCGErrorIllegalArgument`，但 WindowServer
-  随后仍异步完成 mode 切换，因此主进程检查返回值但以限时轮询到的最终 mode 为准。
-- 如果 backing pixel 已原地更新、但 HiDPI mode 暂未选中，helper 先保留原 display ID 并
-  返回 `BACKING`，主进程再补选并核验；只有最终仍无法得到精确 2× mode 时才重建。
-- 只要目标未超过首次创建的 descriptor 上限，插件先对同一个 `CGVirtualDisplay` 调用
-  `applySettings`，实测 2448×1848、1920×1080、1600×1200 可保持同一 display ID。
-- 若目标超过 descriptor 上限，或原地更新后无法核验精确 2× mode，插件才终止旧
-  helper 并按目标尺寸重建。
-  上层必须按最终枚举到的虚拟屏尺寸重新解析 display ID，不能假设旧 ID 仍有效。
-- 活跃串流不支持热切 capture source；本合同只保证虚拟显示器管理和串流准备阶段的
-  mode 更新。
+- 宽高均为偶数时优先尝试逻辑尺寸减半的 2× mode；奇数尺寸直接尝试 1×。
+- 枚举候选时必须检查 `CGDisplayModeIsUsableForDesktopGUI`。可枚举不代表可用于桌面。
+  HiDPI 不可用或限时核验失败时，重新提交 `hiDPI = 0` 与原请求宽高，尝试精确 1×。
+- macOS 26.5.1 / M2 Pro 实测 `1848×992` 的 `924×496 @2×` 不可用，回退
+  `1848×992 @1×`；`1848×1048` 与 `1848×1050` 分别在逻辑高度 524 / 525
+  处失败 / 成功。该阈值是本机证据，不硬编码；以系统可用性和最终 mode 为准。
+- `CGDisplaySetDisplayMode` 返回错误也可能伴随异步切换，结果以限时核验为准。
+  在提交 1× 回退前必须等待前一个切换调用返回；调用阻塞超过 2 秒则返回 ERR 并退出
+  helper，不能让旧请求在回退成功后继续覆盖 mode。调用返回后再限时核验实际 mode。
+- descriptor 上限等于首次请求尺寸，偶数尺寸按 220 PPI 声明；每次创建采用新的 product ID，
+  隔离 WindowServer 的历史 mode 偏好。1× 回退不改变 descriptor 身份。
+- 每次改分辨率重新优先尝试 HiDPI，不能因曾回退 1× 而永久锁定低密度。
+- 优先通过同一个 helper 原地更新；失败时插件按目标尺寸重建，重建也须完整核验。
+  上层按最终枚举到的尺寸解析 display ID，不能假设重建后旧 ID 仍有效。
+- 活跃串流不支持热切采集源；本合同仅覆盖管理及串流准备阶段。
+
+## 本机回归
+
+使用当前源码构建的 Direct helper 执行：
+
+```bash
+macos/VirtualDisplayHelper/test_mode_updates.sh /path/to/cloudplayplus_vd_helper
+```
+
+覆盖正常 HiDPI、低高度 1× 回退、再次切回 HiDPI、首次创建低高度显示器、非法命令以及
+同一 helper 下 display ID 保持不变。测试创建的显示器在退出时回收；需要本机图形会话。
