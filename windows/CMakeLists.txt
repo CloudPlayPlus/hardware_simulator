@@ -105,6 +105,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     "virtual_display_example.cc"
     "virtual_display.cc"
     "virtual_display_control.cc"
+    "desktop_service_input_client.cpp"
   )
   
   target_compile_options(virtual_display_example PRIVATE /wd"4245" /wd"4505")
