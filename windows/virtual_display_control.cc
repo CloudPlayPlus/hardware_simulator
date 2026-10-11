@@ -1,4 +1,6 @@
 #include "virtual_display_control.h"
+#include "desktop_service_input_client.h"
+#include "cpp_log_shim.h"
 #include <iostream>
 #include <thread>
 #include <mutex>
@@ -1251,15 +1253,12 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
 }
 
 bool VirtualDisplayControl::RestoreDisplayConfiguration() {
-    std::cout << "RestoreDisplayConfiguration called" << std::endl;
     
     if (!has_backup_) {
-        std::cerr << "No display configuration backup available to restore" << std::endl;
         return true;
     }
 
     if (original_paths_.empty()) {
-        std::cerr << "Original display configuration is empty. No need to restore configuration." << std::endl;
         has_backup_ = false;
         return true;
     }
@@ -1273,12 +1272,24 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES
     );
 
+    if (result == ERROR_ACCESS_DENIED) {
+        CPPLOG_INFO("DISPLAY_RESTORE", "local restore denied; requesting SYSTEM restore paths=%zu modes=%zu",
+                    original_paths_.size(), original_modes_.size());
+        LONG service_result = ERROR_GEN_FAILURE;
+        if (hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
+                original_paths_, original_modes_, service_result)) {
+            result = service_result;
+            CPPLOG_INFO("DISPLAY_RESTORE", "SYSTEM restore result=%ld", result);
+        } else {
+            CPPLOG_WARN("DISPLAY_RESTORE", "SYSTEM restore unavailable or response invalid; keeping backup");
+        }
+    }
     if (result != ERROR_SUCCESS) {
-        std::cerr << "SetDisplayConfig failed to restore original configuration: " << result << std::endl;
+        CPPLOG_WARN("DISPLAY_RESTORE", "display restore failed status=%ld; keeping backup", result);
         return false;
     }
 
-    std::cout << "Successfully restored original display configuration" << std::endl;
+    CPPLOG_INFO("DISPLAY_RESTORE", "display configuration restored");
     
     // Clear the backup to prevent accidental double-restore
     has_backup_ = false;

@@ -28,6 +28,9 @@ class DesktopServiceInputClient {
   bool SetCustomDisplayConfigs(
       const std::vector<VirtualDisplay::DisplayConfig>& configs,
       bool& success);
+  bool RestoreDisplayConfiguration(
+      const std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+      const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status);
   void Close();
 
  private:
@@ -50,8 +53,9 @@ class DesktopServiceInputClient {
   bool SendRawLocked(const void* data, uint32_t size);
   bool ExchangeRawLocked(uint32_t type, const void* payload,
                          uint32_t payload_size, uint32_t expected_type,
-                         void* response, uint32_t response_size);
-  bool ReadRawLocked(std::vector<uint8_t>& data);
+                         void* response, uint32_t response_size,
+                         DWORD timeout_ms = 1000);
+  bool ReadRawLocked(std::vector<uint8_t>& data, DWORD timeout_ms);
   bool SendKeyboardLocked(const KEYBDINPUT& input);
   bool SendMouseLocked(const MOUSEINPUT& input);
   void ClosePipeLocked();

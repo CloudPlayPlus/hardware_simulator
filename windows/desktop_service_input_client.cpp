@@ -22,7 +22,8 @@ constexpr uint32_t kMaxCustomDisplayConfigs = 5;
 constexpr uint32_t kMaxTouchContacts = 10;
 constexpr DWORD kConnectBusyWaitMs = 2;
 constexpr DWORD kWriteTimeoutMs = 20;
-constexpr DWORD kControlTimeoutMs = 1000;
+constexpr uint32_t kMsgRestoreDisplayConfig = 0x09;
+constexpr uint32_t kMsgRestoreDisplayConfigResp = 0x89;
 
 #pragma pack(push, 1)
 struct MsgHeader {
@@ -325,6 +326,37 @@ bool DesktopServiceInputClient::SetCustomDisplayConfigs(
   return true;
 }
 
+bool DesktopServiceInputClient::RestoreDisplayConfiguration(
+    const std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+    const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status) {
+  static_assert(sizeof(DISPLAYCONFIG_PATH_INFO) == 72, "Windows display path ABI");
+  static_assert(sizeof(DISPLAYCONFIG_MODE_INFO) == 64, "Windows display mode ABI");
+  status = ERROR_GEN_FAILURE;
+  if (paths.empty() || modes.empty() ||
+      paths.size() > kMaxMessageSize / sizeof(paths[0]) ||
+      modes.size() > kMaxMessageSize / sizeof(modes[0])) return false;
+  const size_t path_bytes = paths.size() * sizeof(paths[0]);
+  const size_t mode_bytes = modes.size() * sizeof(modes[0]);
+  const uint32_t counts[] = {static_cast<uint32_t>(paths.size()),
+                            static_cast<uint32_t>(modes.size())};
+  const size_t payload_size = sizeof(counts) + path_bytes + mode_bytes;
+  if (sizeof(MsgHeader) + payload_size > kMaxMessageSize) return false;
+  std::vector<uint8_t> payload(payload_size);
+  memcpy(payload.data(), counts, sizeof(counts));
+  memcpy(payload.data() + sizeof(counts), paths.data(), path_bytes);
+  memcpy(payload.data() + sizeof(counts) + path_bytes, modes.data(), mode_bytes);
+  std::lock_guard<std::mutex> lock(control_mutex_);
+  ControlConnection connection{this};
+  if (!EnsureConnectedLocked()) return false;
+  uint32_t response = ERROR_GEN_FAILURE;
+  if (!ExchangeRawLocked(kMsgRestoreDisplayConfig, payload.data(),
+                        static_cast<uint32_t>(payload.size()),
+                        kMsgRestoreDisplayConfigResp, &response,
+                        sizeof(response), 5000)) return false;
+  status = static_cast<LONG>(response);
+  return true;
+}
+
 void DesktopServiceInputClient::Close() {
   std::thread input_thread;
   {
@@ -513,7 +545,8 @@ bool DesktopServiceInputClient::ExchangeRawLocked(uint32_t type,
                                                   uint32_t payload_size,
                                                   uint32_t expected_type,
                                                   void* response,
-                                                  uint32_t response_size) {
+                                                  uint32_t response_size,
+                                                  DWORD timeout_ms) {
   const uint32_t seq = next_seq_++;
   if (next_seq_ == 0) {
     next_seq_ = 1;
@@ -534,7 +567,7 @@ bool DesktopServiceInputClient::ExchangeRawLocked(uint32_t type,
   }
 
   std::vector<uint8_t> response_data;
-  if (!ReadRawLocked(response_data) ||
+  if (!ReadRawLocked(response_data, timeout_ms) ||
       response_data.size() < sizeof(MsgHeader)) {
     return false;
   }
@@ -556,7 +589,8 @@ bool DesktopServiceInputClient::ExchangeRawLocked(uint32_t type,
   return true;
 }
 
-bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data) {
+bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data,
+                                             DWORD timeout_ms) {
   data.resize(kMaxMessageSize);
 
   OVERLAPPED overlapped = {};
@@ -569,7 +603,7 @@ bool DesktopServiceInputClient::ReadRawLocked(std::vector<uint8_t>& data) {
   if (!ok) {
     const DWORD err = GetLastError();
     if (err == ERROR_IO_PENDING) {
-      if (!CompleteIo(pipe_, overlapped, kControlTimeoutMs, nullptr, bytes_read)) {
+      if (!CompleteIo(pipe_, overlapped, timeout_ms, nullptr, bytes_read)) {
         ClosePipeLocked();
         return false;
       }
