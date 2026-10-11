@@ -105,6 +105,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     "virtual_display_example.cc"
     "virtual_display.cc"
     "virtual_display_control.cc"
+    "desktop_service_input_client.cpp"
   )
   
   target_compile_options(virtual_display_example PRIVATE /wd"4245" /wd"4505")
@@ -186,7 +187,7 @@ if(include_${PROJECT_NAME}_tests)
       --test-dir "${CMAKE_BINARY_DIR}"
       --build-config "$<CONFIG>"
       --output-on-failure
-    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test cursor_position_snapshot_test
+    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test cursor_position_snapshot_test display_restore_client_test
     USES_TERMINAL
   )
 endif()

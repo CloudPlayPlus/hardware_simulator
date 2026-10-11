@@ -17,3 +17,12 @@ target_compile_definitions(desktop_service_input_client_test PRIVATE UNICODE _UN
 target_compile_options(desktop_service_input_client_test PRIVATE /W4 /WX /utf-8)
 target_link_libraries(desktop_service_input_client_test PRIVATE user32)
 add_test(NAME desktop_service_input_client COMMAND desktop_service_input_client_test)
+
+add_executable(display_restore_client_test
+  display_restore_client_test.cpp ../desktop_service_input_client.cpp)
+target_compile_features(display_restore_client_test PRIVATE cxx_std_17)
+target_compile_definitions(display_restore_client_test PRIVATE UNICODE _UNICODE)
+target_compile_options(display_restore_client_test PRIVATE /W4 /WX /utf-8)
+target_link_libraries(display_restore_client_test PRIVATE user32)
+add_test(NAME display_restore_client COMMAND display_restore_client_test)
+set_tests_properties(display_restore_client PROPERTIES TIMEOUT 20)
