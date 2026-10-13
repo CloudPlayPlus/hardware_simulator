@@ -71,6 +71,16 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
             callback(event);
           }
         }
+      } else if (call.method == "onMacOSGlobeKeyProbe") {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          final event = MacOSGlobeKeyProbe.fromMap(arguments);
+          for (final callback in List<MacOSGlobeKeyProbeCallback>.of(
+            macOSGlobeKeyProbeCallbacks,
+          )) {
+            callback(event);
+          }
+        }
       } else if (call.method == "onTextInputDecision" ||
           call.method == "onWindowsTextInputDecision") {
         final arguments = call.arguments;
@@ -327,6 +337,47 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<void> stopTrackpadScrollCapture() async {
     try {
       await methodChannel.invokeMethod<void>('stopTrackpadScrollCapture');
+    } on MissingPluginException {
+      return;
+    }
+  }
+
+  final List<MacOSGlobeKeyProbeCallback> macOSGlobeKeyProbeCallbacks = [];
+
+  @override
+  void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    if (!isinitialized) init();
+    if (macOSGlobeKeyProbeCallbacks.contains(callback)) return;
+    final shouldStartCapture = macOSGlobeKeyProbeCallbacks.isEmpty;
+    macOSGlobeKeyProbeCallbacks.add(callback);
+    if (shouldStartCapture) {
+      unawaited(startMacOSGlobeKeyProbe());
+    }
+  }
+
+  @override
+  void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    final removed = macOSGlobeKeyProbeCallbacks.remove(callback);
+    if (removed && macOSGlobeKeyProbeCallbacks.isEmpty) {
+      unawaited(stopMacOSGlobeKeyProbe());
+    }
+  }
+
+  @override
+  Future<bool> startMacOSGlobeKeyProbe() async {
+    try {
+      final supported = await methodChannel
+          .invokeMethod<Object?>('startMacOSGlobeKeyProbe');
+      return supported == true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> stopMacOSGlobeKeyProbe() async {
+    try {
+      await methodChannel.invokeMethod<void>('stopMacOSGlobeKeyProbe');
     } on MissingPluginException {
       return;
     }

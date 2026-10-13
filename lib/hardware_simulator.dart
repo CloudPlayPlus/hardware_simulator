@@ -4,6 +4,8 @@ export 'hardware_simulator_platform_interface.dart'
     show
         GamepadRumbleEvent,
         DisplayCountChangedCallback,
+        MacOSGlobeKeyProbe,
+        MacOSGlobeKeyProbeCallback,
         TrackpadScrollCallback,
         TrackpadScrollEvent,
         TrackpadScrollPhase,
@@ -312,6 +314,15 @@ class HardwareSimulator {
 
   static void removeTrackpadScroll(TrackpadScrollCallback callback) {
     HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
+  }
+
+  /// Registers for the viewer-side macOS Globe/Fn interception POC.
+  static void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    HardwareSimulatorPlatform.instance.addMacOSGlobeKeyProbe(callback);
+  }
+
+  static void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    HardwareSimulatorPlatform.instance.removeMacOSGlobeKeyProbe(callback);
   }
 
   /// 注册 Host 远端点击后的软件盘决策。

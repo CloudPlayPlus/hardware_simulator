@@ -14,6 +14,7 @@ typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
+typedef MacOSGlobeKeyProbeCallback = void Function(MacOSGlobeKeyProbe event);
 typedef TextInputDecisionCallback = void Function(
   TextInputDecision decision,
 );
@@ -60,6 +61,28 @@ class TrackpadScrollEvent {
   final double deltaY;
   final TrackpadScrollPhase phase;
   final bool isMomentum;
+}
+
+/// Result of a viewer-side macOS Globe/Fn interception attempt.
+@immutable
+class MacOSGlobeKeyProbe {
+  const MacOSGlobeKeyProbe({
+    required this.beforeInputSourceId,
+    required this.afterInputSourceId,
+  });
+
+  factory MacOSGlobeKeyProbe.fromMap(Map<Object?, Object?> map) {
+    return MacOSGlobeKeyProbe(
+      beforeInputSourceId: map['beforeInputSourceId'] as String?,
+      afterInputSourceId: map['afterInputSourceId'] as String?,
+    );
+  }
+
+  final String? beforeInputSourceId;
+  final String? afterInputSourceId;
+
+  bool get inputSourceUnchanged =>
+      beforeInputSourceId != null && beforeInputSourceId == afterInputSourceId;
 }
 
 /// 远端主鼠标、触摸或笔抬起后，Host 原生可访问性 API 给出的软件盘决策。
@@ -246,6 +269,20 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
+
+  /// Registers for the macOS Globe/Fn interception POC when implemented.
+  void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
+
+  /// Removes a macOS Globe/Fn interception POC listener.
+  void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
+
+  /// Starts the macOS Globe/Fn interception POC.
+  Future<bool> startMacOSGlobeKeyProbe() async {
+    return false;
+  }
+
+  /// Stops the macOS Globe/Fn interception POC.
+  Future<void> stopMacOSGlobeKeyProbe() async {}
 
   /// 注册 Host 远端点击后的文本输入决策。
   void addTextInputDecision(

@@ -3,6 +3,7 @@ import FlutterMacOS
 import CommonCrypto
 import CoreGraphics
 import ApplicationServices
+import Carbon.HIToolbox
 import Darwin
 
 class CursorConstants {    
@@ -36,6 +37,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
+  private var macOSGlobeKeyProbeMonitor: Any?
+  private var macOSGlobeKeyIsDown = false
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -123,6 +126,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   deinit {
     stopTrackpadScrollCapture()
+    stopMacOSGlobeKeyProbe()
     if let displayBoundsCacheObserver {
       NotificationCenter.default.removeObserver(displayBoundsCacheObserver)
     }
@@ -159,7 +163,96 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       NSEvent.removeMonitor(trackpadScrollMonitor)
     }
     self.trackpadScrollMonitor = nil
-    flutterView = nil
+    if macOSGlobeKeyProbeMonitor == nil {
+      flutterView = nil
+    }
+  }
+
+  /// Starts the viewer-only Globe/Fn probe.
+  ///
+  /// This POC intentionally consumes the local event but does not forward a
+  /// remote command. The Dart callback records whether macOS kept the
+  /// controller's input source unchanged, which establishes whether a local
+  /// AppKit monitor is sufficient before extending the wire protocol.
+  private func startMacOSGlobeKeyProbe() -> Bool {
+    if macOSGlobeKeyProbeMonitor != nil {
+      return flutterView != nil
+    }
+    flutterView = registrar?.view ?? registrar?.viewController?.view
+    guard flutterView != nil else { return false }
+    macOSGlobeKeyProbeMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: .flagsChanged
+    ) { [weak self] event in
+      return self?.handleMacOSGlobeKeyProbe(event) ?? event
+    }
+    return true
+  }
+
+  private func stopMacOSGlobeKeyProbe() {
+    if let macOSGlobeKeyProbeMonitor {
+      NSEvent.removeMonitor(macOSGlobeKeyProbeMonitor)
+    }
+    self.macOSGlobeKeyProbeMonitor = nil
+    self.macOSGlobeKeyIsDown = false
+    if trackpadScrollMonitor == nil {
+      flutterView = nil
+    }
+  }
+
+  private func handleMacOSGlobeKeyProbe(_ event: NSEvent) -> NSEvent? {
+    // AppKit reports the physical Globe key as the Fn virtual key. Returning
+    // nil prevents this application from dispatching the event further.
+    guard event.keyCode == 0x3F else { return event }
+    if flutterView?.window !== event.window {
+      flutterView = registrar?.view ?? registrar?.viewController?.view
+    }
+    guard
+      let flutterView,
+      let flutterWindow = flutterView.window,
+      NSApp.isActive,
+      NSApp.keyWindow === flutterWindow,
+      event.window == nil || event.window === flutterWindow
+    else {
+      return event
+    }
+
+    let isDown = event.modifierFlags.contains(.function)
+    if isDown && !macOSGlobeKeyIsDown {
+      let beforeInputSourceId = currentMacOSKeyboardInputSourceId()
+      // Check on the next main-loop turn, after any system input-source work
+      // that this local monitor did not manage to suppress would have run.
+      DispatchQueue.main.async { [weak self] in
+        guard
+          let self,
+          self.macOSGlobeKeyProbeMonitor != nil,
+          let methodChannel = self.methodChannel
+        else {
+          return
+        }
+        let afterInputSourceId = self.currentMacOSKeyboardInputSourceId()
+        let arguments: [String: Any] = [
+          "beforeInputSourceId": beforeInputSourceId ?? NSNull(),
+          "afterInputSourceId": afterInputSourceId ?? NSNull(),
+        ]
+        methodChannel.invokeMethod(
+          "onMacOSGlobeKeyProbe",
+          arguments: arguments
+        )
+      }
+    }
+    macOSGlobeKeyIsDown = isDown
+    return nil
+  }
+
+  private func currentMacOSKeyboardInputSourceId() -> String? {
+    let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+    guard let rawId = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
+    else {
+      return nil
+    }
+    return Unmanaged<CFString>
+      .fromOpaque(rawId)
+      .takeUnretainedValue() as String
   }
 
   private func handleTrackpadScroll(_ event: NSEvent) {
@@ -3878,6 +3971,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       result(startTrackpadScrollCapture())
     case "stopTrackpadScrollCapture":
       stopTrackpadScrollCapture()
+      result(nil)
+    case "startMacOSGlobeKeyProbe":
+      result(startMacOSGlobeKeyProbe())
+    case "stopMacOSGlobeKeyProbe":
+      stopMacOSGlobeKeyProbe()
       result(nil)
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
