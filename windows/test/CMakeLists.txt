@@ -8,6 +8,12 @@ target_compile_options(cursor_position_snapshot_test PRIVATE /W4 /WX /utf-8)
 target_link_libraries(cursor_position_snapshot_test PRIVATE user32)
 add_test(NAME cursor_position_snapshot COMMAND cursor_position_snapshot_test)
 
+add_executable(cursor_visibility_snapshot_test cursor_visibility_snapshot_test.cpp)
+target_compile_features(cursor_visibility_snapshot_test PRIVATE cxx_std_17)
+target_compile_options(cursor_visibility_snapshot_test PRIVATE /W4 /WX /utf-8)
+target_link_libraries(cursor_visibility_snapshot_test PRIVATE user32)
+add_test(NAME cursor_visibility_snapshot COMMAND cursor_visibility_snapshot_test)
+
 # 可独立运行，不需要 Flutter，也不会向用户桌面注入输入。
 add_executable(desktop_service_input_client_test
   desktop_service_input_client_test.cpp
