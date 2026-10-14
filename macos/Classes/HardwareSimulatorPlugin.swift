@@ -5,6 +5,7 @@ import CoreGraphics
 import ApplicationServices
 import Carbon.HIToolbox
 import Darwin
+import IOKit.hid
 
 class CursorConstants {    
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
@@ -37,8 +38,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private weak var registrar: FlutterPluginRegistrar?
   private weak var flutterView: NSView?
   private var trackpadScrollMonitor: Any?
-  private var macOSGlobeKeyProbeMonitor: Any?
+  private var macOSGlobeKeyProbeLocalMonitor: Any?
   private var macOSGlobeKeyIsDown = false
+  private var macOSGlobeKeyProbeOwnsCapsLockRemap = false
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -118,6 +120,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     instance.registrar = registrar
     instance.defaultCursorHasher = CursorHasher()
     instance.startDisplayBoundsCache()
+    instance.recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
 #endif
@@ -163,68 +166,120 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       NSEvent.removeMonitor(trackpadScrollMonitor)
     }
     self.trackpadScrollMonitor = nil
-    if macOSGlobeKeyProbeMonitor == nil {
+    if macOSGlobeKeyProbeLocalMonitor == nil {
       flutterView = nil
     }
   }
 
-  /// Starts the viewer-only Globe/Fn probe.
+  /// Starts the viewer-only input-source-key probe.
   ///
-  /// This POC intentionally consumes the local event but does not forward a
-  /// remote command. The Dart callback records whether macOS kept the
-  /// controller's input source unchanged, which establishes whether a local
-  /// AppKit monitor is sufficient before extending the wire protocol.
+  /// On this controller, 中/英 arrives as Caps Lock's input-source action,
+  /// which WindowServer performs before any event tap. While the focused
+  /// viewer owns input, remap that HID usage to unused F20; the AppKit monitor
+  /// consumes F20 before Flutter/the focused app sees it, then notifies Dart
+  /// to send the semantic remote-input-source request.
   private func startMacOSGlobeKeyProbe() -> Bool {
-    if macOSGlobeKeyProbeMonitor != nil {
+    if macOSGlobeKeyProbeLocalMonitor != nil {
       return flutterView != nil
     }
-    flutterView = registrar?.view ?? registrar?.viewController?.view
-    guard flutterView != nil else { return false }
-    macOSGlobeKeyProbeMonitor = NSEvent.addLocalMonitorForEvents(
-      matching: .flagsChanged
-    ) { [weak self] event in
-      return self?.handleMacOSGlobeKeyProbe(event) ?? event
+    guard Thread.isMainThread else {
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
     }
+    flutterView = registrar?.view ?? registrar?.viewController?.view
+    guard flutterView != nil else {
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
+    }
+
+    // `Caps Lock` is only the HID identity of this physical 中/英 key. Do not
+    // intercept ordinary Caps Lock: this is the exact live state read by the
+    // macOS Keyboard settings toggle, "Use the Caps Lock key to switch to and
+    // from ABC." When it is off, leave Caps Lock completely untouched.
+    guard macOSCapsLockInputSourceSwitchEnabled() else {
+      flutterView = nil
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
+    }
+
+    guard enableMacOSGlobeKeyProbeCapsLockRemap() else {
+      flutterView = nil
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
+    }
+
+    macOSGlobeKeyProbeLocalMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.keyDown, .keyUp]
+    ) { [weak self] event in
+      guard let self else { return event }
+      return self.handleMacOSGlobeKeyProbe(event) ? nil : event
+    }
+    guard macOSGlobeKeyProbeLocalMonitor != nil else {
+      stopMacOSGlobeKeyProbe()
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
+    }
+    reportMacOSGlobeKeyProbeStatus(armed: true)
     return true
   }
 
+  private func reportMacOSGlobeKeyProbeStatus(armed: Bool) {
+    methodChannel?.invokeMethod(
+      "onMacOSGlobeKeyProbeStatus",
+      arguments: ["armed": armed]
+    )
+  }
+
   private func stopMacOSGlobeKeyProbe() {
-    if let macOSGlobeKeyProbeMonitor {
-      NSEvent.removeMonitor(macOSGlobeKeyProbeMonitor)
+    if let monitor = macOSGlobeKeyProbeLocalMonitor {
+      NSEvent.removeMonitor(monitor)
     }
-    self.macOSGlobeKeyProbeMonitor = nil
+    self.macOSGlobeKeyProbeLocalMonitor = nil
     self.macOSGlobeKeyIsDown = false
+    restoreMacOSGlobeKeyProbeCapsLockRemap()
     if trackpadScrollMonitor == nil {
       flutterView = nil
     }
   }
 
-  private func handleMacOSGlobeKeyProbe(_ event: NSEvent) -> NSEvent? {
-    // AppKit reports the physical Globe key as the Fn virtual key. Returning
-    // nil prevents this application from dispatching the event further.
-    guard event.keyCode == 0x3F else { return event }
-    if flutterView?.window !== event.window {
-      flutterView = registrar?.view ?? registrar?.viewController?.view
+  // HID Keyboard/Keypad page 0x07, usage 0x39 (Caps Lock) -> usage 0x6F
+  // (F20). F20 maps to the Carbon virtual keycode 0x5A and has no macOS
+  // input-source action. Keep source and destination values in one place so
+  // preservation/restoration never broadens the remap's scope.
+  private static let macOSCapsLockHidUsage: UInt64 = 0x700000039
+  private static let macOSGlobeRemappedF20HidUsage: UInt64 = 0x70000006F
+  private static let macOSGlobeRemappedF20KeyCode: UInt16 = 0x5A
+  private static let macOSUserKeyMappingSourceKey =
+    "HIDKeyboardModifierMappingSrc"
+  private static let macOSUserKeyMappingDestinationKey =
+    "HIDKeyboardModifierMappingDst"
+  private static let macOSUserKeyMappingKey = "UserKeyMapping" as CFString
+  private static let macOSCapsLockRemapStateVersion = 1
+  private static let macOSCapsLockRemapStateKey =
+    "com.cloudplayplus.hardwareSimulator.macosCapsLockRemapState"
+
+  private func handleMacOSGlobeKeyProbe(_ event: NSEvent) -> Bool {
+    guard event.keyCode == Self.macOSGlobeRemappedF20KeyCode else {
+      return false
     }
     guard
       let flutterView,
       let flutterWindow = flutterView.window,
       NSApp.isActive,
-      NSApp.keyWindow === flutterWindow,
-      event.window == nil || event.window === flutterWindow
+      NSApp.keyWindow === flutterWindow
     else {
-      return event
+      return false
     }
 
-    let isDown = event.modifierFlags.contains(.function)
+    let isDown = event.type == .keyDown
     if isDown && !macOSGlobeKeyIsDown {
       let beforeInputSourceId = currentMacOSKeyboardInputSourceId()
       // Check on the next main-loop turn, after any system input-source work
-      // that this local monitor did not manage to suppress would have run.
+      // that this focused viewer did not suppress would have run.
       DispatchQueue.main.async { [weak self] in
         guard
           let self,
-          self.macOSGlobeKeyProbeMonitor != nil,
+          self.macOSGlobeKeyProbeLocalMonitor != nil,
           let methodChannel = self.methodChannel
         else {
           return
@@ -241,7 +296,177 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       }
     }
     macOSGlobeKeyIsDown = isDown
-    return nil
+    return true
+  }
+
+  private typealias MacOSUserKeyMapping = [[String: UInt64]]
+  private typealias MacOSIsRomanSwitchEnabled = @convention(c) () -> Bool
+
+  private struct MacOSCapsLockRemapState: Codable {
+    let version: Int
+    let originalMapping: MacOSUserKeyMapping
+    let expectedMapping: MacOSUserKeyMapping
+  }
+
+  /// Reads the same live state used by Keyboard Settings for the Caps-Lock
+  /// input-source-switch toggle. This is intentionally not derived from the
+  /// input method's capability declaration: a capable IME can remain enabled
+  /// while the user has turned the feature off.
+  private func macOSCapsLockInputSourceSwitchEnabled() -> Bool {
+    guard
+      let carbon = dlopen(
+        "/System/Library/Frameworks/Carbon.framework/Carbon",
+        RTLD_LAZY
+      ),
+      let symbol = dlsym(
+        carbon,
+        "TISIsRomanSwitchEnabled"
+      )
+    else {
+      return false
+    }
+    let isEnabled = unsafeBitCast(
+      symbol,
+      to: MacOSIsRomanSwitchEnabled.self
+    )
+    return isEnabled()
+  }
+
+  /// Restores a remap left only by a previous CloudPlayPlus crash. It restores
+  /// only if the current event-system mapping still exactly equals our saved
+  /// mapping; an external keyboard-remap change always wins.
+  private func recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded() {
+    guard
+      let data = UserDefaults.standard.data(
+        forKey: Self.macOSCapsLockRemapStateKey
+      ),
+      let state = try? JSONDecoder().decode(
+        MacOSCapsLockRemapState.self,
+        from: data
+      ),
+      state.version == Self.macOSCapsLockRemapStateVersion
+    else {
+      UserDefaults.standard.removeObject(
+        forKey: Self.macOSCapsLockRemapStateKey
+      )
+      return
+    }
+    if currentMacOSUserKeyMapping() == state.expectedMapping {
+      _ = setMacOSUserKeyMapping(state.originalMapping)
+    }
+    UserDefaults.standard.removeObject(
+      forKey: Self.macOSCapsLockRemapStateKey
+    )
+  }
+
+  private func enableMacOSGlobeKeyProbeCapsLockRemap() -> Bool {
+    // A failed read must never be treated as an empty user mapping: doing so
+    // could overwrite a mapping that we failed to observe.
+    guard let originalMapping = currentMacOSUserKeyMapping() else {
+      return false
+    }
+    let capsLockMappings = originalMapping.filter {
+      $0[Self.macOSUserKeyMappingSourceKey] == Self.macOSCapsLockHidUsage
+    }
+    guard capsLockMappings.count <= 1 else { return false }
+    if let existingCapsLockMapping = capsLockMappings.first {
+      // A user-owned Caps Lock remap must never be overwritten. Reuse F20 only
+      // when it is already the exact mapping required by this POC.
+      return existingCapsLockMapping[
+        Self.macOSUserKeyMappingDestinationKey
+      ] == Self.macOSGlobeRemappedF20HidUsage
+    }
+
+    let remap: [String: UInt64] = [
+      Self.macOSUserKeyMappingSourceKey: Self.macOSCapsLockHidUsage,
+      Self.macOSUserKeyMappingDestinationKey: Self.macOSGlobeRemappedF20HidUsage,
+    ]
+    let expectedMapping = originalMapping + [remap]
+    let state = MacOSCapsLockRemapState(
+      version: Self.macOSCapsLockRemapStateVersion,
+      originalMapping: originalMapping,
+      expectedMapping: expectedMapping
+    )
+    guard
+      let data = try? JSONEncoder().encode(state)
+    else {
+      return false
+    }
+    // Persist the recovery record before altering the system-wide mapping.
+    UserDefaults.standard.set(data, forKey: Self.macOSCapsLockRemapStateKey)
+    let mappingApplied = setMacOSUserKeyMapping(expectedMapping)
+    guard
+      mappingApplied,
+      currentMacOSUserKeyMapping() == expectedMapping
+    else {
+      if mappingApplied {
+        _ = setMacOSUserKeyMapping(originalMapping)
+      }
+      UserDefaults.standard.removeObject(
+        forKey: Self.macOSCapsLockRemapStateKey
+      )
+      return false
+    }
+    macOSGlobeKeyProbeOwnsCapsLockRemap = true
+    return true
+  }
+
+  private func restoreMacOSGlobeKeyProbeCapsLockRemap() {
+    guard macOSGlobeKeyProbeOwnsCapsLockRemap else { return }
+    macOSGlobeKeyProbeOwnsCapsLockRemap = false
+    defer {
+      UserDefaults.standard.removeObject(
+        forKey: Self.macOSCapsLockRemapStateKey
+      )
+    }
+    guard
+      let data = UserDefaults.standard.data(
+        forKey: Self.macOSCapsLockRemapStateKey
+      ),
+      let state = try? JSONDecoder().decode(
+        MacOSCapsLockRemapState.self,
+        from: data
+      ),
+      state.version == Self.macOSCapsLockRemapStateVersion,
+      currentMacOSUserKeyMapping() == state.expectedMapping
+    else {
+      return
+    }
+    _ = setMacOSUserKeyMapping(state.originalMapping)
+  }
+
+  private func currentMacOSUserKeyMapping() -> MacOSUserKeyMapping? {
+    let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    guard let rawMapping = IOHIDEventSystemClientCopyProperty(
+      client,
+      Self.macOSUserKeyMappingKey
+    ), let mappings = rawMapping as? [[String: NSNumber]]
+    else {
+      return nil
+    }
+    return mappings.map { mapping in
+      Dictionary(
+        uniqueKeysWithValues: mapping.map { key, value in
+          (key, value.uint64Value)
+        }
+      )
+    }
+  }
+
+  private func setMacOSUserKeyMapping(_ mapping: MacOSUserKeyMapping) -> Bool {
+    let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    let bridgedMapping = mapping.map { item in
+      Dictionary(
+        uniqueKeysWithValues: item.map { key, value in
+          (key, NSNumber(value: value))
+        }
+      ) as NSDictionary
+    } as NSArray
+    return IOHIDEventSystemClientSetProperty(
+      client,
+      Self.macOSUserKeyMappingKey,
+      bridgedMapping
+    )
   }
 
   private func currentMacOSKeyboardInputSourceId() -> String? {
@@ -253,6 +478,49 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return Unmanaged<CFString>
       .fromOpaque(rawId)
       .takeUnretainedValue() as String
+  }
+
+  /// Selects the next enabled and selectable keyboard input source for this
+  /// macOS Host. The Viewer never supplies an input-source ID or language.
+  private func selectNextMacOSInputSource() -> Bool {
+    guard Thread.isMainThread else { return false }
+    let filter = [
+      kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource,
+    ] as CFDictionary
+    let sourceList = TISCreateInputSourceList(filter, false)
+      .takeRetainedValue() as NSArray
+    let selectableSources = sourceList.map { $0 as! TISInputSource }
+      .filter { source in
+        guard
+          let enabledValue = TISGetInputSourceProperty(
+            source,
+            kTISPropertyInputSourceIsEnabled
+          ),
+          let selectableValue = TISGetInputSourceProperty(
+            source,
+            kTISPropertyInputSourceIsSelectCapable
+          )
+        else {
+          return false
+        }
+        let enabled = Unmanaged<CFBoolean>
+          .fromOpaque(enabledValue)
+          .takeUnretainedValue()
+        let selectable = Unmanaged<CFBoolean>
+          .fromOpaque(selectableValue)
+          .takeUnretainedValue()
+        return CFBooleanGetValue(enabled) && CFBooleanGetValue(selectable)
+      }
+    guard selectableSources.count > 1 else { return false }
+
+    let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+    guard let currentIndex = selectableSources.firstIndex(where: {
+      CFEqual($0, current)
+    }) else {
+      return false
+    }
+    let nextIndex = (currentIndex + 1) % selectableSources.count
+    return TISSelectInputSource(selectableSources[nextIndex]) == noErr
   }
 
   private func handleTrackpadScroll(_ event: NSEvent) {
@@ -3977,6 +4245,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopMacOSGlobeKeyProbe":
       stopMacOSGlobeKeyProbe()
       result(nil)
+    case "selectNextMacOSInputSource":
+      result(selectNextMacOSInputSource())
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)

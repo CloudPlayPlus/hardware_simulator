@@ -81,6 +81,16 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
             callback(event);
           }
         }
+      } else if (call.method == "onMacOSGlobeKeyProbeStatus") {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          final armed = arguments['armed'] == true;
+          for (final callback in List<MacOSGlobeKeyProbeStatusCallback>.of(
+            macOSGlobeKeyProbeStatusCallbacks,
+          )) {
+            callback(armed);
+          }
+        }
       } else if (call.method == "onTextInputDecision" ||
           call.method == "onWindowsTextInputDecision") {
         final arguments = call.arguments;
@@ -363,11 +373,31 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     }
   }
 
+  final List<MacOSGlobeKeyProbeStatusCallback>
+      macOSGlobeKeyProbeStatusCallbacks = [];
+
+  @override
+  void addMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    if (!isinitialized) init();
+    if (!macOSGlobeKeyProbeStatusCallbacks.contains(callback)) {
+      macOSGlobeKeyProbeStatusCallbacks.add(callback);
+    }
+  }
+
+  @override
+  void removeMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    macOSGlobeKeyProbeStatusCallbacks.remove(callback);
+  }
+
   @override
   Future<bool> startMacOSGlobeKeyProbe() async {
     try {
-      final supported = await methodChannel
-          .invokeMethod<Object?>('startMacOSGlobeKeyProbe');
+      final supported =
+          await methodChannel.invokeMethod<Object?>('startMacOSGlobeKeyProbe');
       return supported == true;
     } on MissingPluginException {
       return false;
@@ -380,6 +410,18 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       await methodChannel.invokeMethod<void>('stopMacOSGlobeKeyProbe');
     } on MissingPluginException {
       return;
+    }
+  }
+
+  @override
+  Future<bool> selectNextMacOSInputSource() async {
+    try {
+      final selected = await methodChannel.invokeMethod<Object?>(
+        'selectNextMacOSInputSource',
+      );
+      return selected == true;
+    } on MissingPluginException {
+      return false;
     }
   }
 

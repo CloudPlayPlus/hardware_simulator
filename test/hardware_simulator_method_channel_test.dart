@@ -393,6 +393,44 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
+  test('decodes macOS Globe probe event-tap status', () async {
+    bool? armed;
+    void listener(bool value) {
+      armed = value;
+      platform.removeMacOSGlobeKeyProbeStatus(listener);
+    }
+
+    platform.addMacOSGlobeKeyProbeStatus(listener);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onMacOSGlobeKeyProbeStatus', <String, dynamic>{
+          'armed': true,
+        }),
+      ),
+      null,
+    );
+
+    expect(armed, isTrue);
+  });
+
+  test('selectNextMacOSInputSource invokes the semantic native method',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      calls.add(methodCall);
+      return true;
+    });
+
+    expect(await platform.selectNextMacOSInputSource(), isTrue);
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'selectNextMacOSInputSource');
+    expect(calls.single.arguments, isNull);
+  });
+
   test('first and last text input listeners manage native capture', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

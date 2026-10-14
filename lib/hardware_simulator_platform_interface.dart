@@ -15,6 +15,7 @@ typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
 typedef MacOSGlobeKeyProbeCallback = void Function(MacOSGlobeKeyProbe event);
+typedef MacOSGlobeKeyProbeStatusCallback = void Function(bool armed);
 typedef TextInputDecisionCallback = void Function(
   TextInputDecision decision,
 );
@@ -276,6 +277,16 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Removes a macOS Globe/Fn interception POC listener.
   void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
 
+  /// Registers for the POC's native-capture availability status.
+  void addMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {}
+
+  /// Removes a native-capture availability status listener.
+  void removeMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {}
+
   /// Starts the macOS Globe/Fn interception POC.
   Future<bool> startMacOSGlobeKeyProbe() async {
     return false;
@@ -283,6 +294,12 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Stops the macOS Globe/Fn interception POC.
   Future<void> stopMacOSGlobeKeyProbe() async {}
+
+  /// Asks a macOS Host to select its next enabled, selectable input source.
+  /// Other platforms return false without changing any input source.
+  Future<bool> selectNextMacOSInputSource() async {
+    return false;
+  }
 
   /// 注册 Host 远端点击后的文本输入决策。
   void addTextInputDecision(
