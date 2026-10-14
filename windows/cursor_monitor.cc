@@ -1,5 +1,6 @@
 #include "cursor_monitor.h"
 #include "cursor_position_snapshot.h"
+#include "cursor_visibility_snapshot.h"
 #include "cpp_log_shim.h"
 #include "hardware_simulator_plugin.h"
 
@@ -590,13 +591,7 @@ std::vector<uint8_t> CursorPositionPayload(float x, float y) {
 }
 
 std::optional<bool> IsCursorVisible() {
-    CURSORINFO ci = { 0 };
-    ci.cbSize = sizeof(CURSORINFO);
-
-    if (GetCursorInfo(&ci)) {
-        return (ci.flags & CURSOR_SUPPRESSED) == 0;
-    }
-    return std::nullopt;
+    return ReadCursorVisibilitySnapshot();
 }
 
 void SyncCursorVisibility() {
@@ -761,11 +756,13 @@ void CursorMonitor::startHook(CursorChangedCallback callback, long long callback
     }
 
     const auto visible = IsCursorVisible();
-    if (visible && !*visible) {
+    // 每个新订阅都需要当前显隐基线；重连的 Viewer 可能仍保留旧隐藏状态。
+    if (visible) {
         const auto mousePos = GetMousePositionAndScreenId();
         if (mousePos) {
             const auto positionBytes = CursorPositionPayload(mousePos->xPercent, mousePos->yPercent);
-            callback(CPP_CURSOR_INVISIBLE, mousePos->screenId, positionBytes);
+            callback(*visible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
+                mousePos->screenId, positionBytes);
         }
     }
 }
