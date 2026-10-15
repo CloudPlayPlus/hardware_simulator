@@ -71,6 +71,26 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
             callback(event);
           }
         }
+      } else if (call.method == "onMacOSGlobeKeyProbe") {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          final event = MacOSGlobeKeyProbe.fromMap(arguments);
+          for (final callback in List<MacOSGlobeKeyProbeCallback>.of(
+            macOSGlobeKeyProbeCallbacks,
+          )) {
+            callback(event);
+          }
+        }
+      } else if (call.method == "onMacOSGlobeKeyProbeStatus") {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          final armed = arguments['armed'] == true;
+          for (final callback in List<MacOSGlobeKeyProbeStatusCallback>.of(
+            macOSGlobeKeyProbeStatusCallbacks,
+          )) {
+            callback(armed);
+          }
+        }
       } else if (call.method == "onTextInputDecision" ||
           call.method == "onWindowsTextInputDecision") {
         final arguments = call.arguments;
@@ -329,6 +349,82 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       await methodChannel.invokeMethod<void>('stopTrackpadScrollCapture');
     } on MissingPluginException {
       return;
+    }
+  }
+
+  final List<MacOSGlobeKeyProbeCallback> macOSGlobeKeyProbeCallbacks = [];
+
+  @override
+  void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    if (!isinitialized) init();
+    if (macOSGlobeKeyProbeCallbacks.contains(callback)) return;
+    final shouldStartCapture = macOSGlobeKeyProbeCallbacks.isEmpty;
+    macOSGlobeKeyProbeCallbacks.add(callback);
+    if (shouldStartCapture) {
+      unawaited(startMacOSGlobeKeyProbe());
+    }
+  }
+
+  @override
+  void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    final removed = macOSGlobeKeyProbeCallbacks.remove(callback);
+    if (removed && macOSGlobeKeyProbeCallbacks.isEmpty) {
+      unawaited(stopMacOSGlobeKeyProbe());
+    }
+  }
+
+  final List<MacOSGlobeKeyProbeStatusCallback>
+      macOSGlobeKeyProbeStatusCallbacks = [];
+
+  @override
+  void addMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    if (!isinitialized) init();
+    if (!macOSGlobeKeyProbeStatusCallbacks.contains(callback)) {
+      macOSGlobeKeyProbeStatusCallbacks.add(callback);
+    }
+  }
+
+  @override
+  void removeMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    macOSGlobeKeyProbeStatusCallbacks.remove(callback);
+  }
+
+  @override
+  Future<bool> startMacOSGlobeKeyProbe() async {
+    try {
+      final supported =
+          await methodChannel.invokeMethod<Object?>('startMacOSGlobeKeyProbe');
+      return supported == true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> stopMacOSGlobeKeyProbe() async {
+    try {
+      final restored = await methodChannel.invokeMethod<Object?>(
+        'stopMacOSGlobeKeyProbe',
+      );
+      return restored == true;
+    } on MissingPluginException {
+      return true;
+    }
+  }
+
+  @override
+  Future<bool> selectNextMacOSInputSource() async {
+    try {
+      final selected = await methodChannel.invokeMethod<Object?>(
+        'selectNextMacOSInputSource',
+      );
+      return selected == true;
+    } on MissingPluginException {
+      return false;
     }
   }
 
