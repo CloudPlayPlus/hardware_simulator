@@ -1117,6 +1117,8 @@ HardwareSimulatorPlugin::~HardwareSimulatorPlugin() {
             kCursorReseedSubclassId);
         flutter_view_window_ = nullptr;
     }
+    // 关闭 SYSTEM 恢复通道前，先归还独占会话保存的显示配置。
+    VirtualDisplayControl::RestoreDisplayConfiguration();
     DesktopServiceInputClient::Instance().Close();
     StopMonitorThread();
     destroyTouchDevice();

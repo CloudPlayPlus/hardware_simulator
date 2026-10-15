@@ -12,19 +12,23 @@ std::vector<DISPLAYCONFIG_PATH_INFO> saved_paths;
 std::vector<DISPLAYCONFIG_MODE_INFO> active_modes;
 std::vector<DISPLAYCONFIG_MODE_INFO> saved_modes;
 LONG apply_result = ERROR_SUCCESS;
+bool fail_temporary = false;
 
-LONG WINAPI TestBufferSizes(UINT32, UINT32* paths, UINT32* modes) {
-    *paths = static_cast<UINT32>(current_paths.size());
-    *modes = static_cast<UINT32>(active_modes.size());
+LONG WINAPI TestBufferSizes(UINT32 flags, UINT32* paths, UINT32* modes) {
+    *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths : current_paths).size());
+    *modes = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_modes : active_modes).size());
     return ERROR_SUCCESS;
 }
-LONG WINAPI TestQuery(UINT32, UINT32* paths, DISPLAYCONFIG_PATH_INFO* path_data,
-    UINT32* modes, DISPLAYCONFIG_MODE_INFO* mode_data, DISPLAYCONFIG_TOPOLOGY_ID*) {
-    CHECK(*paths >= current_paths.size() && *modes >= active_modes.size());
-    std::copy(current_paths.begin(), current_paths.end(), path_data);
-    std::copy(active_modes.begin(), active_modes.end(), mode_data);
-    *paths = static_cast<UINT32>(current_paths.size());
-    *modes = static_cast<UINT32>(active_modes.size());
+LONG WINAPI TestQuery(UINT32 flags, UINT32* paths, DISPLAYCONFIG_PATH_INFO* path_data,
+    UINT32* modes, DISPLAYCONFIG_MODE_INFO* mode_data, DISPLAYCONFIG_TOPOLOGY_ID* topology) {
+    const auto& source_paths = flags == QDC_DATABASE_CURRENT ? saved_paths : current_paths;
+    const auto& source_modes = flags == QDC_DATABASE_CURRENT ? saved_modes : active_modes;
+    CHECK((flags == QDC_DATABASE_CURRENT) == (topology != nullptr));
+    CHECK(*paths >= source_paths.size() && *modes >= source_modes.size());
+    std::copy(source_paths.begin(), source_paths.end(), path_data);
+    std::copy(source_modes.begin(), source_modes.end(), mode_data);
+    *paths = static_cast<UINT32>(source_paths.size());
+    *modes = static_cast<UINT32>(source_modes.size());
     return ERROR_SUCCESS;
 }
 LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
@@ -39,6 +43,7 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
 LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     UINT32 mode_count, DISPLAYCONFIG_MODE_INFO* modes, UINT32 flags) {
     if (apply_result != ERROR_SUCCESS) return apply_result;
+    if (fail_temporary && !(flags & SDC_SAVE_TO_DATABASE)) return ERROR_GEN_FAILURE;
     CHECK(flags & SDC_APPLY);
     current_paths.assign(paths, paths + count);
     active_modes.assign(modes, modes + mode_count);
@@ -85,6 +90,8 @@ public:
         saved_paths = current_paths;
         saved_modes = active_modes;
         VirtualDisplay::DisplayInfo info;
+        saved_modes[0].sourceMode.width = 3840;
+        active_modes[0].sourceMode.width = 1920; // 游戏正在使用临时模式。
         info.device_name = "\\\\.\\DISPLAY2";
         VirtualDisplayControl::displays_.push_back(std::make_unique<VirtualDisplay>(
             VirtualDisplay::DisplayConfig(1920, 1080), info, 42));
@@ -103,14 +110,26 @@ public:
         CHECK(!IsActive(0) && IsActive(1));
 
         apply_result = ERROR_SUCCESS;
+        fail_temporary = true;
+        CHECK(!VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(VirtualDisplayControl::HasPendingConfiguration());
+        CHECK(saved_modes[0].sourceMode.width == 3840);
+        fail_temporary = false;
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
         CHECK(!VirtualDisplayControl::HasPendingConfiguration());
         CHECK(IsActive(0) && IsActive(1));
         CHECK(active_modes[1].sourceMode.position.x == 1920);
+        CHECK(active_modes[0].sourceMode.width == 1920);
+        CHECK(saved_modes[0].sourceMode.width == 3840);
         ExitGameFullscreen();
+        CHECK(active_modes[0].sourceMode.width == 3840);
         CHECK(IsActive(0) && IsActive(1));
         CHECK(active_modes[1].sourceMode.position.x == 1920);
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(42));
+        VirtualDisplayControl::Shutdown();
+        CHECK(!VirtualDisplayControl::HasPendingConfiguration());
+        CHECK(IsActive(0) && IsActive(1));
         VirtualDisplayControl::displays_.clear();
     }
 };

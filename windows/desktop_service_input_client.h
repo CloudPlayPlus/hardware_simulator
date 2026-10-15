@@ -30,7 +30,8 @@ class DesktopServiceInputClient {
       bool& success);
   bool RestoreDisplayConfiguration(
       const std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
-      const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status);
+      const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status,
+      bool persist = true);
   void Close();
 
  private:

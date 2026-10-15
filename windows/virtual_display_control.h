@@ -97,6 +97,8 @@ private:
     // Display configuration backup for restore functionality
     static std::vector<DISPLAYCONFIG_PATH_INFO> original_paths_;
     static std::vector<DISPLAYCONFIG_MODE_INFO> original_modes_;
+    static std::vector<DISPLAYCONFIG_PATH_INFO> persistent_paths_;
+    static std::vector<DISPLAYCONFIG_MODE_INFO> persistent_modes_;
     static bool has_backup_;
     
     // Helper method to save current display configuration

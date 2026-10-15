@@ -41,6 +41,8 @@ std::vector<std::unique_ptr<VirtualDisplay>> VirtualDisplayControl::displays_;
 // Display configuration backup for restore functionality
 std::vector<DISPLAYCONFIG_PATH_INFO> VirtualDisplayControl::original_paths_;
 std::vector<DISPLAYCONFIG_MODE_INFO> VirtualDisplayControl::original_modes_;
+std::vector<DISPLAYCONFIG_PATH_INFO> VirtualDisplayControl::persistent_paths_;
+std::vector<DISPLAYCONFIG_MODE_INFO> VirtualDisplayControl::persistent_modes_;
 bool VirtualDisplayControl::has_backup_ = false;
 
 namespace {
@@ -465,6 +467,8 @@ bool VirtualDisplayControl::Initialize() {
 }
 
 void VirtualDisplayControl::Shutdown() {
+    // 先恢复，失败保留虚拟屏与备份供重试。
+    if (!RestoreDisplayConfiguration()) return;
     if (!initialized_) {
         return;
     }
@@ -1258,36 +1262,26 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
         return true;
     }
 
-    if (original_paths_.empty()) {
-        has_backup_ = false;
-        return true;
-    }
-
-    // 同时恢复系统保存布局，避免后续退出全屏再次加载独占配置。
-    LONG result = SetDisplayConfig(
-        static_cast<UINT32>(original_paths_.size()),
-        original_paths_.data(),
-        static_cast<UINT32>(original_modes_.size()),
-        original_modes_.data(),
-        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE
-    );
-
-    if (result == ERROR_ACCESS_DENIED) {
-        CPPLOG_INFO("DISPLAY_RESTORE", "local restore denied; requesting SYSTEM restore paths=%zu modes=%zu",
-                    original_paths_.size(), original_modes_.size());
-        LONG service_result = ERROR_GEN_FAILURE;
-        if (hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
-                original_paths_, original_modes_, service_result)) {
-            result = service_result;
-            CPPLOG_INFO("DISPLAY_RESTORE", "SYSTEM restore result=%ld", result);
-        } else {
-            CPPLOG_WARN("DISPLAY_RESTORE", "SYSTEM restore unavailable or response invalid; keeping backup");
+    auto apply = [](const auto& paths, const auto& modes, bool persist) {
+        // SetDisplayConfig 可能调整传入数组；失败重试不能修改备份。
+        auto apply_paths = paths;
+        auto apply_modes = modes;
+        LONG result = SetDisplayConfig(static_cast<UINT32>(apply_paths.size()), apply_paths.data(),
+            static_cast<UINT32>(apply_modes.size()), apply_modes.data(),
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES |
+            (persist ? SDC_SAVE_TO_DATABASE : 0));
+        if (result == ERROR_ACCESS_DENIED) {
+            LONG service_result = ERROR_GEN_FAILURE;
+            if (hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
+                    paths, modes, service_result, persist)) result = service_result;
         }
-    }
-    if (result != ERROR_SUCCESS) {
-        CPPLOG_WARN("DISPLAY_RESTORE", "display restore failed status=%ld; keeping backup", result);
-        return false;
-    }
+        if (result != ERROR_SUCCESS)
+            CPPLOG_WARN("DISPLAY_RESTORE", "restore failed status=%ld persist=%d; keeping backups", result, persist);
+        return result == ERROR_SUCCESS;
+    };
+    // 先还原用户的桌面默认值，再临时恢复游戏当时的活动模式。
+    if (!apply(persistent_paths_, persistent_modes_, true) ||
+        !apply(original_paths_, original_modes_, false)) return false;
 
     CPPLOG_INFO("DISPLAY_RESTORE", "display configuration restored");
     
@@ -1295,6 +1289,8 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
     has_backup_ = false;
     original_paths_.clear();
     original_modes_.clear();
+    persistent_paths_.clear();
+    persistent_modes_.clear();
     
     return true;
 }
@@ -1304,32 +1300,26 @@ bool VirtualDisplayControl::HasPendingConfiguration() {
 }
 
 bool VirtualDisplayControl::SaveDisplayConfiguration() {
-    UINT32 numPathArrayElements = 0;
-    UINT32 numModeInfoArrayElements = 0;
-    LONG result = ERROR_SUCCESS;
-
-    // Get required buffer sizes
-    result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &numPathArrayElements, &numModeInfoArrayElements);
-    if (result != ERROR_SUCCESS) {
-        std::cerr << "GetDisplayConfigBufferSizes failed: " << result << std::endl;
+    auto query = [](UINT32 flags, auto& paths, auto& modes) {
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            UINT32 path_count = 0, mode_count = 0;
+            if (GetDisplayConfigBufferSizes(flags, &path_count, &mode_count) != ERROR_SUCCESS)
+                return false;
+            paths.resize(path_count);
+            modes.resize(mode_count);
+            DISPLAYCONFIG_TOPOLOGY_ID topology{};
+            LONG result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count,
+                modes.data(), flags == QDC_DATABASE_CURRENT ? &topology : nullptr);
+            if (result == ERROR_INSUFFICIENT_BUFFER) continue;
+            if (result != ERROR_SUCCESS || !path_count || !mode_count) return false;
+            paths.resize(path_count);
+            modes.resize(mode_count);
+            return true;
+        }
         return false;
-    }
-
-    // Allocate buffers
-    original_paths_.resize(numPathArrayElements);
-    original_modes_.resize(numModeInfoArrayElements);
-
-    // Query current display configuration
-    result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, 
-                               &numPathArrayElements, original_paths_.data(), 
-                               &numModeInfoArrayElements, original_modes_.data(), 
-                               nullptr);
-    if (result != ERROR_SUCCESS) {
-        std::cerr << "QueryDisplayConfig failed: " << result << std::endl;
-        return false;
-    }
-
+    };
+    if (!query(QDC_DATABASE_CURRENT, persistent_paths_, persistent_modes_) ||
+        !query(QDC_ONLY_ACTIVE_PATHS, original_paths_, original_modes_)) return false;
     has_backup_ = true;
-    std::cout << "Display configuration saved successfully. Found " << numPathArrayElements << " active displays." << std::endl;
     return true;
 }
