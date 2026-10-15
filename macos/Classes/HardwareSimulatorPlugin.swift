@@ -41,6 +41,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macOSGlobeKeyProbeLocalMonitor: Any?
   private var macOSGlobeKeyIsDown = false
   private var macOSGlobeKeyProbeOwnsCapsLockRemap = false
+  private var macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor: Int32?
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -91,6 +92,58 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   static func registerInstanceForTesting(_ instance: HardwareSimulatorPlugin) {
     registeredInstances.add(instance)
   }
+
+  var macOSUserKeyMappingReaderForTesting: (() -> MacOSUserKeyMapping?)?
+  var macOSUserKeyMappingWriterForTesting: ((MacOSUserKeyMapping) -> Bool)?
+  static var macOSCapsLockRemapLeaseFilePathForTesting: String?
+
+  static var macOSCapsLockRemapStateDataForTesting: Data? {
+    UserDefaults.standard.data(forKey: macOSCapsLockRemapStateKey)
+  }
+
+  static let macOSCapsLockHidUsageForTesting: UInt64 = macOSCapsLockHidUsage
+  static let macOSGlobeRemappedF20HidUsageForTesting: UInt64 =
+    macOSGlobeRemappedF20HidUsage
+
+  func enableMacOSGlobeKeyProbeCapsLockRemapForTesting() -> Bool {
+    enableMacOSGlobeKeyProbeCapsLockRemap()
+  }
+
+  @discardableResult
+  func restoreMacOSGlobeKeyProbeCapsLockRemapForTesting() -> Bool {
+    restoreMacOSGlobeKeyProbeCapsLockRemap()
+  }
+
+  func recoverMacOSGlobeKeyProbeCapsLockRemapForTesting() {
+    recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded()
+  }
+
+  func abandonMacOSGlobeKeyProbeCapsLockRemapForTesting() {
+    macOSGlobeKeyProbeOwnsCapsLockRemap = false
+    releaseMacOSGlobeKeyProbeCapsLockRemapLease()
+  }
+
+  var ownsMacOSGlobeKeyProbeCapsLockRemapForTesting: Bool {
+    macOSGlobeKeyProbeOwnsCapsLockRemap
+  }
+
+  static var hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting: Bool {
+    UserDefaults.standard.data(forKey: macOSCapsLockRemapStateKey) != nil
+  }
+
+  static func resetMacOSGlobeKeyProbeCapsLockRemapForTesting() {
+    macOSCapsLockRemapLeaseLock.lock()
+    if let owner = macOSCapsLockRemapLeaseOwner,
+       let descriptor = owner.macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor {
+      _ = flock(descriptor, LOCK_UN)
+      _ = close(descriptor)
+      owner.macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor = nil
+    }
+    macOSCapsLockRemapLeaseOwner = nil
+    macOSCapsLockRemapLeaseLock.unlock()
+    UserDefaults.standard.removeObject(forKey: macOSCapsLockRemapStateKey)
+    UserDefaults.standard.synchronize()
+  }
 #endif
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macVirtualDisplayQueueKey = DispatchSpecificKey<Void>()
@@ -130,6 +183,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   deinit {
     stopTrackpadScrollCapture()
     stopMacOSGlobeKeyProbe()
+    // A failed restoration deliberately keeps its journal. Closing the lease
+    // here lets a future plugin instance treat it as crash recovery instead of
+    // being blocked forever by an object that is going away.
+    releaseMacOSGlobeKeyProbeCapsLockRemapLease()
     if let displayBoundsCacheObserver {
       NotificationCenter.default.removeObserver(displayBoundsCacheObserver)
     }
@@ -257,6 +314,97 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private static let macOSCapsLockRemapStateVersion = 1
   private static let macOSCapsLockRemapStateKey =
     "com.cloudplayplus.hardwareSimulator.macosCapsLockRemapState"
+  private static let macOSCapsLockRemapLeaseLock = NSLock()
+  private static weak var macOSCapsLockRemapLeaseOwner: HardwareSimulatorPlugin?
+
+  /// `UserKeyMapping` is a per-user global. Hold this advisory lock for the
+  /// full lifetime of our mapping, rather than treating a matching mapping as
+  /// a crash remnant. That lets a new process distinguish a live owner from a
+  /// crashed one: macOS closes the file descriptor when the owner dies.
+  private static func macOSCapsLockRemapLeaseFilePath() -> String? {
+#if DEBUG
+    if let macOSCapsLockRemapLeaseFilePathForTesting {
+      return macOSCapsLockRemapLeaseFilePathForTesting
+    }
+#endif
+    guard let supportDirectory = FileManager.default.urls(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask
+    ).first else {
+      return nil
+    }
+    let directory = supportDirectory.appendingPathComponent(
+      "CloudPlayPlus",
+      isDirectory: true
+    )
+    do {
+      try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
+    } catch {
+      return nil
+    }
+    return directory.appendingPathComponent(
+      "macos-caps-lock-remap.lock",
+      isDirectory: false
+    ).path
+  }
+
+  private static func withMacOSCapsLockRemapRecoveryLease(
+    _ body: () -> Void
+  ) {
+    macOSCapsLockRemapLeaseLock.lock()
+    defer { macOSCapsLockRemapLeaseLock.unlock() }
+    guard
+      macOSCapsLockRemapLeaseOwner == nil,
+      let path = macOSCapsLockRemapLeaseFilePath()
+    else {
+      return
+    }
+    let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0 else { return }
+    defer { _ = close(descriptor) }
+    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { return }
+    defer { _ = flock(descriptor, LOCK_UN) }
+    body()
+  }
+
+  private func acquireMacOSGlobeKeyProbeCapsLockRemapLease() -> Bool {
+    Self.macOSCapsLockRemapLeaseLock.lock()
+    defer { Self.macOSCapsLockRemapLeaseLock.unlock() }
+    if Self.macOSCapsLockRemapLeaseOwner === self {
+      return true
+    }
+    guard
+      Self.macOSCapsLockRemapLeaseOwner == nil,
+      let path = Self.macOSCapsLockRemapLeaseFilePath()
+    else {
+      return false
+    }
+    let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0 else { return false }
+    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+      _ = close(descriptor)
+      return false
+    }
+    macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor = descriptor
+    Self.macOSCapsLockRemapLeaseOwner = self
+    return true
+  }
+
+  private func releaseMacOSGlobeKeyProbeCapsLockRemapLease() {
+    Self.macOSCapsLockRemapLeaseLock.lock()
+    defer { Self.macOSCapsLockRemapLeaseLock.unlock() }
+    guard Self.macOSCapsLockRemapLeaseOwner === self else { return }
+    if let descriptor = macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor {
+      _ = flock(descriptor, LOCK_UN)
+      _ = close(descriptor)
+    }
+    macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor = nil
+    Self.macOSCapsLockRemapLeaseOwner = nil
+  }
 
   private func handleMacOSGlobeKeyProbe(_ event: NSEvent) -> Bool {
     guard event.keyCode == Self.macOSGlobeRemappedF20KeyCode else {
@@ -299,7 +447,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return true
   }
 
-  private typealias MacOSUserKeyMapping = [[String: UInt64]]
+  typealias MacOSUserKeyMapping = [[String: UInt64]]
   private typealias MacOSIsRomanSwitchEnabled = @convention(c) () -> Bool
 
   private struct MacOSCapsLockRemapState: Codable {
@@ -332,49 +480,100 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return isEnabled()
   }
 
-  /// Restores a remap left only by a previous CloudPlayPlus crash. It restores
-  /// only if the current event-system mapping still exactly equals our saved
-  /// mapping; an external keyboard-remap change always wins.
+  /// Restores a remap left only by a previous CloudPlayPlus crash. The
+  /// recovery lease prevents a second engine/process from restoring a mapping
+  /// that an existing viewer still owns.
   private func recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded() {
+    Self.withMacOSCapsLockRemapRecoveryLease { [weak self] in
+      self?.recoverMacOSGlobeKeyProbeCapsLockRemapWhileLeaseHeld()
+    }
+  }
+
+  /// The caller must hold either the temporary recovery lease or this
+  /// instance's active owner lease.
+  @discardableResult
+  private func recoverMacOSGlobeKeyProbeCapsLockRemapWhileLeaseHeld() -> Bool {
     guard
       let data = UserDefaults.standard.data(
         forKey: Self.macOSCapsLockRemapStateKey
-      ),
+      )
+    else {
+      return true
+    }
+    guard
       let state = try? JSONDecoder().decode(
         MacOSCapsLockRemapState.self,
         from: data
       ),
       state.version == Self.macOSCapsLockRemapStateVersion
     else {
-      UserDefaults.standard.removeObject(
-        forKey: Self.macOSCapsLockRemapStateKey
-      )
-      return
+      // Without a trustworthy original mapping, changing the global mapping
+      // would be worse than leaving it untouched for explicit recovery.
+      return false
     }
-    if currentMacOSUserKeyMapping() == state.expectedMapping {
-      _ = setMacOSUserKeyMapping(state.originalMapping)
+
+    guard let currentMapping = currentMacOSUserKeyMapping() else {
+      return false
     }
-    UserDefaults.standard.removeObject(
-      forKey: Self.macOSCapsLockRemapStateKey
-    )
+    if currentMapping == state.originalMapping ||
+        currentMapping != state.expectedMapping {
+      // It was already restored, or the user changed this mapping after our
+      // process exited. The current user state wins in both cases. An
+      // externally modified mapping is not confirmation that the original
+      // mapping was restored, so retain the journal rather than losing the
+      // only recovery record after a failed/contended IOHID transition.
+      if currentMapping == state.originalMapping {
+        clearMacOSGlobeKeyProbeCapsLockRemapState()
+      }
+      return true
+    }
+
+    guard
+      setMacOSUserKeyMapping(state.originalMapping),
+      currentMacOSUserKeyMapping() == state.originalMapping
+    else {
+      // Keep the journal. A later startup can safely retry a transient IOHID
+      // failure, because the lease proves no live owner is being interrupted.
+      return false
+    }
+    clearMacOSGlobeKeyProbeCapsLockRemapState()
+    return true
   }
 
   private func enableMacOSGlobeKeyProbeCapsLockRemap() -> Bool {
+    guard acquireMacOSGlobeKeyProbeCapsLockRemapLease() else {
+      return false
+    }
+    guard recoverMacOSGlobeKeyProbeCapsLockRemapWhileLeaseHeld() else {
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
+      return false
+    }
     // A failed read must never be treated as an empty user mapping: doing so
     // could overwrite a mapping that we failed to observe.
     guard let originalMapping = currentMacOSUserKeyMapping() else {
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
       return false
     }
     let capsLockMappings = originalMapping.filter {
       $0[Self.macOSUserKeyMappingSourceKey] == Self.macOSCapsLockHidUsage
     }
-    guard capsLockMappings.count <= 1 else { return false }
+    guard capsLockMappings.count <= 1 else {
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
+      return false
+    }
     if let existingCapsLockMapping = capsLockMappings.first {
       // A user-owned Caps Lock remap must never be overwritten. Reuse F20 only
-      // when it is already the exact mapping required by this POC.
-      return existingCapsLockMapping[
+      // when it is already the exact mapping required by this POC. Reusing it
+      // still requires the lease so another viewer cannot restore it under us.
+      let matchesRequiredRemap = existingCapsLockMapping[
         Self.macOSUserKeyMappingDestinationKey
       ] == Self.macOSGlobeRemappedF20HidUsage
+      guard matchesRequiredRemap else {
+        releaseMacOSGlobeKeyProbeCapsLockRemapLease()
+        return false
+      }
+      macOSGlobeKeyProbeOwnsCapsLockRemap = true
+      return true
     }
 
     let remap: [String: UInt64] = [
@@ -390,6 +589,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     guard
       let data = try? JSONEncoder().encode(state)
     else {
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
       return false
     }
     // Persist the recovery record before altering the system-wide mapping.
@@ -399,25 +599,25 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       mappingApplied,
       currentMacOSUserKeyMapping() == expectedMapping
     else {
-      if mappingApplied {
+      if currentMacOSUserKeyMapping() == expectedMapping {
         _ = setMacOSUserKeyMapping(originalMapping)
       }
-      UserDefaults.standard.removeObject(
-        forKey: Self.macOSCapsLockRemapStateKey
-      )
+      if currentMacOSUserKeyMapping() == originalMapping {
+        clearMacOSGlobeKeyProbeCapsLockRemapState()
+      }
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
       return false
     }
     macOSGlobeKeyProbeOwnsCapsLockRemap = true
     return true
   }
 
-  private func restoreMacOSGlobeKeyProbeCapsLockRemap() {
-    guard macOSGlobeKeyProbeOwnsCapsLockRemap else { return }
+  @discardableResult
+  private func restoreMacOSGlobeKeyProbeCapsLockRemap() -> Bool {
+    guard macOSGlobeKeyProbeOwnsCapsLockRemap else { return true }
     macOSGlobeKeyProbeOwnsCapsLockRemap = false
     defer {
-      UserDefaults.standard.removeObject(
-        forKey: Self.macOSCapsLockRemapStateKey
-      )
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
     }
     guard
       let data = UserDefaults.standard.data(
@@ -427,15 +627,43 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         MacOSCapsLockRemapState.self,
         from: data
       ),
-      state.version == Self.macOSCapsLockRemapStateVersion,
-      currentMacOSUserKeyMapping() == state.expectedMapping
+      state.version == Self.macOSCapsLockRemapStateVersion
     else {
-      return
+      return false
     }
-    _ = setMacOSUserKeyMapping(state.originalMapping)
+    guard let currentMapping = currentMacOSUserKeyMapping() else {
+      return false
+    }
+    if currentMapping == state.originalMapping ||
+        currentMapping != state.expectedMapping {
+      if currentMapping == state.originalMapping {
+        clearMacOSGlobeKeyProbeCapsLockRemapState()
+      }
+      return true
+    }
+    guard
+      setMacOSUserKeyMapping(state.originalMapping),
+      currentMacOSUserKeyMapping() == state.originalMapping
+    else {
+      // Do not discard the only recovery record when the IOHID write or its
+      // confirmation fails. The next owner can retry after this lease closes.
+      return false
+    }
+    clearMacOSGlobeKeyProbeCapsLockRemapState()
+    return true
+  }
+
+  private func clearMacOSGlobeKeyProbeCapsLockRemapState() {
+    UserDefaults.standard.removeObject(forKey: Self.macOSCapsLockRemapStateKey)
+    UserDefaults.standard.synchronize()
   }
 
   private func currentMacOSUserKeyMapping() -> MacOSUserKeyMapping? {
+#if DEBUG
+    if let macOSUserKeyMappingReaderForTesting {
+      return macOSUserKeyMappingReaderForTesting()
+    }
+#endif
     let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
     guard let rawMapping = IOHIDEventSystemClientCopyProperty(
       client,
@@ -454,6 +682,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func setMacOSUserKeyMapping(_ mapping: MacOSUserKeyMapping) -> Bool {
+#if DEBUG
+    if let macOSUserKeyMappingWriterForTesting {
+      return macOSUserKeyMappingWriterForTesting(mapping)
+    }
+#endif
     let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
     let bridgedMapping = mapping.map { item in
       Dictionary(

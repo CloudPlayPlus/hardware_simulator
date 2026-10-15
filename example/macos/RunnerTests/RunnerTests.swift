@@ -10,6 +10,172 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  private typealias KeyMapping = [[String: UInt64]]
+  private let sourceKey = "HIDKeyboardModifierMappingSrc"
+  private let destinationKey = "HIDKeyboardModifierMappingDst"
+  private var capsLockRemapLeasePath: String!
+
+  override func setUp() {
+    super.setUp()
+    capsLockRemapLeasePath = NSTemporaryDirectory()
+      .appending("hardware-simulator-caps-lock-\(UUID().uuidString).lock")
+    HardwareSimulatorPlugin.macOSCapsLockRemapLeaseFilePathForTesting =
+      capsLockRemapLeasePath
+    HardwareSimulatorPlugin.resetMacOSGlobeKeyProbeCapsLockRemapForTesting()
+  }
+
+  override func tearDown() {
+    HardwareSimulatorPlugin.resetMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    HardwareSimulatorPlugin.macOSCapsLockRemapLeaseFilePathForTesting = nil
+    if let capsLockRemapLeasePath {
+      try? FileManager.default.removeItem(atPath: capsLockRemapLeasePath)
+    }
+    super.tearDown()
+  }
+
+  private func globeMapping() -> [String: UInt64] {
+    [
+      sourceKey: HardwareSimulatorPlugin.macOSCapsLockHidUsageForTesting,
+      destinationKey: HardwareSimulatorPlugin.macOSGlobeRemappedF20HidUsageForTesting,
+    ]
+  }
+
+  private func plugin(
+    mapping: KeyMapping,
+    writesSucceed: @escaping () -> Bool = { true }
+  ) -> (plugin: HardwareSimulatorPlugin, currentMapping: () -> KeyMapping) {
+    let plugin = HardwareSimulatorPlugin()
+    var currentMapping = mapping
+    plugin.macOSUserKeyMappingReaderForTesting = { currentMapping }
+    plugin.macOSUserKeyMappingWriterForTesting = { nextMapping in
+      guard writesSucceed() else { return false }
+      currentMapping = nextMapping
+      return true
+    }
+    return (plugin, { currentMapping })
+  }
+
+  func testCapsLockRemapHasOneLiveOwnerAcrossPluginInstances() {
+    let original: KeyMapping = []
+    let first = plugin(mapping: original)
+    XCTAssertTrue(first.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertTrue(first.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertEqual(first.currentMapping(), [globeMapping()])
+
+    let second = plugin(mapping: first.currentMapping())
+    second.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    XCTAssertEqual(second.currentMapping(), [globeMapping()])
+    XCTAssertFalse(second.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+
+    XCTAssertTrue(first.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(first.currentMapping(), original)
+
+    let third = plugin(mapping: original)
+    XCTAssertTrue(third.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(third.currentMapping(), [globeMapping()])
+    XCTAssertTrue(third.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(third.currentMapping(), original)
+  }
+
+  func testCapsLockRemapLiveOwnerCannotBeRestoredByAnotherProcess() {
+    let original: KeyMapping = []
+    let first = plugin(mapping: original)
+    XCTAssertTrue(first.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    let persistedState = try! XCTUnwrap(
+      HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting
+    )
+    XCTAssertEqual(first.currentMapping(), [globeMapping()])
+
+    // `flock` ownership is per-process, so use a child process to prove the
+    // real cross-process boundary rather than only the static in-process owner.
+    let script = """
+    import Foundation
+    import Darwin
+    let descriptor = open(\"\(capsLockRemapLeasePath!)\", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0 else { exit(2) }
+    defer { close(descriptor) }
+    exit(flock(descriptor, LOCK_EX | LOCK_NB) == 0 ? 1 : 0)
+    """
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    task.arguments = ["swift", "-e", script]
+    try! task.run()
+    task.waitUntilExit()
+
+    XCTAssertEqual(task.terminationStatus, 0)
+    XCTAssertEqual(first.currentMapping(), [globeMapping()])
+    XCTAssertEqual(
+      HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting,
+      persistedState
+    )
+  }
+
+  func testCapsLockRemapCrashRecoveryWaitsForPriorOwnerToReleaseLease() {
+    let original: KeyMapping = []
+    let crashedOwner = plugin(mapping: original)
+    XCTAssertTrue(
+      crashedOwner.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    )
+    XCTAssertEqual(crashedOwner.currentMapping(), [globeMapping()])
+
+    let recovery = plugin(mapping: crashedOwner.currentMapping())
+    recovery.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    XCTAssertEqual(recovery.currentMapping(), [globeMapping()])
+
+    crashedOwner.plugin.abandonMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    recovery.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    XCTAssertEqual(recovery.currentMapping(), original)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  func testCapsLockRemapKeepsJournalWhenTeardownWriteFails() {
+    let original: KeyMapping = []
+    var writesSucceed = true
+    let subject = plugin(mapping: original) { writesSucceed }
+    XCTAssertTrue(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+
+    writesSucceed = false
+    XCTAssertFalse(subject.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+    XCTAssertTrue(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+
+    writesSucceed = true
+    let retry = plugin(mapping: subject.currentMapping())
+    retry.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    XCTAssertEqual(retry.currentMapping(), original)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  func testCapsLockRemapKeepsJournalWhenTeardownReadbackDisagrees() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    XCTAssertTrue(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+
+    var returnStaleMappingOnNextRead = true
+    let stableMapping = subject.currentMapping()
+    subject.plugin.macOSUserKeyMappingReaderForTesting = {
+      if returnStaleMappingOnNextRead {
+        returnStaleMappingOnNextRead = false
+        return stableMapping
+      }
+      return stableMapping
+    }
+    subject.plugin.macOSUserKeyMappingWriterForTesting = { _ in true }
+
+    XCTAssertFalse(subject.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertTrue(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
   func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
     let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
       displayIds: [30, 20, 10, 30],
