@@ -176,7 +176,7 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  func testStreamExitDoesNotReleaseF20CaptureBeforeMappingIsRestored() {
+  func testStreamExitStopsF20CaptureBeforeBackgroundMappingRestore() {
     let original: KeyMapping = []
     var writesSucceed = true
     let subject = plugin(mapping: original) { writesSucceed }
@@ -192,8 +192,10 @@ class RunnerTests: XCTestCase {
       HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
     )
 
+    // Restore work is independent of stream exit. Once IOHID is available it
+    // can be completed without re-arming a remote capture path.
     writesSucceed = true
-    XCTAssertTrue(subject.plugin.stopMacOSGlobeKeyProbeForTesting())
+    XCTAssertTrue(subject.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
     XCTAssertFalse(subject.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
     XCTAssertEqual(subject.currentMapping(), original)
     XCTAssertFalse(
