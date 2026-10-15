@@ -89,6 +89,7 @@ public:
     VirtualDisplayControl& operator=(const VirtualDisplayControl&) = delete;
 
 private:
+    friend class VirtualDisplayControlTestPeer;
     static bool initialized_;
     static HANDLE vdd_handle_;
     static std::vector<std::unique_ptr<VirtualDisplay>> displays_;

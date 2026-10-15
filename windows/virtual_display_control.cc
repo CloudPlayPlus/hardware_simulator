@@ -1234,13 +1234,13 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
         }
     }
 
-    // Apply the new configuration
+    // 保存独占布局，避免游戏退出全屏时从系统数据库重新启用实体屏。
     result = SetDisplayConfig(
         numPathArrayElements,
         pathArray.data(),
         numModeInfoArrayElements,
         modeInfoArray.data(),
-        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE
     );
 
     if (result != ERROR_SUCCESS) {
@@ -1263,13 +1263,13 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
         return true;
     }
 
-    // Apply the original configuration
+    // 同时恢复系统保存布局，避免后续退出全屏再次加载独占配置。
     LONG result = SetDisplayConfig(
         static_cast<UINT32>(original_paths_.size()),
         original_paths_.data(),
         static_cast<UINT32>(original_modes_.size()),
         original_modes_.data(),
-        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE
     );
 
     if (result == ERROR_ACCESS_DENIED) {
