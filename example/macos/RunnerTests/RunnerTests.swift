@@ -176,6 +176,31 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testStreamExitDoesNotReleaseF20CaptureBeforeMappingIsRestored() {
+    let original: KeyMapping = []
+    var writesSucceed = true
+    let subject = plugin(mapping: original) { writesSucceed }
+    XCTAssertTrue(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertTrue(subject.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+
+    writesSucceed = false
+    XCTAssertFalse(subject.plugin.stopMacOSGlobeKeyProbeForTesting())
+    XCTAssertTrue(subject.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+    XCTAssertTrue(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+
+    writesSucceed = true
+    XCTAssertTrue(subject.plugin.stopMacOSGlobeKeyProbeForTesting())
+    XCTAssertFalse(subject.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertEqual(subject.currentMapping(), original)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
   func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
     let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
       displayIds: [30, 20, 10, 30],

@@ -405,11 +405,14 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> stopMacOSGlobeKeyProbe() async {
+  Future<bool> stopMacOSGlobeKeyProbe() async {
     try {
-      await methodChannel.invokeMethod<void>('stopMacOSGlobeKeyProbe');
+      final restored = await methodChannel.invokeMethod<Object?>(
+        'stopMacOSGlobeKeyProbe',
+      );
+      return restored == true;
     } on MissingPluginException {
-      return;
+      return true;
     }
   }
 

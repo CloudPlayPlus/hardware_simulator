@@ -293,7 +293,13 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   /// Stops the macOS Globe/Fn interception POC.
-  Future<void> stopMacOSGlobeKeyProbe() async {}
+  ///
+  /// Returns true only after any temporary controller key remap has been
+  /// restored and confirmed. A false result means native recovery is still
+  /// retrying; callers must leave the remote key path disabled.
+  Future<bool> stopMacOSGlobeKeyProbe() async {
+    return true;
+  }
 
   /// Asks a macOS Host to select its next enabled, selectable input source.
   /// Other platforms return false without changing any input source.

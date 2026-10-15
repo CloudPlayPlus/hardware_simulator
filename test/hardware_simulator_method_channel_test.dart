@@ -365,6 +365,20 @@ void main() {
     );
   });
 
+  test('Globe probe stop reports whether the controller mapping was restored',
+      () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        if (methodCall.method == 'stopMacOSGlobeKeyProbe') return false;
+        return null;
+      },
+    );
+
+    expect(await platform.stopMacOSGlobeKeyProbe(), isFalse);
+  });
+
   test('decodes macOS Globe probe input source IDs', () async {
     MacOSGlobeKeyProbe? received;
     late MacOSGlobeKeyProbeCallback listener;

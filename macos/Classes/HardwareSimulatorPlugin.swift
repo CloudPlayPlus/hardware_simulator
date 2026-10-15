@@ -42,6 +42,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macOSGlobeKeyIsDown = false
   private var macOSGlobeKeyProbeOwnsCapsLockRemap = false
   private var macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor: Int32?
+  private var macOSGlobeKeyProbeStopRequested = false
+  private var macOSGlobeKeyProbeStartRequestedAfterStop = false
+  private var macOSGlobeKeyProbeRestoreRetryWorkItem: DispatchWorkItem?
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -114,6 +117,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     restoreMacOSGlobeKeyProbeCapsLockRemap()
   }
 
+  @discardableResult
+  func stopMacOSGlobeKeyProbeForTesting() -> Bool {
+    stopMacOSGlobeKeyProbe()
+  }
+
   func recoverMacOSGlobeKeyProbeCapsLockRemapForTesting() {
     recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded()
   }
@@ -182,7 +190,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   deinit {
     stopTrackpadScrollCapture()
-    stopMacOSGlobeKeyProbe()
+    _ = stopMacOSGlobeKeyProbe()
     // A failed restoration deliberately keeps its journal. Closing the lease
     // here lets a future plugin instance treat it as crash recovery instead of
     // being blocked forever by an object that is going away.
@@ -236,6 +244,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   /// consumes F20 before Flutter/the focused app sees it, then notifies Dart
   /// to send the semantic remote-input-source request.
   private func startMacOSGlobeKeyProbe() -> Bool {
+    // Never start a new remote stream on top of a mapping that a previous
+    // stream has not yet restored. Callers retry the start after a failed
+    // result; remember that request so native can arm immediately once the
+    // pending stop has restored the user's mapping.
+    guard !macOSGlobeKeyProbeStopRequested else {
+      macOSGlobeKeyProbeStartRequestedAfterStop = true
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+      return false
+    }
     if macOSGlobeKeyProbeLocalMonitor != nil {
       return flutterView != nil
     }
@@ -272,7 +289,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return self.handleMacOSGlobeKeyProbe(event) ? nil : event
     }
     guard macOSGlobeKeyProbeLocalMonitor != nil else {
-      stopMacOSGlobeKeyProbe()
+      _ = stopMacOSGlobeKeyProbe()
       reportMacOSGlobeKeyProbeStatus(armed: false)
       return false
     }
@@ -287,16 +304,53 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     )
   }
 
-  private func stopMacOSGlobeKeyProbe() {
+  /// Stops capture only after the controller's key mapping is confirmed back
+  /// at its pre-stream state. A failed IOHID write must not turn a transient
+  /// error into a leaked Caps Lock -> F20 mapping after the stream exits.
+  @discardableResult
+  private func stopMacOSGlobeKeyProbe() -> Bool {
+    macOSGlobeKeyProbeStopRequested = true
+    macOSGlobeKeyProbeStartRequestedAfterStop = false
+    return finishMacOSGlobeKeyProbeStopIfRestored()
+  }
+
+  @discardableResult
+  private func finishMacOSGlobeKeyProbeStopIfRestored() -> Bool {
+    guard macOSGlobeKeyProbeStopRequested else { return true }
+    guard restoreMacOSGlobeKeyProbeCapsLockRemap() else {
+      scheduleMacOSGlobeKeyProbeRestoreRetry()
+      return false
+    }
+    macOSGlobeKeyProbeRestoreRetryWorkItem?.cancel()
+    macOSGlobeKeyProbeRestoreRetryWorkItem = nil
     if let monitor = macOSGlobeKeyProbeLocalMonitor {
       NSEvent.removeMonitor(monitor)
     }
     self.macOSGlobeKeyProbeLocalMonitor = nil
     self.macOSGlobeKeyIsDown = false
-    restoreMacOSGlobeKeyProbeCapsLockRemap()
+    macOSGlobeKeyProbeStopRequested = false
+    let shouldRestart = macOSGlobeKeyProbeStartRequestedAfterStop
+    macOSGlobeKeyProbeStartRequestedAfterStop = false
+    releaseMacOSGlobeKeyProbeCapsLockRemapLease()
     if trackpadScrollMonitor == nil {
       flutterView = nil
     }
+    reportMacOSGlobeKeyProbeStatus(armed: false)
+    if shouldRestart {
+      return startMacOSGlobeKeyProbe()
+    }
+    return true
+  }
+
+  private func scheduleMacOSGlobeKeyProbeRestoreRetry() {
+    guard macOSGlobeKeyProbeRestoreRetryWorkItem == nil else { return }
+    let retry = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.macOSGlobeKeyProbeRestoreRetryWorkItem = nil
+      _ = self.finishMacOSGlobeKeyProbeStopIfRestored()
+    }
+    macOSGlobeKeyProbeRestoreRetryWorkItem = retry
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: retry)
   }
 
   // HID Keyboard/Keypad page 0x07, usage 0x39 (Caps Lock) -> usage 0x6F
@@ -563,8 +617,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
     if let existingCapsLockMapping = capsLockMappings.first {
       // A user-owned Caps Lock remap must never be overwritten. Reuse F20 only
-      // when it is already the exact mapping required by this POC. Reusing it
-      // still requires the lease so another viewer cannot restore it under us.
+      // when it is already the exact mapping required by this POC. This is not
+      // our mapping or journal, but retain the lease while consuming F20 so a
+      // second viewer cannot make the global mapping ownership ambiguous.
       let matchesRequiredRemap = existingCapsLockMapping[
         Self.macOSUserKeyMappingDestinationKey
       ] == Self.macOSGlobeRemappedF20HidUsage
@@ -572,7 +627,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         releaseMacOSGlobeKeyProbeCapsLockRemapLease()
         return false
       }
-      macOSGlobeKeyProbeOwnsCapsLockRemap = true
       return true
     }
 
@@ -615,10 +669,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   @discardableResult
   private func restoreMacOSGlobeKeyProbeCapsLockRemap() -> Bool {
     guard macOSGlobeKeyProbeOwnsCapsLockRemap else { return true }
-    macOSGlobeKeyProbeOwnsCapsLockRemap = false
-    defer {
-      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
-    }
     guard
       let data = UserDefaults.standard.data(
         forKey: Self.macOSCapsLockRemapStateKey
@@ -639,6 +689,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       if currentMapping == state.originalMapping {
         clearMacOSGlobeKeyProbeCapsLockRemapState()
       }
+      macOSGlobeKeyProbeOwnsCapsLockRemap = false
       return true
     }
     guard
@@ -650,6 +701,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
     clearMacOSGlobeKeyProbeCapsLockRemapState()
+    macOSGlobeKeyProbeOwnsCapsLockRemap = false
     return true
   }
 
@@ -4476,8 +4528,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "startMacOSGlobeKeyProbe":
       result(startMacOSGlobeKeyProbe())
     case "stopMacOSGlobeKeyProbe":
-      stopMacOSGlobeKeyProbe()
-      result(nil)
+      result(stopMacOSGlobeKeyProbe())
     case "selectNextMacOSInputSource":
       result(selectNextMacOSInputSource())
     case "checkMacOSPermissions":
