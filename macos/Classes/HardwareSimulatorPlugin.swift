@@ -97,6 +97,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   var macOSUserKeyMappingReaderForTesting: (() -> MacOSUserKeyMapping?)?
   var macOSUserKeyMappingWriterForTesting: ((MacOSUserKeyMapping) -> Bool)?
+  var macOSCapsLockRemapStateSynchronizerForTesting: (() -> Bool)?
   static var macOSCapsLockRemapLeaseFilePathForTesting: String?
 
   static var macOSCapsLockRemapStateDataForTesting: Data? {
@@ -642,8 +643,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       releaseMacOSGlobeKeyProbeCapsLockRemapLease()
       return false
     }
-    // Persist the recovery record before altering the system-wide mapping.
-    UserDefaults.standard.set(data, forKey: Self.macOSCapsLockRemapStateKey)
+    // Persist the recovery record before altering the system-wide mapping. A
+    // cached preference is not enough: if the process dies before it reaches
+    // disk, recovery could lose the original Caps Lock mapping forever.
+    guard persistMacOSGlobeKeyProbeCapsLockRemapState(data) else {
+      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
+      return false
+    }
     let mappingApplied = setMacOSUserKeyMapping(expectedMapping)
     guard
       mappingApplied,
@@ -704,6 +710,31 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private func clearMacOSGlobeKeyProbeCapsLockRemapState() {
     UserDefaults.standard.removeObject(forKey: Self.macOSCapsLockRemapStateKey)
     UserDefaults.standard.synchronize()
+  }
+
+  /// Synchronously commits the recovery journal before mutating the global
+  /// event-system mapping. The matching read verifies the exact bytes are
+  /// available through the persistent preference boundary.
+  private func persistMacOSGlobeKeyProbeCapsLockRemapState(_ data: Data) -> Bool {
+    UserDefaults.standard.set(data, forKey: Self.macOSCapsLockRemapStateKey)
+    guard
+      synchronizeMacOSGlobeKeyProbeCapsLockRemapState(),
+      UserDefaults.standard.data(forKey: Self.macOSCapsLockRemapStateKey) == data
+    else {
+      UserDefaults.standard.removeObject(forKey: Self.macOSCapsLockRemapStateKey)
+      _ = UserDefaults.standard.synchronize()
+      return false
+    }
+    return true
+  }
+
+  private func synchronizeMacOSGlobeKeyProbeCapsLockRemapState() -> Bool {
+#if DEBUG
+    if let macOSCapsLockRemapStateSynchronizerForTesting {
+      return macOSCapsLockRemapStateSynchronizerForTesting()
+    }
+#endif
+    return UserDefaults.standard.synchronize()
   }
 
   private func currentMacOSUserKeyMapping() -> MacOSUserKeyMapping? {

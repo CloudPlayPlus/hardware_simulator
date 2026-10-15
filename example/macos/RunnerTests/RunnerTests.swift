@@ -153,6 +153,38 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testCapsLockRemapDoesNotChangeSystemMappingWhenJournalSyncFails() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    var systemMappingWrites = 0
+    subject.plugin.macOSUserKeyMappingWriterForTesting = { _ in
+      systemMappingWrites += 1
+      return true
+    }
+    subject.plugin.macOSCapsLockRemapStateSynchronizerForTesting = { false }
+
+    XCTAssertFalse(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(systemMappingWrites, 0)
+    XCTAssertEqual(subject.currentMapping(), original)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  func testCapsLockRemapPersistsJournalBeforeChangingSystemMapping() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    var journalWasPresentAtFirstSystemWrite = false
+    subject.plugin.macOSUserKeyMappingWriterForTesting = { _ in
+      journalWasPresentAtFirstSystemWrite =
+        HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting != nil
+      return false
+    }
+
+    XCTAssertFalse(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertTrue(journalWasPresentAtFirstSystemWrite)
+  }
+
   func testCapsLockRemapKeepsJournalWhenTeardownReadbackDisagrees() {
     let original: KeyMapping = []
     let subject = plugin(mapping: original)
