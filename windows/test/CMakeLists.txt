@@ -32,3 +32,11 @@ target_compile_options(display_restore_client_test PRIVATE /W4 /WX /utf-8)
 target_link_libraries(display_restore_client_test PRIVATE user32)
 add_test(NAME display_restore_client COMMAND display_restore_client_test)
 set_tests_properties(display_restore_client PROPERTIES TIMEOUT 20)
+
+add_executable(exclusive_display_topology_test
+  exclusive_display_topology_test.cpp ../virtual_display.cc ../desktop_service_input_client.cpp)
+target_compile_features(exclusive_display_topology_test PRIVATE cxx_std_17)
+target_compile_definitions(exclusive_display_topology_test PRIVATE UNICODE _UNICODE)
+target_compile_options(exclusive_display_topology_test PRIVATE /W4 /WX /utf-8 /wd4245 /wd4505 /wd4100)
+target_link_libraries(exclusive_display_topology_test PRIVATE user32 advapi32 setupapi cfgmgr32 wtsapi32)
+add_test(NAME exclusive_display_topology COMMAND exclusive_display_topology_test)

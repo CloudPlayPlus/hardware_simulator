@@ -24,6 +24,8 @@ constexpr DWORD kConnectBusyWaitMs = 2;
 constexpr DWORD kWriteTimeoutMs = 20;
 constexpr uint32_t kMsgRestoreDisplayConfig = 0x09;
 constexpr uint32_t kMsgRestoreDisplayConfigResp = 0x89;
+constexpr uint32_t kMsgRestoreTemporaryDisplayConfig = 0x0a;
+constexpr uint32_t kMsgRestoreTemporaryDisplayConfigResp = 0x8a;
 
 #pragma pack(push, 1)
 struct MsgHeader {
@@ -328,7 +330,7 @@ bool DesktopServiceInputClient::SetCustomDisplayConfigs(
 
 bool DesktopServiceInputClient::RestoreDisplayConfiguration(
     const std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
-    const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status) {
+    const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status, bool persist) {
   static_assert(sizeof(DISPLAYCONFIG_PATH_INFO) == 72, "Windows display path ABI");
   static_assert(sizeof(DISPLAYCONFIG_MODE_INFO) == 64, "Windows display mode ABI");
   status = ERROR_GEN_FAILURE;
@@ -349,9 +351,9 @@ bool DesktopServiceInputClient::RestoreDisplayConfiguration(
   ControlConnection connection{this};
   if (!EnsureConnectedLocked()) return false;
   uint32_t response = ERROR_GEN_FAILURE;
-  if (!ExchangeRawLocked(kMsgRestoreDisplayConfig, payload.data(),
+  if (!ExchangeRawLocked(persist ? kMsgRestoreDisplayConfig : kMsgRestoreTemporaryDisplayConfig, payload.data(),
                         static_cast<uint32_t>(payload.size()),
-                        kMsgRestoreDisplayConfigResp, &response,
+                        persist ? kMsgRestoreDisplayConfigResp : kMsgRestoreTemporaryDisplayConfigResp, &response,
                         sizeof(response), 5000)) return false;
   status = static_cast<LONG>(response);
   return true;

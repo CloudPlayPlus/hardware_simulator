@@ -89,6 +89,7 @@ public:
     VirtualDisplayControl& operator=(const VirtualDisplayControl&) = delete;
 
 private:
+    friend class VirtualDisplayControlTestPeer;
     static bool initialized_;
     static HANDLE vdd_handle_;
     static std::vector<std::unique_ptr<VirtualDisplay>> displays_;
@@ -96,6 +97,8 @@ private:
     // Display configuration backup for restore functionality
     static std::vector<DISPLAYCONFIG_PATH_INFO> original_paths_;
     static std::vector<DISPLAYCONFIG_MODE_INFO> original_modes_;
+    static std::vector<DISPLAYCONFIG_PATH_INFO> persistent_paths_;
+    static std::vector<DISPLAYCONFIG_MODE_INFO> persistent_modes_;
     static bool has_backup_;
     
     // Helper method to save current display configuration
