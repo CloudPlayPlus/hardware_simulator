@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <utility>
 
 namespace hardware_simulator {
@@ -87,6 +88,57 @@ bool CachedBool(IUIAutomationElement *element, PROPERTYID property_id,
   return CachedOptionalBool(element, property_id).value_or(fallback);
 }
 
+// 微信 4.1 等自绘界面可能只暴露 Win32 窗口外壳。仅此类缺少文本语义的
+// 顶层窗口允许使用系统 caret，不能覆盖已暴露的按钮、只读 Edit 等判断。
+HWND OpaqueWin32Window(IUIAutomationElement *element) {
+  CONTROLTYPEID type = 0;
+  UIA_HWND window = nullptr;
+  BSTR framework = nullptr;
+  if (FAILED(element->get_CachedControlType(&type)) ||
+      type != UIA_WindowControlTypeId ||
+      FAILED(element->get_CachedNativeWindowHandle(&window)) ||
+      window == nullptr ||
+      GetAncestor(static_cast<HWND>(window), GA_ROOT) != window ||
+      CachedBool(element, UIA_IsTextPatternAvailablePropertyId) ||
+      CachedBool(element, UIA_IsValuePatternAvailablePropertyId) ||
+      CachedBool(element, UIA_IsTextEditPatternAvailablePropertyId)) {
+    return nullptr;
+  }
+  const HRESULT hr = element->get_CachedFrameworkId(&framework);
+  const bool win32 = SUCCEEDED(hr) && framework != nullptr &&
+                     std::wstring(framework, SysStringLen(framework)) == L"Win32";
+  SysFreeString(framework);
+  return win32 ? static_cast<HWND>(window) : nullptr;
+}
+
+bool HasMatchingWin32Caret(HWND window, const POINT &point) {
+  if (window == nullptr || GetForegroundWindow() != window ||
+      !IsWindowVisible(window) || !IsWindowEnabled(window) ||
+      GetAncestor(WindowFromPoint(point), GA_ROOT) != window ||
+      point.x < SHRT_MIN || point.x > SHRT_MAX || point.y < SHRT_MIN ||
+      point.y > SHRT_MAX) {
+    return false;
+  }
+
+  DWORD_PTR hit = 0;
+  if (SendMessageTimeoutW(window, WM_NCHITTEST, 0, MAKELPARAM(point.x, point.y),
+                         SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &hit) == 0 ||
+      hit != HTCLIENT) {
+    return false;
+  }
+
+  GUITHREADINFO info = {};
+  info.cbSize = sizeof(info);
+  const DWORD thread_id = GetWindowThreadProcessId(window, nullptr);
+  constexpr DWORD blocked = GUI_INMENUMODE | GUI_POPUPMENUMODE |
+                            GUI_SYSTEMMENUMODE | GUI_INMOVESIZE;
+  return thread_id != 0 && GetGUIThreadInfo(thread_id, &info) &&
+         GetForegroundWindow() == window && info.hwndFocus == window &&
+         info.hwndCaret == window && (info.flags & GUI_CARETBLINKING) != 0 &&
+         (info.flags & blocked) == 0 && info.rcCaret.right > info.rcCaret.left &&
+         info.rcCaret.bottom > info.rcCaret.top;
+}
+
 bool HasActiveTextCaret(IUIAutomationElement *element) {
   IUnknown *pattern_unknown = nullptr;
   if (FAILED(element->GetCachedPattern(UIA_TextPattern2Id, &pattern_unknown)) ||
@@ -134,6 +186,8 @@ IUIAutomationCacheRequest *CreateCacheRequest(IUIAutomation *automation) {
       UIA_IsKeyboardFocusablePropertyId,
       UIA_ControlTypePropertyId,
       UIA_ProcessIdPropertyId,
+      UIA_NativeWindowHandlePropertyId,
+      UIA_FrameworkIdPropertyId,
       UIA_BoundingRectanglePropertyId,
       UIA_IsPasswordPropertyId,
       UIA_ValueIsReadOnlyPropertyId,
@@ -475,10 +529,12 @@ WindowsEditingEventMonitor::Inspect(IUIAutomation *automation,
     return decision;
   }
 
+  HWND opaque_hit_window = nullptr;
   IUIAutomationElement *element = nullptr;
   if (SUCCEEDED(automation->ElementFromPointBuildCache(request.point, cache,
                                                        &element)) &&
       element != nullptr) {
+    opaque_hit_window = OpaqueWin32Window(element);
     decision.active = TryMatchTextInputElementChain(
         automation, cache, element, request.point, &decision.secure);
   }
@@ -488,8 +544,15 @@ WindowsEditingEventMonitor::Inspect(IUIAutomation *automation,
     if (SUCCEEDED(
             automation->GetFocusedElementBuildCache(cache, &focused_element)) &&
         focused_element != nullptr) {
+      const HWND opaque_focus_window = OpaqueWin32Window(focused_element);
       decision.active = TryMatchTextInputElementChain(
           automation, cache, focused_element, request.point, &decision.secure);
+      if (!decision.active && opaque_hit_window != nullptr &&
+          opaque_hit_window == opaque_focus_window) {
+        decision.active = HasMatchingWin32Caret(opaque_hit_window, request.point);
+        // 窗口外壳没有内部字段的密码语义，不能把缺省 false 当成明确结果。
+        decision.secure = std::nullopt;
+      }
     }
   }
   cache->Release();
