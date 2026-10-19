@@ -340,9 +340,22 @@ class HardwareSimulator {
     );
   }
 
+  /// Starts the focus-scoped macOS input-source key capture.
+  static Future<bool> startMacOSGlobeKeyProbe() {
+    return HardwareSimulatorPlatform.instance.startMacOSGlobeKeyProbe();
+  }
+
+  /// Stops the focus-scoped macOS input-source key capture and restores any
+  /// temporary key mapping when possible.
+  static Future<bool> stopMacOSGlobeKeyProbe() {
+    return HardwareSimulatorPlatform.instance.stopMacOSGlobeKeyProbe();
+  }
+
   /// macOS Host only. Cycles the Host's own enabled input-source list.
-  static Future<bool> selectNextMacOSInputSource() {
-    return HardwareSimulatorPlatform.instance.selectNextMacOSInputSource();
+  static Future<bool> selectNextMacOSInputSource({int? requestOrdinal}) {
+    return HardwareSimulatorPlatform.instance.selectNextMacOSInputSource(
+      requestOrdinal: requestOrdinal,
+    );
   }
 
   /// 注册 Host 远端点击后的软件盘决策。

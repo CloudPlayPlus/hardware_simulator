@@ -335,14 +335,14 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
-  test('first and last Globe probe listeners manage native capture', () async {
+  test('Globe probe listeners only manage Dart event delivery', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
       channel,
       (MethodCall methodCall) async {
         calls.add(methodCall);
-        return methodCall.method == 'startMacOSGlobeKeyProbe';
+        return true;
       },
     );
 
@@ -355,10 +355,23 @@ void main() {
 
     platform.removeMacOSGlobeKeyProbe(firstListener);
     await Future<void>.delayed(Duration.zero);
-    expect(calls.map((call) => call.method), ['startMacOSGlobeKeyProbe']);
+    expect(calls, isEmpty);
 
     platform.removeMacOSGlobeKeyProbe(secondListener);
     await Future<void>.delayed(Duration.zero);
+    expect(calls, isEmpty);
+  });
+
+  test('Globe probe lifecycle invokes its native methods explicitly', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      calls.add(methodCall);
+      return true;
+    });
+
+    expect(await platform.startMacOSGlobeKeyProbe(), isTrue);
+    expect(await platform.stopMacOSGlobeKeyProbe(), isTrue);
     expect(
       calls.map((call) => call.method),
       ['startMacOSGlobeKeyProbe', 'stopMacOSGlobeKeyProbe'],
@@ -439,10 +452,11 @@ void main() {
       return true;
     });
 
-    expect(await platform.selectNextMacOSInputSource(), isTrue);
+    expect(
+        await platform.selectNextMacOSInputSource(requestOrdinal: 7), isTrue);
     expect(calls, hasLength(1));
     expect(calls.single.method, 'selectNextMacOSInputSource');
-    expect(calls.single.arguments, isNull);
+    expect(calls.single.arguments, {'requestOrdinal': 7});
   });
 
   test('first and last text input listeners manage native capture', () async {

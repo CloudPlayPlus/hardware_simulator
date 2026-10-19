@@ -303,7 +303,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Asks a macOS Host to select its next enabled, selectable input source.
   /// Other platforms return false without changing any input source.
-  Future<bool> selectNextMacOSInputSource() async {
+  Future<bool> selectNextMacOSInputSource({int? requestOrdinal}) async {
     return false;
   }
 

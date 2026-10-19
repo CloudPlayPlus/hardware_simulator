@@ -31,6 +31,58 @@ struct MacOSTextInputDecision: Equatable {
   let secure: Bool?
 }
 
+/// The only input-source data allowed to cross from the main/AppKit lane to
+/// the serial remote-keyboard lane. The latter must never read TIS directly:
+/// doing so previously caused a main-thread dispatch assertion under load.
+private enum MacOSInputSourceClass: String {
+  case keyboardLayout
+  case inputMethod
+  case unknown
+}
+
+private struct MacOSInputSourceSnapshot {
+  let id: String?
+  let sourceClass: MacOSInputSourceClass
+  let selectableCount: Int
+}
+
+/// One low-frequency Host request and the first subsequent key injection.
+/// This deliberately carries no key code or text, so the diagnostic cannot
+/// become a keystroke log.
+private struct MacOSInputSourceSelectionDiagnostic {
+  let requestOrdinal: Int?
+  let expectedID: String
+}
+
+private let macOSInputSourceChangedCallback: CFNotificationCallback = {
+  _, observer, _, _, _ in
+  guard let observer else { return }
+  let plugin = Unmanaged<HardwareSimulatorPlugin>
+    .fromOpaque(observer)
+    .takeUnretainedValue()
+  DispatchQueue.main.async {
+    plugin.handleMacOSInputSourceChanged()
+  }
+}
+
+#if CPP_LOG_AVAILABLE
+private typealias MacOSCppLogEmit = @convention(c) (
+  Int32,
+  UnsafePointer<CChar>,
+  UnsafePointer<CChar>
+) -> Void
+
+private let macOSCppLogEmit: MacOSCppLogEmit? = {
+  guard
+    let library = dlopen("@rpath/cpp_log.framework/cpp_log", RTLD_LAZY | RTLD_LOCAL),
+    let symbol = dlsym(library, "cpp_log_emit")
+  else {
+    return nil
+  }
+  return unsafeBitCast(symbol, to: MacOSCppLogEmit.self)
+}()
+#endif
+
 public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private static let registeredInstances =
     NSHashTable<HardwareSimulatorPlugin>.weakObjects()
@@ -44,6 +96,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor: Int32?
   private var macOSGlobeKeyProbeStopRequested = false
   private var macOSGlobeKeyProbeRestoreRetryWorkItem: DispatchWorkItem?
+  private var macOSGlobeKeyProbeTerminationObserver: NSObjectProtocol?
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -63,9 +116,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let keyboardRepeatQueue = DispatchQueue(
     label: "com.cloudplayplus.hardware-simulator.keyboard-repeat"
   )
+  private let keyboardInjectionQueue = DispatchQueue(
+    label: "com.cloudplayplus.hardware-simulator.keyboard-injection"
+  )
   private var activeKeyRepeatTimer: DispatchSourceTimer?
   private var activeRepeatingWindowsKeyCode: Int?
   private var activeKeyMacCodes: [Int: CGKeyCode] = [:]
+  private var remoteCapsLockEnabled = false
+  private let macOSInputSourceSnapshotLock = NSLock()
+  private var macOSInputSourceSnapshot = MacOSInputSourceSnapshot(
+    id: nil,
+    sourceClass: .unknown,
+    selectableCount: 0
+  )
+  private var pendingMacOSInputSourceSelectionDiagnostic:
+    MacOSInputSourceSelectionDiagnostic?
+  private var macOSInputSourceNotificationRegistered = false
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macTextInputQueue = DispatchQueue(
     label: "com.cloudplayplus.hardware-simulator.text-input"
@@ -81,6 +147,21 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macTextInputSnapshotKnown = false
   private var macTextInputRequestSequence: UInt64 = 0
 #endif
+
+  override init() {
+    super.init()
+    // Injection can start before a MethodChannel call reaches this instance,
+    // so source classification belongs to the plugin object's own lifecycle.
+    // AppKit/TIS work is restricted to the main thread; registration creates
+    // this object there in the desktop host.
+    if Thread.isMainThread {
+      startMacOSInputSourceTracking()
+    } else {
+      DispatchQueue.main.async { [weak self] in
+        self?.startMacOSInputSourceTracking()
+      }
+    }
+  }
 #if DEBUG
   var cursorSeedRefreshHandlerForTesting: (() -> Void)?
   var cursorSeedProducerActiveForTesting: Bool {
@@ -98,6 +179,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var macOSUserKeyMappingReaderForTesting: (() -> MacOSUserKeyMapping?)?
   var macOSUserKeyMappingWriterForTesting: ((MacOSUserKeyMapping) -> Bool)?
   var macOSCapsLockRemapStateSynchronizerForTesting: (() -> Bool)?
+  var macOSKeyboardInputSourceIdReaderForTesting: (() -> String?)?
+  var macOSInputSourceSelectionWaiterForTesting: ((String) -> Bool)?
   static var macOSCapsLockRemapLeaseFilePathForTesting: String?
 
   static var macOSCapsLockRemapStateDataForTesting: Data? {
@@ -120,6 +203,33 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   @discardableResult
   func stopMacOSGlobeKeyProbeForTesting() -> Bool {
     stopMacOSGlobeKeyProbe()
+  }
+
+  func stopMacOSGlobeKeyProbeForTerminationForTesting() {
+    stopMacOSGlobeKeyProbeForTermination()
+  }
+
+  func currentMacOSUserKeyMappingForTesting() -> MacOSUserKeyMapping? {
+    currentMacOSUserKeyMapping()
+  }
+
+  @discardableResult
+  func setMacOSUserKeyMappingForTesting(_ mapping: MacOSUserKeyMapping) -> Bool {
+    setMacOSUserKeyMapping(mapping)
+  }
+
+  /// Exercises the production Host-side direct-TIS selection path in the
+  /// signed same-process AppKit integration harness.
+  ///
+  /// It is deliberately unavailable from production plugin APIs.
+  @discardableResult
+  func selectNextMacOSInputSourceInProcessForTesting() -> Bool {
+    selectNextMacOSInputSource()
+  }
+
+  /// Cross-process harness seam for the production Host executor.
+  func selectNextMacOSInputSourceForFocusedTargetForTesting() -> Bool {
+    selectNextMacOSInputSource()
   }
 
   func recoverMacOSGlobeKeyProbeCapsLockRemapForTesting() {
@@ -182,6 +292,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     instance.defaultCursorHasher = CursorHasher()
     instance.startDisplayBoundsCache()
     instance.recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded()
+    instance.registerMacOSGlobeKeyProbeTerminationObserver()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     instance.registerMacTerminationObserver()
 #endif
@@ -190,7 +301,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   deinit {
     stopTrackpadScrollCapture()
-    _ = stopMacOSGlobeKeyProbe()
+    // `deinit` must never enqueue work that weakly captures this instance:
+    // registering an Objective-C weak reference while the object is already
+    // deallocating aborts the process. Do the one synchronous restore attempt
+    // and retain the persisted journal for the next startup if IOKit rejects
+    // it. The regular stream-close path below remains responsible for retrying
+    // while the plugin is alive.
+    macOSGlobeKeyProbeRestoreRetryWorkItem?.cancel()
+    macOSGlobeKeyProbeRestoreRetryWorkItem = nil
+    _ = stopMacOSGlobeKeyProbe(scheduleRetry: false, reportStatus: false)
     // A failed restoration deliberately keeps its journal. Closing the lease
     // here lets a future plugin instance treat it as crash recovery instead of
     // being blocked forever by an object that is going away.
@@ -198,6 +317,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if let displayBoundsCacheObserver {
       NotificationCenter.default.removeObserver(displayBoundsCacheObserver)
     }
+    if let macOSGlobeKeyProbeTerminationObserver {
+      NotificationCenter.default.removeObserver(macOSGlobeKeyProbeTerminationObserver)
+    }
+    stopMacOSInputSourceTracking()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
     stopCursorVisibilityTimer()
     stopMacOSTextInputDecisionCapture()
@@ -301,11 +424,36 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     )
   }
 
+  /// Plugin deallocation is not a lifecycle contract: Flutter/plugin teardown
+  /// order is undefined during app termination. Restore synchronously while
+  /// the registered plugin is still alive so a normal quit never leaves the
+  /// user's Caps Lock mapping behind. A failed IOKit restore keeps its durable
+  /// journal for startup recovery; it never queues work from `deinit`.
+  private func registerMacOSGlobeKeyProbeTerminationObserver() {
+    guard macOSGlobeKeyProbeTerminationObserver == nil else { return }
+    macOSGlobeKeyProbeTerminationObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willTerminateNotification,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.stopMacOSGlobeKeyProbeForTermination()
+    }
+  }
+
+  private func stopMacOSGlobeKeyProbeForTermination() {
+    macOSGlobeKeyProbeRestoreRetryWorkItem?.cancel()
+    macOSGlobeKeyProbeRestoreRetryWorkItem = nil
+    _ = stopMacOSGlobeKeyProbe(scheduleRetry: false, reportStatus: false)
+  }
+
   /// Stops stream-specific capture immediately. Mapping restoration continues
   /// independently when IOHID transiently fails, so closing one stream never
   /// blocks the user's local keyboard or another part of the application.
   @discardableResult
-  private func stopMacOSGlobeKeyProbe() -> Bool {
+  private func stopMacOSGlobeKeyProbe(
+    scheduleRetry: Bool = true,
+    reportStatus: Bool = true
+  ) -> Bool {
     macOSGlobeKeyProbeStopRequested = true
     if let monitor = macOSGlobeKeyProbeLocalMonitor {
       NSEvent.removeMonitor(monitor)
@@ -315,11 +463,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     if trackpadScrollMonitor == nil {
       flutterView = nil
     }
-    reportMacOSGlobeKeyProbeStatus(armed: false)
+    if reportStatus {
+      reportMacOSGlobeKeyProbeStatus(armed: false)
+    }
     let restored = restoreMacOSGlobeKeyProbeCapsLockRemap()
     if restored {
       finishMacOSGlobeKeyProbeStopIfRestored()
-    } else {
+    } else if scheduleRetry {
       scheduleMacOSGlobeKeyProbeRestoreRetry()
     }
     return restored
@@ -782,6 +932,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func currentMacOSKeyboardInputSourceId() -> String? {
+#if DEBUG
+    if let macOSKeyboardInputSourceIdReaderForTesting {
+      return macOSKeyboardInputSourceIdReaderForTesting()
+    }
+#endif
     let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
     guard let rawId = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
     else {
@@ -792,37 +947,132 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       .takeUnretainedValue() as String
   }
 
-  /// Selects the next enabled and selectable keyboard input source for this
-  /// macOS Host. The Viewer never supplies an input-source ID or language.
-  private func selectNextMacOSInputSource() -> Bool {
-    guard Thread.isMainThread else { return false }
+  private func macOSSelectableKeyboardInputSources() -> [TISInputSource] {
     let filter = [
       kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource,
     ] as CFDictionary
     let sourceList = TISCreateInputSourceList(filter, false)
       .takeRetainedValue() as NSArray
-    let selectableSources = sourceList.map { $0 as! TISInputSource }
-      .filter { source in
-        guard
-          let enabledValue = TISGetInputSourceProperty(
-            source,
-            kTISPropertyInputSourceIsEnabled
-          ),
-          let selectableValue = TISGetInputSourceProperty(
-            source,
-            kTISPropertyInputSourceIsSelectCapable
-          )
-        else {
-          return false
-        }
-        let enabled = Unmanaged<CFBoolean>
-          .fromOpaque(enabledValue)
-          .takeUnretainedValue()
-        let selectable = Unmanaged<CFBoolean>
-          .fromOpaque(selectableValue)
-          .takeUnretainedValue()
-        return CFBooleanGetValue(enabled) && CFBooleanGetValue(selectable)
+    return sourceList.map { $0 as! TISInputSource }.filter { source in
+      guard
+        let enabledValue = TISGetInputSourceProperty(
+          source,
+          kTISPropertyInputSourceIsEnabled
+        ),
+        let selectableValue = TISGetInputSourceProperty(
+          source,
+          kTISPropertyInputSourceIsSelectCapable
+        )
+      else {
+        return false
       }
+      let enabled = Unmanaged<CFBoolean>
+        .fromOpaque(enabledValue)
+        .takeUnretainedValue()
+      let selectable = Unmanaged<CFBoolean>
+        .fromOpaque(selectableValue)
+        .takeUnretainedValue()
+      return CFBooleanGetValue(enabled) && CFBooleanGetValue(selectable)
+    }
+  }
+
+  private func macOSInputSourceClass(_ source: TISInputSource) -> MacOSInputSourceClass {
+    guard let rawType = TISGetInputSourceProperty(source, kTISPropertyInputSourceType)
+    else {
+      return .unknown
+    }
+    let type = Unmanaged<CFString>.fromOpaque(rawType).takeUnretainedValue()
+    if CFEqual(type, kTISTypeKeyboardLayout) {
+      return .keyboardLayout
+    }
+    return .inputMethod
+  }
+
+  private func macOSInputSourceSnapshot(
+    selectableSources: [TISInputSource]? = nil
+  ) -> MacOSInputSourceSnapshot {
+    let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+    let sources = selectableSources ?? macOSSelectableKeyboardInputSources()
+    return MacOSInputSourceSnapshot(
+      id: macOSKeyboardInputSourceId(current),
+      sourceClass: macOSInputSourceClass(current),
+      selectableCount: sources.count
+    )
+  }
+
+  private func refreshMacOSInputSourceSnapshot(
+    selectableSources: [TISInputSource]? = nil
+  ) {
+    guard Thread.isMainThread else { return }
+    let snapshot = macOSInputSourceSnapshot(selectableSources: selectableSources)
+    macOSInputSourceSnapshotLock.lock()
+    macOSInputSourceSnapshot = snapshot
+    macOSInputSourceSnapshotLock.unlock()
+  }
+
+  private func startMacOSInputSourceTracking() {
+    guard Thread.isMainThread else { return }
+    refreshMacOSInputSourceSnapshot()
+    guard !macOSInputSourceNotificationRegistered else { return }
+    CFNotificationCenterAddObserver(
+      CFNotificationCenterGetDistributedCenter(),
+      Unmanaged.passUnretained(self).toOpaque(),
+      macOSInputSourceChangedCallback,
+      kTISNotifySelectedKeyboardInputSourceChanged,
+      nil,
+      .deliverImmediately
+    )
+    macOSInputSourceNotificationRegistered = true
+  }
+
+  private func stopMacOSInputSourceTracking() {
+    guard macOSInputSourceNotificationRegistered else { return }
+    CFNotificationCenterRemoveObserver(
+      CFNotificationCenterGetDistributedCenter(),
+      Unmanaged.passUnretained(self).toOpaque(),
+      CFNotificationName(kTISNotifySelectedKeyboardInputSourceChanged!),
+      nil
+    )
+    macOSInputSourceNotificationRegistered = false
+  }
+
+  fileprivate func handleMacOSInputSourceChanged() {
+    guard Thread.isMainThread else { return }
+    refreshMacOSInputSourceSnapshot()
+  }
+
+  private func readMacOSInputSourceSnapshot() -> MacOSInputSourceSnapshot {
+    macOSInputSourceSnapshotLock.lock()
+    defer { macOSInputSourceSnapshotLock.unlock() }
+    return macOSInputSourceSnapshot
+  }
+
+  private func setPendingMacOSInputSourceSelectionDiagnostic(
+    _ diagnostic: MacOSInputSourceSelectionDiagnostic
+  ) {
+    macOSInputSourceSnapshotLock.lock()
+    pendingMacOSInputSourceSelectionDiagnostic = diagnostic
+    macOSInputSourceSnapshotLock.unlock()
+  }
+
+  private func consumePendingMacOSInputSourceSelectionDiagnostic()
+    -> MacOSInputSourceSelectionDiagnostic? {
+    macOSInputSourceSnapshotLock.lock()
+    defer { macOSInputSourceSnapshotLock.unlock() }
+    let diagnostic = pendingMacOSInputSourceSelectionDiagnostic
+    pendingMacOSInputSourceSelectionDiagnostic = nil
+    return diagnostic
+  }
+
+  /// Selects the next enabled/selectable keyboard input source owned by this
+  /// macOS Host.
+  ///
+  /// The Viewer supplies no source identity or language. The Host owns the
+  /// selectable list and cycles it directly with `TISSelectInputSource`, which
+  /// is the previously user-validated production path.
+  private func selectNextMacOSInputSource(requestOrdinal: Int? = nil) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let selectableSources = macOSSelectableKeyboardInputSources()
     guard selectableSources.count > 1 else { return false }
 
     let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -831,8 +1081,89 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }) else {
       return false
     }
-    let nextIndex = (currentIndex + 1) % selectableSources.count
-    return TISSelectInputSource(selectableSources[nextIndex]) == noErr
+    let next = selectableSources[(currentIndex + 1) % selectableSources.count]
+    guard TISSelectInputSource(next) == noErr,
+          let expectedId = macOSKeyboardInputSourceId(next),
+          waitForMacOSKeyboardInputSource(expectedId)
+    else {
+      return false
+    }
+    refreshMacOSInputSourceSnapshot(selectableSources: selectableSources)
+    let confirmed = readMacOSInputSourceSnapshot()
+    setPendingMacOSInputSourceSelectionDiagnostic(
+      MacOSInputSourceSelectionDiagnostic(
+        requestOrdinal: requestOrdinal,
+        expectedID: expectedId
+      )
+    )
+    macOSInputSourceDiagnosticLog(
+      "selection_confirmed ordinal=\(requestOrdinal.map(String.init) ?? "none") " +
+        "before=\(macOSInputSourceLogValue(macOSKeyboardInputSourceId(current))) " +
+        "expected=\(macOSInputSourceLogValue(expectedId)) " +
+        "confirmed=\(macOSInputSourceLogValue(confirmed.id)) " +
+        "sourceClass=\(confirmed.sourceClass.rawValue) " +
+        "selectableCount=\(confirmed.selectableCount)"
+    )
+    return true
+  }
+
+  private func macOSInputSourceRequestOrdinal(
+    from arguments: Any?
+  ) -> Int? {
+    guard
+      let values = arguments as? [String: Any],
+      let ordinal = values["requestOrdinal"] as? Int,
+      ordinal > 0
+    else {
+      return nil
+    }
+    return ordinal
+  }
+
+  private func macOSKeyboardInputSourceId(_ source: TISInputSource) -> String? {
+    guard let rawId = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
+    else {
+      return nil
+    }
+    return Unmanaged<CFString>
+      .fromOpaque(rawId)
+      .takeUnretainedValue() as String
+  }
+
+  /// TIS changes source asynchronously. Preserve the verified behaviour by
+  /// waiting for the selected ID before reporting the semantic command done.
+  private func waitForMacOSKeyboardInputSource(_ expectedId: String) -> Bool {
+#if DEBUG
+    if let macOSInputSourceSelectionWaiterForTesting {
+      return macOSInputSourceSelectionWaiterForTesting(expectedId)
+    }
+#endif
+    let deadline = Date().addingTimeInterval(1)
+    repeat {
+      if currentMacOSKeyboardInputSourceId() == expectedId {
+        return true
+      }
+      RunLoop.current.run(
+        mode: .default,
+        before: Date().addingTimeInterval(0.005)
+      )
+    } while Date() < deadline
+    return false
+  }
+
+  private func macOSInputSourceLogValue(_ value: String?) -> String {
+    value ?? "none"
+  }
+
+  private func macOSInputSourceDiagnosticLog(_ message: String) {
+#if CPP_LOG_AVAILABLE
+    guard let emit = macOSCppLogEmit else { return }
+    "RD_INPUT_SOURCE_NATIVE".withCString { tag in
+      message.withCString { message in
+        emit(2, tag, message)
+      }
+    }
+#endif
   }
 
   private func handleTrackpadScroll(_ event: NSEvent) {
@@ -2377,6 +2708,26 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           return
       }
 
+      let inputSourceSnapshot = readMacOSInputSourceSnapshot()
+      let flags = Self.keyboardFlagsForPressedKeyCodes(
+        Array(activeKeyMacCodes.values),
+        capsLockEnabled: remoteCapsLockEnabled &&
+            inputSourceSnapshot.sourceClass == .keyboardLayout
+      )
+      if isDown && !isRepeat,
+          let selectionDiagnostic =
+            consumePendingMacOSInputSourceSelectionDiagnostic() {
+        macOSInputSourceDiagnosticLog(
+          "first_key_after_selection ordinal=" +
+            "\(selectionDiagnostic.requestOrdinal.map(String.init) ?? "none") " +
+            "expected=\(macOSInputSourceLogValue(selectionDiagnostic.expectedID)) " +
+            "current=\(macOSInputSourceLogValue(inputSourceSnapshot.id)) " +
+            "sourceClass=\(inputSourceSnapshot.sourceClass.rawValue) " +
+            "selectableCount=\(inputSourceSnapshot.selectableCount) " +
+            "alphaShift=\(flags.contains(.maskAlphaShift))"
+        )
+      }
+
       // Create and post the keyboard event.
       //
       // Strip the Fn (secondaryFn) and NumericPad flags before posting.
@@ -2384,21 +2735,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
       // such an event latches Fn into the shared session modifier state — and
       // because the key-up event carries Fn too, it is never released. Every
-      // subsequent injected key is built with `keyboardEventSource: nil`,
-      // which inherits that polluted session state, so the stray Fn leaks onto
-      // ordinary keys: e.g. "E" becomes 🌐+E and opens the Emoji & Symbols
-      // picker. We never intend to inject Fn, so clear it (and NumericPad)
-      // from every event; the virtual key code alone still drives arrows.
+      // subsequent injected key needs the normal system event source so the
+      // frontmost application's input method receives a real composition.
+      // We still assemble flags solely from remote state below, which prevents
+      // stray local Fn/NumPad state from leaking onto ordinary keys; the
+      // virtual key code still drives arrows.
       let event = CGEvent(
         keyboardEventSource: nil,
         virtualKey: macKeyCode,
         keyDown: isDown
       )
-      let inheritedFlags = CGEventSource.flagsState(.combinedSessionState)
-      event?.flags = Self.keyboardFlagsForPressedKeyCodes(
-        Array(activeKeyMacCodes.values),
-        inheritedFlags: inheritedFlags
-      )
+      event?.flags = flags
       // Keep Shift/Control/Option/Command as ordinary keyDown/keyUp events.
       // Recasting them as flagsChanged can leave the combined session modifier
       // state latched after key-up (for example, after remote Ctrl+Tab).
@@ -2413,21 +2760,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   static func keyboardFlagsForPressedKeyCodes(
       _ pressedKeyCodes: [CGKeyCode],
-      inheritedFlags: CGEventFlags
+      capsLockEnabled: Bool = false
   ) -> CGEventFlags {
-      var flags = inheritedFlags
+      var flags: CGEventFlags = []
       // Modifier state for injected input must come from our own pressed-key
       // table. Inheriting the host's physical modifiers makes a remote chord
       // nondeterministic, while omitting these flags makes Command+A arrive as
       // a plain A on macOS.
-      flags.remove([
-        .maskShift,
-        .maskControl,
-        .maskAlternate,
-        .maskCommand,
-        .maskSecondaryFn,
-        .maskNumericPad,
-      ])
+      if capsLockEnabled {
+          flags.insert(.maskAlphaShift)
+      }
       for keyCode in pressedKeyCodes {
           switch keyCode {
           case 0x38, 0x3C:
@@ -2447,7 +2789,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   static func capsLockFlagsForKeyEvent(
       currentFlags: CGEventFlags,
-      isDown: Bool
+      isDown: Bool,
+      capsLockEnabled: Bool? = nil
   ) -> CGEventFlags? {
       // Caps Lock is a status key on macOS. Its release does not create a
       // second state change; the next press flips AlphaShift back instead.
@@ -2457,19 +2800,23 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
       var flags = currentFlags
       flags.remove([.maskSecondaryFn, .maskNumericPad])
-      if flags.contains(.maskAlphaShift) {
-          flags.remove(.maskAlphaShift)
-      } else {
+      let nextCapsLockEnabled = capsLockEnabled ?? !flags.contains(.maskAlphaShift)
+      if nextCapsLockEnabled {
           flags.insert(.maskAlphaShift)
+      } else {
+          flags.remove(.maskAlphaShift)
       }
       return flags
   }
 
   private func postCapsLockEvent(isDown: Bool) {
-      let currentFlags = CGEventSource.flagsState(.combinedSessionState)
+      if isDown {
+          remoteCapsLockEnabled.toggle()
+      }
       guard let flags = Self.capsLockFlagsForKeyEvent(
-        currentFlags: currentFlags,
-        isDown: isDown
+        currentFlags: [],
+        isDown: isDown,
+        capsLockEnabled: remoteCapsLockEnabled
       ) else {
           return
       }
@@ -4557,7 +4904,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopMacOSGlobeKeyProbe":
       result(stopMacOSGlobeKeyProbe())
     case "selectNextMacOSInputSource":
-      result(selectNextMacOSInputSource())
+      result(
+        selectNextMacOSInputSource(
+          requestOrdinal: macOSInputSourceRequestOrdinal(from: call.arguments)
+        )
+      )
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)

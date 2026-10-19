@@ -40,6 +40,15 @@ class RunnerTests: XCTestCase {
     ]
   }
 
+  private var realSystemTestsEnabled: Bool {
+    ProcessInfo.processInfo.environment[
+      "CLOUDPLAYPLUS_RUN_REAL_IOHID_RESTORE_TEST"
+    ] == "1" ||
+        UserDefaults.standard.bool(
+          forKey: "CLOUDPLAYPLUS_RUN_REAL_IOHID_RESTORE_TEST"
+        )
+  }
+
   private func plugin(
     mapping: KeyMapping,
     writesSucceed: @escaping () -> Bool = { true }
@@ -235,6 +244,87 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testPluginDeinitDoesNotQueueWeakRecoveryWork() {
+    let original: KeyMapping = []
+    var writesSucceed = true
+    var currentMapping = original
+    weak var releasedPlugin: HardwareSimulatorPlugin?
+
+    do {
+      let subject = HardwareSimulatorPlugin()
+      releasedPlugin = subject
+      subject.macOSUserKeyMappingReaderForTesting = { currentMapping }
+      subject.macOSUserKeyMappingWriterForTesting = { nextMapping in
+        guard writesSucceed else { return false }
+        currentMapping = nextMapping
+        return true
+      }
+      XCTAssertTrue(subject.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+      XCTAssertEqual(currentMapping, [globeMapping()])
+
+      // This is the exact failure mode from the macOS crash report: teardown
+      // cannot restore immediately. Prior code scheduled a DispatchWorkItem
+      // with `[weak self]` from `deinit`, which aborts in objc weak registration.
+      writesSucceed = false
+    }
+
+    XCTAssertNil(releasedPlugin)
+    // Give a wrongly queued main-runloop callback a chance to fire. The fixed
+    // teardown neither crashes nor schedules one, and leaves the journal for
+    // crash/startup recovery rather than leaving a dangling object callback.
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    XCTAssertEqual(currentMapping, [globeMapping()])
+    XCTAssertTrue(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  func testTerminationStopRestoresOwnedCapsLockMapping() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    XCTAssertTrue(subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(subject.currentMapping(), [globeMapping()])
+
+    subject.plugin.stopMacOSGlobeKeyProbeForTerminationForTesting()
+
+    XCTAssertEqual(subject.currentMapping(), original)
+    XCTAssertFalse(subject.plugin.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  /// Opt-in integration coverage for the real user-wide IOKit mapping. This
+  /// cannot run in ordinary CI because it intentionally mutates the live
+  /// keyboard mapping, but it makes the exit-safety acceptance executable on
+  /// a dedicated test Mac. The defer is deliberately independent of the
+  /// plugin's test hooks so a failed assertion cannot strand the keyboard.
+  func testRealSystemCapsLockMappingRestoresOnStreamStop() throws {
+    guard realSystemTestsEnabled else {
+      throw XCTSkip("Requires explicit dedicated-Mac opt-in")
+    }
+
+    let subject = HardwareSimulatorPlugin()
+    let original = try XCTUnwrap(subject.currentMacOSUserKeyMappingForTesting())
+    defer {
+      if subject.currentMacOSUserKeyMappingForTesting() != original {
+        _ = subject.setMacOSUserKeyMappingForTesting(original)
+      }
+      HardwareSimulatorPlugin.resetMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    }
+
+    XCTAssertTrue(subject.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertNotEqual(subject.currentMacOSUserKeyMappingForTesting(), original)
+
+    XCTAssertTrue(subject.stopMacOSGlobeKeyProbeForTesting())
+
+    XCTAssertEqual(subject.currentMacOSUserKeyMappingForTesting(), original)
+    XCTAssertFalse(subject.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
   func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
     let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
       displayIds: [30, 20, 10, 30],
@@ -408,16 +498,10 @@ class RunnerTests: XCTestCase {
 
   func testInjectedKeyboardFlagsUseRemoteModifierState() {
     let flags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
-      [0x36, 0x38, 0x3B],
-      inheritedFlags: [
-        .maskAlphaShift,
-        .maskAlternate,
-        .maskSecondaryFn,
-        .maskNumericPad,
-      ]
+      [0x36, 0x38, 0x3B]
     )
 
-    XCTAssertTrue(flags.contains(.maskAlphaShift))
+    XCTAssertFalse(flags.contains(.maskAlphaShift))
     XCTAssertTrue(flags.contains(.maskCommand))
     XCTAssertTrue(flags.contains(.maskShift))
     XCTAssertTrue(flags.contains(.maskControl))
@@ -427,13 +511,30 @@ class RunnerTests: XCTestCase {
   }
 
   func testInjectedKeyboardFlagsClearReleasedRemoteModifiers() {
-    let flags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
-      [],
-      inheritedFlags: [.maskCommand, .maskControl]
-    )
+    let flags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes([])
 
     XCTAssertFalse(flags.contains(.maskCommand))
     XCTAssertFalse(flags.contains(.maskControl))
+  }
+
+  func testInjectedKeyboardFlagsUseOnlyRemoteCapsLockState() {
+    let disabled = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes([])
+    XCTAssertFalse(disabled.contains(.maskAlphaShift))
+
+    let enabled = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
+      [],
+      capsLockEnabled: true
+    )
+    XCTAssertTrue(enabled.contains(.maskAlphaShift))
+  }
+
+  func testInputMethodSnapshotStripsRemoteCapsLockFromInjectedKeys() {
+    let inputMethodFlags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
+      [],
+      capsLockEnabled: false
+    )
+
+    XCTAssertFalse(inputMethodFlags.contains(.maskAlphaShift))
   }
 
   func testMacTextInputObserverOnlyUsesFocusedElementChanges() {

@@ -358,19 +358,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
     if (!isinitialized) init();
     if (macOSGlobeKeyProbeCallbacks.contains(callback)) return;
-    final shouldStartCapture = macOSGlobeKeyProbeCallbacks.isEmpty;
     macOSGlobeKeyProbeCallbacks.add(callback);
-    if (shouldStartCapture) {
-      unawaited(startMacOSGlobeKeyProbe());
-    }
   }
 
   @override
   void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
-    final removed = macOSGlobeKeyProbeCallbacks.remove(callback);
-    if (removed && macOSGlobeKeyProbeCallbacks.isEmpty) {
-      unawaited(stopMacOSGlobeKeyProbe());
-    }
+    macOSGlobeKeyProbeCallbacks.remove(callback);
   }
 
   final List<MacOSGlobeKeyProbeStatusCallback>
@@ -417,10 +410,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<bool> selectNextMacOSInputSource() async {
+  Future<bool> selectNextMacOSInputSource({int? requestOrdinal}) async {
     try {
       final selected = await methodChannel.invokeMethod<Object?>(
         'selectNextMacOSInputSource',
+        requestOrdinal == null ? null : {'requestOrdinal': requestOrdinal},
       );
       return selected == true;
     } on MissingPluginException {
