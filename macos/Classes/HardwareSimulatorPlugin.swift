@@ -150,6 +150,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   override init() {
     super.init()
+#if CLOUDPLAYPLUS_DMG_DISTRIBUTION
+    macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
+#endif
     // Injection can start before a MethodChannel call reaches this instance,
     // so source classification belongs to the plugin object's own lifecycle.
     // AppKit/TIS work is restricted to the main thread; registration creates
@@ -1206,11 +1209,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
-  override init() {
-    super.init()
-    macVirtualDisplayQueue.setSpecific(key: macVirtualDisplayQueueKey, value: ())
-  }
-
   private struct MacVirtualDisplayConfig: Hashable {
     let width: Int
     let height: Int
