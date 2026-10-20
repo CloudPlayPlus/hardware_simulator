@@ -6,6 +6,7 @@ import Foundation
 @main struct SafetyHarness {
   static func main() {
     precondition(Thread.isMainThread)
+    _ = NSApplication.shared
     let lease = NSTemporaryDirectory() + "cpp-safety-\(UUID().uuidString).lock"
     HardwareSimulatorPlugin.macOSCapsLockRemapLeaseFilePathForTesting = lease
     defer {
@@ -68,6 +69,20 @@ import Foundation
     writeAllowed = true
     precondition(owner.stopMacOSGlobeKeyProbeForTesting())
     precondition(mapping.isEmpty)
+    // 实际startup路径：Caps冲突不阻断纯tap能力，Caps-only不要求HID tap。
+    mapping = [[src: caps, dst: 0x700000029]]
+    var hidInstalls = 0
+    precondition(owner.startInputCaptureForTesting(caps: true, fn: true, control: true,
+      hid: { hidInstalls += 1; return true }, globe: { true }))
+    precondition(hidInstalls == 1 && mapping == [[src: caps, dst: 0x700000029]])
+    precondition(owner.stopMacOSGlobeKeyProbeForTesting())
+    mapping = []
+    precondition(owner.startInputCaptureForTesting(caps: true, fn: false, control: false,
+      hid: { preconditionFailure("Caps-only must not install HID tap") }, globe: { false }))
+    precondition(owner.stopMacOSGlobeKeyProbeForTesting())
+    precondition(mapping.isEmpty)
+    precondition(!owner.startInputCaptureForTesting(caps: false, fn: true, control: false,
+      hid: { true }, globe: { false }))
     print("PASS: eligible preserved; stale owner restored; other owner/custom mapping protected; idempotent; failure retained journal; retry restored")
   }
 }

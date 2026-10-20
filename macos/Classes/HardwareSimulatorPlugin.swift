@@ -186,6 +186,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
   }
 #if DEBUG
+  private var inputCaptureStartFixture: (caps: Bool, fn: Bool, control: Bool, hid: () -> Bool, globe: () -> Bool)?
+  func startInputCaptureForTesting(caps: Bool, fn: Bool, control: Bool,
+                                  hid: @escaping () -> Bool, globe: @escaping () -> Bool) -> Bool {
+    inputCaptureStartFixture = (caps, fn, control, hid, globe)
+    defer { inputCaptureStartFixture = nil }
+    return startMacOSGlobeKeyProbe()
+  }
   var cursorSeedRefreshHandlerForTesting: (() -> Void)?
   var cursorSeedProducerActiveForTesting: Bool {
     cursorSeedProducerActive
@@ -456,22 +463,33 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
     flutterView = registrar?.view ?? registrar?.viewController?.view
-    guard let window = flutterView?.window, NSApp.isActive, window.isKeyWindow else {
+    var windowReady = NSApp.isActive && flutterView?.window?.isKeyWindow == true
+#if DEBUG
+    if inputCaptureStartFixture != nil { windowReady = true }
+#endif
+    guard windowReady else {
       reportMacOSGlobeKeyProbeStatus(armed: false)
       return false
     }
 
     // Do not intercept ordinary Caps Lock or Globe/Fn. These are the exact
     // live settings shown by macOS Keyboard Settings.
-    let captureCapsLock = macOSCapsLockInputSourceSwitchEnabled()
-    let captureFnInputSource = macOSFnInputSourceSwitchEnabled()
+    var captureCapsLock = macOSCapsLockInputSourceSwitchEnabled()
+    var captureFnInputSource = macOSFnInputSourceSwitchEnabled()
+    var controlSpace = macOSControlSpaceInputSourceEnabled()
+#if DEBUG
+    if let fixture = inputCaptureStartFixture {
+      captureCapsLock = fixture.caps
+      captureFnInputSource = fixture.fn
+      controlSpace = fixture.control
+    }
+#endif
     let fnUsageType = currentMacOSFnUsageType()
     let configDiagnostic =
       "capsInputSource=\(captureCapsLock), " +
       "fnInputSource=\(captureFnInputSource), " +
       "fnUsageType=\(fnUsageType.map(String.init) ?? "unknown"), " +
       "mapping=\(macOSUserKeyMappingDiagnostic(currentMacOSUserKeyMapping()))"
-    let controlSpace = macOSControlSpaceInputSourceEnabled()
     guard captureCapsLock || captureFnInputSource || controlSpace else {
       reportMacOSInputSourceCaptureDiagnostic(
         "Viewer input-source capture unavailable: no_configured_key, " +
@@ -485,14 +503,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     let capsAttempt = enableMacOSGlobeKeyProbeCapsLockRemap(
       captureCapsLock: captureCapsLock
     )
-    guard capsAttempt.applied else {
+    if !capsAttempt.applied {
       reportMacOSInputSourceCaptureDiagnostic(
-        "Viewer input-source capture unavailable: caps=\(capsAttempt.reason), " +
+        "Viewer Caps capture unavailable: caps=\(capsAttempt.reason), " +
           configDiagnostic
       )
-      flutterView = nil
-      reportMacOSGlobeKeyProbeStatus(armed: false)
-      return false
+      captureCapsLock = false
     }
 
     // Fn / Control 只使用局部 event tap；不再修改全局 Fn usage type。
@@ -993,6 +1009,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func installInputSourceEventTap() -> Bool {
+#if DEBUG
+    if let fixture = inputCaptureStartFixture { return fixture.hid() }
+#endif
     let types: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown]
     let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
     return inputCaptureRegistry.register(id: "input-source", mask: mask) { [weak self] type, event in
@@ -1023,6 +1042,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private func installGlobeSystemCapture() {
+#if DEBUG
+    if let fixture = inputCaptureStartFixture {
+      macOSGlobeKeyProbeCapturesFn = fixture.globe()
+      return
+    }
+#endif
     guard let target = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextInputSwitcher").first,
           target.executableURL?.path == "/System/Library/CoreServices/TextInputSwitcher.app/Contents/MacOS/TextInputSwitcher" else {
       macOSInputSourceDiagnosticLog("Globe capture unavailable: TextInputSwitcher is not running")
