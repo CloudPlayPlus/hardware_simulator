@@ -492,7 +492,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
 
     // Fn / Control 只使用局部 event tap；不再修改全局 Fn usage type。
-    guard installInputSourceEventTap() else {
+    let needsEventTap = captureFnInputSource || controlSpace
+    guard !needsEventTap || installInputSourceEventTap() else {
       _ = restoreMacOSGlobeKeyProbeCapsLockRemap()
       releaseMacOSGlobeKeyProbeCapsLockRemapLease()
       releaseMacOSGlobeKeyProbeFnSystemActionLease()
@@ -521,6 +522,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
     if captureFnInputSource { installGlobeSystemCapture() }
+    guard captureCapsLock || capturesControlSpace || macOSGlobeKeyProbeCapturesFn else {
+      _ = stopMacOSGlobeKeyProbe()
+      return false
+    }
     reportMacOSGlobeKeyProbeStatus(armed: true)
     reportMacOSInputSourceCaptureDiagnostic(
       "Viewer input-source capture armed: caps=\(captureCapsLock), " +
@@ -576,7 +581,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           name == NSWindow.didResignKeyNotification || name == NSWindow.willCloseNotification
         let eligible = !losingFocus && NSApp.isActive && self.flutterView?.window?.isKeyWindow == true &&
           self.macOSGlobeKeyProbeLocalMonitor != nil &&
-          self.inputCaptureRegistry.isActive(id: "input-source")
+          (!(self.macOSGlobeKeyProbeCapturesFn || self.capturesControlSpace) ||
+            self.inputCaptureRegistry.isActive(id: "input-source"))
         self.checkInputSourceSafety(eligible: eligible)
       }
       inputSourceSafetyObservers.append(observer)
