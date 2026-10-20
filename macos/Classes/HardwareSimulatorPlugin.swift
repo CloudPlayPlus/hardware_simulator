@@ -263,6 +263,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     checkInputSourceSafety(eligible: eligible)
   }
 
+  func inputSourceTapDisabledForTesting() {
+    inputSourceTapDisabled()
+  }
+
   func currentMacOSUserKeyMappingForTesting() -> MacOSUserKeyMapping? {
     currentMacOSUserKeyMapping()
   }
@@ -994,9 +998,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return inputCaptureRegistry.register(id: "input-source", mask: mask) { [weak self] type, event in
       guard let self else { return false }
       if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        self.inputSourceChordRouter.reset()
-        self.globeProcessGate.reset()
-        DispatchQueue.main.async { [weak self] in _ = self?.stopMacOSGlobeKeyProbe() }
+        self.inputSourceTapDisabled()
         return false
       }
       guard self.hasFocusedInputSourceCapture else {
@@ -1031,8 +1033,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       mask: CGEventMask(1) << 14) { [weak self] type, event in
       guard let self else { return false }
       if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        self.globeProcessGate.reset()
-        self.macOSGlobeKeyProbeCapturesFn = false
+        self.inputSourceTapDisabled()
         return false
       }
       guard self.hasFocusedInputSourceCapture, self.macOSGlobeKeyProbeCapturesFn else {
@@ -1045,6 +1046,14 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
     if !installed { macOSGlobeKeyProbeCapturesFn = false }
     macOSInputSourceDiagnosticLog("Globe system capture installed=\(installed)")
+  }
+
+  private func inputSourceTapDisabled() {
+    inputSourceChordRouter.reset()
+    globeProcessGate.reset()
+    macOSGlobeKeyProbeCapturesFn = false
+    // 回调返回后统一注销，通知Dart失效并恢复映射；由既有受focus约束重试重建。
+    DispatchQueue.main.async { [weak self] in _ = self?.stopMacOSGlobeKeyProbe() }
   }
 
   private func emitMacOSInputSourceKeyCapture(kind: String, cycleStartSource: String? = nil) {

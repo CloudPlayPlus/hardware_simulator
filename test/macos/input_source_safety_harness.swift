@@ -43,10 +43,15 @@ import Foundation
     let restoredWrites = writes
     owner.checkInputSourceSafetyForTesting(eligible: false)
     precondition(writes == restoredWrites)
+    precondition(owner.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    owner.inputSourceTapDisabledForTesting()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    precondition(mapping.isEmpty && !owner.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
+    let afterDisabledWrites = writes
     // 客户自己的Caps→F20没有我们的journal，不应自动清理。
     mapping = [[src: caps, dst: f20]]
     owner.checkInputSourceSafetyForTesting(eligible: false)
-    precondition(writes == restoredWrites && !mapping.isEmpty)
+    precondition(writes == afterDisabledWrites && !mapping.isEmpty)
     mapping = []
     precondition(owner.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
     mapping.append([src: 0x700000004, dst: 0x700000005])
