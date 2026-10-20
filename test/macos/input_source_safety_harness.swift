@@ -83,6 +83,13 @@ import Foundation
     precondition(mapping.isEmpty)
     precondition(!owner.startInputCaptureForTesting(caps: false, fn: true, control: false,
       hid: { true }, globe: { false }))
+    precondition(owner.startInputCaptureForTesting(caps: true, fn: true, control: true,
+      hid: { false }, globe: { preconditionFailure("Failed HID path must not install Globe") }))
+    precondition(mapping == [[src: caps, dst: f20]])
+    precondition(owner.stopMacOSGlobeKeyProbeForTesting())
+    precondition(mapping.isEmpty)
+    precondition(!owner.startInputCaptureForTesting(caps: false, fn: true, control: true,
+      hid: { false }, globe: { false }))
     print("PASS: eligible preserved; stale owner restored; other owner/custom mapping protected; idempotent; failure retained journal; retry restored")
   }
 }

@@ -513,17 +513,13 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
     // Fn / Control 只使用局部 event tap；不再修改全局 Fn usage type。
     let needsEventTap = captureFnInputSource || controlSpace
-    guard !needsEventTap || installInputSourceEventTap() else {
-      _ = restoreMacOSGlobeKeyProbeCapsLockRemap()
-      releaseMacOSGlobeKeyProbeCapsLockRemapLease()
-      releaseMacOSGlobeKeyProbeFnSystemActionLease()
+    if needsEventTap && !installInputSourceEventTap() {
       reportMacOSInputSourceCaptureDiagnostic(
-        "Viewer input-source capture unavailable: event_tap_unavailable, " +
+        "Viewer Fn/Control capture unavailable: event_tap_unavailable, " +
           configDiagnostic
       )
-      flutterView = nil
-      reportMacOSGlobeKeyProbeStatus(armed: false)
-      return false
+      captureFnInputSource = false
+      controlSpace = false
     }
 
     macOSGlobeKeyProbeCapturesCapsLock = captureCapsLock
