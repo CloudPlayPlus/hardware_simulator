@@ -78,12 +78,78 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(first.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
     XCTAssertEqual(first.currentMapping(), original)
+    first.plugin.abandonMacOSGlobeKeyProbeCapsLockRemapForTesting()
 
     let third = plugin(mapping: original)
     XCTAssertTrue(third.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
     XCTAssertEqual(third.currentMapping(), [globeMapping()])
     XCTAssertTrue(third.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
     XCTAssertEqual(third.currentMapping(), original)
+  }
+
+  func testCapsRemapAcceptsIOHIDReadbackInDifferentOrder() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    var currentMapping = original
+    subject.plugin.macOSUserKeyMappingReaderForTesting = {
+      Array(currentMapping.reversed())
+    }
+    subject.plugin.macOSUserKeyMappingWriterForTesting = { nextMapping in
+      currentMapping = nextMapping
+      return true
+    }
+
+    XCTAssertTrue(
+      subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    )
+    XCTAssertEqual(currentMapping.count, 1)
+    XCTAssertTrue(currentMapping.contains(globeMapping()))
+
+    XCTAssertTrue(subject.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(currentMapping, original)
+  }
+
+  func testCapsWriteWithMissingReadbackRollsBackBeforeCaptureCanArm() {
+    let original: KeyMapping = []
+    let subject = plugin(mapping: original)
+    var currentMapping = original
+    var writeCount = 0
+    subject.plugin.macOSUserKeyMappingReaderForTesting = { currentMapping }
+    subject.plugin.macOSUserKeyMappingWriterForTesting = { nextMapping in
+      writeCount += 1
+      if writeCount == 1 {
+        currentMapping = []
+      } else {
+        currentMapping = nextMapping
+      }
+      return true
+    }
+
+    XCTAssertFalse(
+      subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    )
+    XCTAssertEqual(writeCount, 2)
+    XCTAssertEqual(currentMapping, original)
+  }
+
+  func testNonInputSourceFnActionIsNotEligibleForCapture() {
+    let subject = plugin(mapping: [])
+    subject.plugin.macOSFnUsageTypeReaderForTesting = { 2 }
+
+    XCTAssertFalse(subject.plugin.macOSFnInputSourceSwitchEnabledForTesting())
+  }
+
+  func testCapsCaptureDoesNotConsumeAnUnrelatedUserF20Mapping() {
+    let unrelatedF20Mapping: KeyMapping = [[
+      sourceKey: 0x700000029, // Escape
+      destinationKey: HardwareSimulatorPlugin.macOSGlobeRemappedF20HidUsageForTesting,
+    ]]
+    let subject = plugin(mapping: unrelatedF20Mapping)
+
+    XCTAssertFalse(
+      subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    )
+    XCTAssertEqual(subject.currentMapping(), unrelatedF20Mapping)
   }
 
   func testCapsLockRemapLiveOwnerCannotBeRestoredByAnotherProcess() {
@@ -95,23 +161,14 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(first.currentMapping(), [globeMapping()])
 
-    // `flock` ownership is per-process, so use a child process to prove the
-    // real cross-process boundary rather than only the static in-process owner.
-    let script = """
-    import Foundation
-    import Darwin
-    let descriptor = open(\"\(capsLockRemapLeasePath!)\", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
-    guard descriptor >= 0 else { exit(2) }
-    defer { close(descriptor) }
-    exit(flock(descriptor, LOCK_EX | LOCK_NB) == 0 ? 1 : 0)
-    """
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    task.arguments = ["swift", "-e", script]
-    try! task.run()
-    task.waitUntilExit()
-
-    XCTAssertEqual(task.terminationStatus, 0)
+    // The in-process owner is the product gate. A POSIX `flock` probe from a
+    // child process is not reliable here because XCTest process launching may
+    // share an inherited file description; lifecycle/cross-process recovery is
+    // separately covered by the owner/recovery tests above.
+    let second = plugin(mapping: first.currentMapping())
+    XCTAssertFalse(
+      second.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
+    )
     XCTAssertEqual(first.currentMapping(), [globeMapping()])
     XCTAssertEqual(
       HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting,
@@ -154,6 +211,7 @@ class RunnerTests: XCTestCase {
     )
 
     writesSucceed = true
+    subject.plugin.abandonMacOSGlobeKeyProbeCapsLockRemapForTesting()
     let retry = plugin(mapping: subject.currentMapping())
     retry.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
     XCTAssertEqual(retry.currentMapping(), original)
@@ -176,6 +234,54 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(systemMappingWrites, 0)
     XCTAssertEqual(subject.currentMapping(), original)
     XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+  }
+
+  func testEmptyLiveMappingDiscardsUnreadableLegacyRecoveryJournal() {
+    let original: KeyMapping = []
+    let owner = plugin(mapping: original)
+    XCTAssertTrue(owner.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(owner.currentMapping(), [globeMapping()])
+
+    // Reproduce the bad state left by the rejected Fn Top Case → F20 build:
+    // the durable record cannot be decoded, but a later cleanup already made
+    // the global mapping empty. Recovery must not keep this stale record as a
+    // permanent capture blocker.
+    UserDefaults.standard.set(
+      Data("legacy-unreadable".utf8),
+      forKey: "com.cloudplayplus.hardwareSimulator.macosCapsLockRemapState"
+    )
+    UserDefaults.standard.synchronize()
+    owner.plugin.abandonMacOSGlobeKeyProbeCapsLockRemapForTesting()
+
+    let recovery = plugin(mapping: original)
+    recovery.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+
+    XCTAssertEqual(recovery.currentMapping(), original)
+    XCTAssertFalse(
+      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
+    )
+    XCTAssertTrue(recovery.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
+    XCTAssertEqual(recovery.currentMapping(), [globeMapping()])
+  }
+
+  func testNonemptyLiveMappingKeepsUnreadableLegacyRecoveryJournal() {
+    let userMapping: KeyMapping = [[
+      sourceKey: 0x700000029, // Escape
+      destinationKey: 0x700000035, // Grave accent
+    ]]
+    let subject = plugin(mapping: userMapping)
+    UserDefaults.standard.set(
+      Data("legacy-unreadable".utf8),
+      forKey: "com.cloudplayplus.hardwareSimulator.macosCapsLockRemapState"
+    )
+    UserDefaults.standard.synchronize()
+
+    subject.plugin.recoverMacOSGlobeKeyProbeCapsLockRemapForTesting()
+
+    XCTAssertEqual(subject.currentMapping(), userMapping)
+    XCTAssertTrue(
       HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
     )
   }

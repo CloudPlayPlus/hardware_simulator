@@ -38,7 +38,7 @@ Any pull request is welcome. It is designed for https://github.com/zhuhaichao518
 ```
 
 `--ime` 构建同一份 Debug 插件 framework，使用 Apple Development 签名生成临时 AppKit `.app`，在真实
-`NSTextView` 中通过插件的“选择下一输入源确认 barrier + CGEvent 键盘注入”路径断言 `nihao<Space>` 最终提交
+`NSTextView` 中通过插件的“direct TIS 选择 + CGEvent 键盘注入”路径断言 `nihao<Space>` 最终提交
 `你好`；随后切回 ABC，经真实 Caps→A→Caps→B 注入断言结果为 `Ab`。它不是菜单栏图标或 flags 断言。
 
 `--cross-process-ime` 额外启动两个带 Apple Development 签名的 AppKit App：目标 App 只持有前台
@@ -55,6 +55,22 @@ stop 路径，再同时由插件和 `hidutil` 读回验证原始状态。此项�
 `example/pubspec.lock`，提交前应只恢复该生成文件的无关漂移。
 
 ## Windows 输入管道测试
+
+macOS 原生输入接管由 `MacOSInputCaptureRegistry` 按 ID 注册/替换/注销 tap，处理器同步返回消费或放行。
+它不持有会话状态或协议；调用方继续负责 focus/权限。Fn/Control+Space 与 Globe 事件配对逻辑见
+`MacOSInputSourceChordRouter.swift`；Caps 使用带 owner lease/journal 的可逆 F20 映射。
+固定 App/窗口生命周期节点检查残留映射，不新增定时扫描；旧 Fn 全局设置仅保留恢复路径。
+
+最小回归：
+
+```sh
+xcrun swiftc macos/Classes/MacOSInputSourceChordRouter.swift test/macos/input_source_chord_harness.swift -o /tmp/input-source-chords
+/tmp/input-source-chords
+```
+
+`input_capture_registry_harness.swift` 是需要辅助功能权限的本机 tap 回归，向自身发送无文本事件，
+不进入常规 CI。`input_source_safety_harness.swift` 以 mock 映射验证生产恢复函数，不改真实键位。
+保留现有 MethodChannel、映射 journal/权限测试；探索性 sample、失败无映射实验不进入产品代码。
 
 无需 Flutter 或 SYSTEM 权限，不会注入真实键鼠事件：
 

@@ -22,6 +22,9 @@ jobs:
             macos/VirtualDisplayHelper/CloudPlayPlusVirtualDisplayHelper.m \
             -o "$RUNNER_TEMP/cloudplayplus_vd_helper"
           xcrun swiftc -frontend -parse macos/Classes/HardwareSimulatorPlugin.swift
+          xcrun swiftc macos/Classes/MacOSInputSourceChordRouter.swift test/macos/input_source_chord_harness.swift -o "$RUNNER_TEMP/input-source-chords"
+          "$RUNNER_TEMP/input-source-chords"
+          xcrun swiftc -typecheck macos/Classes/MacOSInputCaptureRegistry.swift
           bash -n macos/VirtualDisplayHelper/test_mode_updates.sh
           xcrun clang -O2 -fobjc-arc -ObjC -mmacosx-version-min=14.0 \
             -Wall -Wextra -Werror \

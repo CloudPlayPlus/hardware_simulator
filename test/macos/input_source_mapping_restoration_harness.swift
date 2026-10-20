@@ -11,20 +11,33 @@ import IOKit.hid
 private typealias KeyMapping = [[String: UInt64]]
 private let sourceKey = "HIDKeyboardModifierMappingSrc"
 private let capsLockHidUsage: UInt64 = 0x700000039
+private let destinationKey = "HIDKeyboardModifierMappingDst"
 
 private func currentUserKeyMapping() -> KeyMapping? {
   let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
   guard let rawMapping = IOHIDEventSystemClientCopyProperty(
     client,
     "UserKeyMapping" as CFString
-  ) as? [[String: NSNumber]] else {
-    return nil
+  ) else {
+    return []
   }
-  return rawMapping.map { item in
-    Dictionary(uniqueKeysWithValues: item.map { key, value in
-      (key, value.uint64Value)
-    })
+  guard let mappings = rawMapping as? NSArray else { return nil }
+  return mappings.compactMap { rawItem in
+    guard let rawItem = rawItem as? NSDictionary else { return nil }
+    var mapping: [String: UInt64] = [:]
+    for (rawKey, rawValue) in rawItem {
+      guard let key = rawKey as? String, let value = rawValue as? NSNumber
+      else { return nil }
+      mapping[key] = value.uint64Value
+    }
+    return mapping
   }
+}
+
+private func mappingEntries(_ mapping: KeyMapping) -> [String] {
+  mapping.map { item in
+    "\(item[sourceKey] ?? 0)->\(item[destinationKey] ?? 0)"
+  }.sorted()
 }
 
 private func setUserKeyMapping(_ mapping: KeyMapping) -> Bool {
@@ -56,8 +69,8 @@ private func runHarness() -> (outcome: String, reason: String) {
     return ("FAIL", "Unable to read the live UserKeyMapping")
   }
   guard !original.contains(where: { $0[sourceKey] == capsLockHidUsage }) else {
-    // Product code must never overwrite a user-owned Caps Lock mapping. Do
-    // not turn a developer's personal customization into a test precondition.
+    // Product code must never overwrite a user-owned Caps Lock mapping. Fn is
+    // intentionally not a UserKeyMapping participant.
     return ("SKIP", "A user-owned Caps Lock mapping is already present")
   }
   let plugin = HardwareSimulatorPlugin()
@@ -65,24 +78,25 @@ private func runHarness() -> (outcome: String, reason: String) {
     // This second, process-local cleanup is independent of the assertion path.
     // It is intentionally retained even though the normal stream stop below
     // must restore first: a failed assertion must not strand the real keyboard.
-    if currentUserKeyMapping() != original {
+    if currentUserKeyMapping().map(mappingEntries) != mappingEntries(original) {
       _ = setUserKeyMapping(original)
     }
     HardwareSimulatorPlugin.resetMacOSGlobeKeyProbeCapsLockRemapForTesting()
   }
 
   guard plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting() else {
-    return ("FAIL", "Unable to arm the real Caps Lock to F20 mapping")
+    return ("FAIL", "Unable to arm the real Caps Lock mapping")
   }
 
-  guard currentUserKeyMapping() != original else {
-    return ("FAIL", "Arming did not change the live UserKeyMapping")
+  guard let armedMapping = currentUserKeyMapping(),
+        armedMapping.count == original.count + 1 else {
+    return ("FAIL", "Arming did not add the Caps Lock UserKeyMapping entry")
   }
 
   guard plugin.stopMacOSGlobeKeyProbeForTesting() else {
     return ("FAIL", "Normal stream stop did not report mapping restoration")
   }
-  guard currentUserKeyMapping() == original else {
+  guard currentUserKeyMapping().map(mappingEntries) == mappingEntries(original) else {
     return ("FAIL", "Normal stream stop did not restore the exact original mapping")
   }
   return ("PASS", "Normal stream stop restored the exact original UserKeyMapping")
