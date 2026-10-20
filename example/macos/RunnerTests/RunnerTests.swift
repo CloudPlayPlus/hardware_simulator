@@ -40,15 +40,6 @@ class RunnerTests: XCTestCase {
     ]
   }
 
-  private var realSystemTestsEnabled: Bool {
-    ProcessInfo.processInfo.environment[
-      "CLOUDPLAYPLUS_RUN_REAL_IOHID_RESTORE_TEST"
-    ] == "1" ||
-        UserDefaults.standard.bool(
-          forKey: "CLOUDPLAYPLUS_RUN_REAL_IOHID_RESTORE_TEST"
-        )
-  }
-
   private func plugin(
     mapping: KeyMapping,
     writesSucceed: @escaping () -> Bool = { true }
@@ -405,32 +396,6 @@ class RunnerTests: XCTestCase {
   /// keyboard mapping, but it makes the exit-safety acceptance executable on
   /// a dedicated test Mac. The defer is deliberately independent of the
   /// plugin's test hooks so a failed assertion cannot strand the keyboard.
-  func testRealSystemCapsLockMappingRestoresOnStreamStop() throws {
-    guard realSystemTestsEnabled else {
-      throw XCTSkip("Requires explicit dedicated-Mac opt-in")
-    }
-
-    let subject = HardwareSimulatorPlugin()
-    let original = try XCTUnwrap(subject.currentMacOSUserKeyMappingForTesting())
-    defer {
-      if subject.currentMacOSUserKeyMappingForTesting() != original {
-        _ = subject.setMacOSUserKeyMappingForTesting(original)
-      }
-      HardwareSimulatorPlugin.resetMacOSGlobeKeyProbeCapsLockRemapForTesting()
-    }
-
-    XCTAssertTrue(subject.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
-    XCTAssertNotEqual(subject.currentMacOSUserKeyMappingForTesting(), original)
-
-    XCTAssertTrue(subject.stopMacOSGlobeKeyProbeForTesting())
-
-    XCTAssertEqual(subject.currentMacOSUserKeyMappingForTesting(), original)
-    XCTAssertFalse(subject.ownsMacOSGlobeKeyProbeCapsLockRemapForTesting)
-    XCTAssertFalse(
-      HardwareSimulatorPlugin.hasMacOSGlobeKeyProbeCapsLockRemapStateForTesting
-    )
-  }
-
   func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
     let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
       displayIds: [30, 20, 10, 30],

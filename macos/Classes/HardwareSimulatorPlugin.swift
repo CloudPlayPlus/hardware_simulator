@@ -46,14 +46,6 @@ private struct MacOSInputSourceSnapshot {
   let selectableCount: Int
 }
 
-/// One low-frequency Host request and the first subsequent key injection.
-/// This deliberately carries no key code or text, so the diagnostic cannot
-/// become a keystroke log.
-private struct MacOSInputSourceSelectionDiagnostic {
-  let requestOrdinal: Int?
-  let expectedID: String
-}
-
 private let macOSInputSourceChangedCallback: CFNotificationCallback = {
   _, observer, _, _, _ in
   guard let observer else { return }
@@ -95,7 +87,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var globeProcessGate = MacOSGlobeProcessGate()
   private var inputSourceChordRouter = MacOSInputSourceChordRouter()
   private var capturesControlSpace = false
-  private var viewerDiagnosticSource: String?
   private var inputSourceCaptureEpoch = 0
   private var macOSGlobeKeyProbeCapsLockIsDown = false
   private var macOSGlobeKeyProbeCapturesCapsLock = false
@@ -111,8 +102,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macOSGlobeKeyProbeLastLeaseFailureReason: String?
   private var macOSGlobeKeyProbeLastRecoveryFailureReason: String?
   private var macOSInputSourceCaptureLastDiagnostic: String?
-  // 仅关联低频切源诊断，不参与切换、注入或等待逻辑。
-  private var macOSInputSourceLastRequestOrdinal: Int?
   private var defaultCursorHasher: CursorHasher?
   private var cursorSeedProducerActive = false
   private var currentDisplayId: Int?
@@ -149,8 +138,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     sourceClass: .unknown,
     selectableCount: 0
   )
-  private var pendingMacOSInputSourceSelectionDiagnostic:
-    MacOSInputSourceSelectionDiagnostic?
   private var macOSInputSourceNotificationRegistered = false
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macTextInputQueue = DispatchQueue(
@@ -289,11 +276,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   /// It is deliberately unavailable from production plugin APIs.
   @discardableResult
   func selectNextMacOSInputSourceInProcessForTesting() -> Bool {
-    selectNextMacOSInputSource()
-  }
-
-  /// Cross-process harness seam for the production Host executor.
-  func selectNextMacOSInputSourceForFocusedTargetForTesting() -> Bool {
     selectNextMacOSInputSource()
   }
 
@@ -525,7 +507,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     macOSGlobeKeyProbeCapturesCapsLock = captureCapsLock
     macOSGlobeKeyProbeCapturesFn = captureFnInputSource
     capturesControlSpace = controlSpace
-    viewerDiagnosticSource = currentMacOSKeyboardInputSourceId()
     macOSGlobeKeyProbeLocalMonitor = NSEvent.addLocalMonitorForEvents(
       matching: [.keyDown, .keyUp, .flagsChanged]
     ) { [weak self] event in
@@ -643,7 +624,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     inputCaptureRegistry.unregisterAll()
     globeProcessGate.reset()
     inputSourceChordRouter.reset()
-    viewerDiagnosticSource = nil
     inputSourceCaptureEpoch += 1
     capturesControlSpace = false
     macOSGlobeKeyProbeCapsLockIsDown = false
@@ -656,20 +636,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       reportMacOSGlobeKeyProbeStatus(armed: false)
     }
     macOSInputSourceCaptureLastDiagnostic = nil
-    macOSInputSourceDiagnosticLog(
-      "Viewer input-source capture stopped; beforeRestore=" +
-        "capsMapping=\(macOSUserKeyMappingDiagnostic(currentMacOSUserKeyMapping())), " +
-        "fnUsageType=\(currentMacOSFnUsageType().map(String.init) ?? "unknown")"
-    )
     let capsRestored = restoreMacOSGlobeKeyProbeCapsLockRemap()
     let fnRestored = restoreMacOSGlobeKeyProbeFnSuppression()
     let restored = capsRestored && fnRestored
-    macOSInputSourceDiagnosticLog(
-      "Viewer input-source capture restore result=\(restored), " +
-        "capsRestored=\(capsRestored), fnRestored=\(fnRestored), afterRestore=" +
-        "capsMapping=\(macOSUserKeyMappingDiagnostic(currentMacOSUserKeyMapping())), " +
-        "fnUsageType=\(currentMacOSFnUsageType().map(String.init) ?? "unknown")"
-    )
+    if !restored {
+      reportMacOSInputSourceCaptureDiagnostic("Input-source mapping restore failed caps=\(capsRestored) fn=\(fnRestored)")
+    }
     if restored {
       finishMacOSGlobeKeyProbeStopIfRestored()
     } else if scheduleRetry {
@@ -970,12 +942,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       NSApp.isActive,
       NSApp.keyWindow === flutterWindow
     else {
-      if event.keyCode == Self.macOSGlobeRemappedF20KeyCode ||
-          event.keyCode == Self.macOSGlobeFnKeyCode {
-        macOSInputSourceDiagnosticLog(
-          "Configured input-source event passed through: viewer window is not focused."
-        )
-      }
       return false
     }
 
@@ -1066,7 +1032,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         data1: native.data1, now: ProcessInfo.processInfo.systemUptime)
     }
     if !installed { macOSGlobeKeyProbeCapturesFn = false }
-    macOSInputSourceDiagnosticLog("Globe system capture installed=\(installed)")
+    if !installed { reportMacOSInputSourceCaptureDiagnostic("Globe system capture unavailable") }
   }
 
   private func inputSourceTapDisabled() {
@@ -1077,37 +1043,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     DispatchQueue.main.async { [weak self] in _ = self?.stopMacOSGlobeKeyProbe() }
   }
 
-  private func emitMacOSInputSourceKeyCapture(kind: String, cycleStartSource: String? = nil) {
-    let beforeInputSourceId = cycleStartSource ?? currentMacOSKeyboardInputSourceId()
-    macOSInputSourceDiagnosticLog(
-      "Configured input-source key consumed kind=\(kind); before=" +
-        macOSInputSourceLogValue(beforeInputSourceId)
-    )
-    // Check on the next main-loop turn, after any local system work the
-    // selected adapter failed to suppress. The value is diagnostic only and
-    // contains no typed text or normal key information.
+  private func emitMacOSInputSourceKeyCapture(kind: String) {
+    let epoch = inputSourceCaptureEpoch
     DispatchQueue.main.async { [weak self] in
-      guard
-        let self,
-        self.macOSGlobeKeyProbeLocalMonitor != nil,
-        let methodChannel = self.methodChannel
-      else {
-        return
-      }
-      let afterInputSourceId = self.currentMacOSKeyboardInputSourceId()
-      let arguments: [String: Any] = [
-        "beforeInputSourceId": beforeInputSourceId ?? NSNull(),
-        "afterInputSourceId": afterInputSourceId ?? NSNull(),
-      ]
-      self.macOSInputSourceDiagnosticLog(
-        "Configured input-source callback delivered kind=\(kind); before=" +
-          self.macOSInputSourceLogValue(beforeInputSourceId) +
-          " after=" + self.macOSInputSourceLogValue(afterInputSourceId)
-      )
-      methodChannel.invokeMethod(
-        "onMacOSGlobeKeyProbe",
-        arguments: arguments
-      )
+      guard let self, self.inputSourceCaptureEpoch == epoch,
+            self.hasFocusedInputSourceCapture else { return }
+      self.methodChannel?.invokeMethod("onMacOSGlobeKeyProbe", arguments: [:])
     }
   }
 
@@ -1747,57 +1688,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   fileprivate func handleMacOSInputSourceChanged() {
     guard Thread.isMainThread else { return }
     refreshMacOSInputSourceSnapshot()
-    if macOSGlobeKeyProbeLocalMonitor != nil {
-      let current = currentMacOSKeyboardInputSourceId()
-      macOSInputSourceDiagnosticLog(
-        "Viewer source notification before=\(macOSInputSourceLogValue(viewerDiagnosticSource)) " +
-        "current=\(macOSInputSourceLogValue(current)) " +
-        "changed=\(current != viewerDiagnosticSource) active=\(NSApp.isActive) " +
-        "captureWindowFocused=\(flutterView?.window != nil && NSApp.keyWindow === flutterView?.window) " +
-        "diagnosticOnly=true"
-      )
-      viewerDiagnosticSource = current
-    }
-    if let ordinal = macOSInputSourceLastRequestOrdinal {
-      macOSInputSourceDiagnosticLog(
-        "source_notification lastOrdinal=\(ordinal) " +
-          "current=\(macOSInputSourceLogValue(currentMacOSKeyboardInputSourceId())) " +
-          macOSInputSourceFocusDiagnostic() +
-          " targetContext=unobserved"
-      )
-    }
-  }
-
-  // 只读前台身份，不读取窗口标题、输入文本或其它 App 的输入上下文。
-  private func macOSInputSourceFocusDiagnostic() -> String {
-    let frontmost = NSWorkspace.shared.frontmostApplication
-    return "hostPid=\(ProcessInfo.processInfo.processIdentifier) " +
-      "hostActive=\(NSApp.isActive) mainThread=\(Thread.isMainThread) " +
-      "frontPid=\(frontmost?.processIdentifier ?? -1) " +
-      "frontBundle=\(frontmost?.bundleIdentifier ?? "none")"
   }
 
   private func readMacOSInputSourceSnapshot() -> MacOSInputSourceSnapshot {
     macOSInputSourceSnapshotLock.lock()
     defer { macOSInputSourceSnapshotLock.unlock() }
     return macOSInputSourceSnapshot
-  }
-
-  private func setPendingMacOSInputSourceSelectionDiagnostic(
-    _ diagnostic: MacOSInputSourceSelectionDiagnostic
-  ) {
-    macOSInputSourceSnapshotLock.lock()
-    pendingMacOSInputSourceSelectionDiagnostic = diagnostic
-    macOSInputSourceSnapshotLock.unlock()
-  }
-
-  private func consumePendingMacOSInputSourceSelectionDiagnostic()
-    -> MacOSInputSourceSelectionDiagnostic? {
-    macOSInputSourceSnapshotLock.lock()
-    defer { macOSInputSourceSnapshotLock.unlock() }
-    let diagnostic = pendingMacOSInputSourceSelectionDiagnostic
-    pendingMacOSInputSourceSelectionDiagnostic = nil
-    return diagnostic
   }
 
   /// Selects the next enabled/selectable keyboard input source owned by this
@@ -1811,22 +1707,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       macOSInputSourceDiagnosticLog("selection_rejected reason=not_main_thread")
       return false
     }
-    macOSInputSourceLastRequestOrdinal = requestOrdinal
-    let ordinal = requestOrdinal.map(String.init) ?? "none"
-    let started = ProcessInfo.processInfo.systemUptime
     let selectableSources = macOSSelectableKeyboardInputSources()
-    let sourceIDs = selectableSources.map {
-      macOSInputSourceLogValue(macOSKeyboardInputSourceId($0))
-    }.joined(separator: ",")
-    macOSInputSourceDiagnosticLog(
-      "selection_begin ordinal=\(ordinal) " +
-        "uptime=\(started) \(macOSInputSourceFocusDiagnostic()) " +
-        "sources=[\(sourceIDs)] app=\(Bundle.main.bundlePath) " +
-        "targetContext=unobserved"
-    )
     guard selectableSources.count > 1 else {
       macOSInputSourceDiagnosticLog(
-        "selection_rejected ordinal=\(ordinal) reason=fewer_than_two_sources"
+        "selection_rejected reason=fewer_than_two_sources"
       )
       return false
     }
@@ -1836,30 +1720,16 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       CFEqual($0, current)
     }) else {
       macOSInputSourceDiagnosticLog(
-        "selection_rejected ordinal=\(ordinal) reason=current_not_selectable"
+        "selection_rejected reason=current_not_selectable"
       )
       return false
     }
     let next = selectableSources[(currentIndex + 1) % selectableSources.count]
     let selectionStatus = TISSelectInputSource(next)
-    macOSInputSourceDiagnosticLog(
-      "tis_return ordinal=\(ordinal) status=\(selectionStatus) " +
-        "elapsedMs=\((ProcessInfo.processInfo.systemUptime - started) * 1000) " +
-        "before=\(macOSInputSourceLogValue(macOSKeyboardInputSourceId(current))) " +
-        "expected=\(macOSInputSourceLogValue(macOSKeyboardInputSourceId(next))) " +
-        "current=\(macOSInputSourceLogValue(currentMacOSKeyboardInputSourceId())) " +
-        macOSInputSourceFocusDiagnostic() +
-        " targetContext=unobserved no_wait=true"
-    )
     guard selectionStatus == noErr else {
+      macOSInputSourceDiagnosticLog("Input-source selection failed status=\(selectionStatus)")
       return false
     }
-    macOSInputSourceDiagnosticLog(
-      "selection_requested_immediately ordinal=\(requestOrdinal.map(String.init) ?? "none") " +
-        "before=\(macOSInputSourceLogValue(macOSKeyboardInputSourceId(current))) " +
-        "expected=\(macOSInputSourceLogValue(macOSKeyboardInputSourceId(next))) " +
-        "no_wait=true"
-    )
     return true
   }
 
@@ -3511,20 +3381,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         capsLockEnabled: remoteCapsLockEnabled &&
             inputSourceSnapshot.sourceClass == .keyboardLayout
       )
-      if isDown && !isRepeat,
-          let selectionDiagnostic =
-            consumePendingMacOSInputSourceSelectionDiagnostic() {
-        macOSInputSourceDiagnosticLog(
-          "first_key_after_selection ordinal=" +
-            "\(selectionDiagnostic.requestOrdinal.map(String.init) ?? "none") " +
-            "expected=\(macOSInputSourceLogValue(selectionDiagnostic.expectedID)) " +
-            "current=\(macOSInputSourceLogValue(inputSourceSnapshot.id)) " +
-            "sourceClass=\(inputSourceSnapshot.sourceClass.rawValue) " +
-            "selectableCount=\(inputSourceSnapshot.selectableCount) " +
-            "alphaShift=\(flags.contains(.maskAlphaShift))"
-        )
-      }
-
       // Create and post the keyboard event.
       //
       // Strip the Fn (secondaryFn) and NumericPad flags before posting.
