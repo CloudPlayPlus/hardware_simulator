@@ -14,6 +14,14 @@ Log out and back in after adding your user to the `input` group.
 
 Any pull request is welcome. It is designed for https://github.com/zhuhaichao518/cloudplayplus_stone.
 
+## macOS 输入源回归
+
+仅保留 `input_source_chord_harness.swift`（Fn/Control+Space和事件配对）与
+`input_source_safety_harness.swift`（mock映射的启动失败/所有权/恢复）。MethodChannel保留必要接口回归。
+真实跨进程输入、签名测试App及其启动脚本属于本地调研工具，不随插件维护或交付。
+原生接管由 `MacOSInputCaptureRegistry` 按ID注册/替换/注销，handler同步决定消费/放行。
+无新增周期检查或进程外助手；正常运行不记录逐键或逐次切源日志，仅保留状态与失败诊断。
+
 ## Windows 输入管道测试
 
 无需 Flutter 或 SYSTEM 权限，不会注入真实键鼠事件：

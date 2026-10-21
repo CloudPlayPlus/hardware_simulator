@@ -335,6 +335,124 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
+  test('Globe probe listeners only manage Dart event delivery', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        calls.add(methodCall);
+        return true;
+      },
+    );
+
+    void firstListener() {}
+    void secondListener() {}
+    platform.addMacOSGlobeKeyProbe(firstListener);
+    platform.addMacOSGlobeKeyProbe(firstListener);
+    platform.addMacOSGlobeKeyProbe(secondListener);
+    await Future<void>.delayed(Duration.zero);
+
+    platform.removeMacOSGlobeKeyProbe(firstListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, isEmpty);
+
+    platform.removeMacOSGlobeKeyProbe(secondListener);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, isEmpty);
+  });
+
+  test('Globe probe lifecycle invokes its native methods explicitly', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      calls.add(methodCall);
+      return true;
+    });
+
+    expect(await platform.startMacOSGlobeKeyProbe(), isTrue);
+    expect(await platform.stopMacOSGlobeKeyProbe(), isTrue);
+    expect(
+      calls.map((call) => call.method),
+      ['startMacOSGlobeKeyProbe', 'stopMacOSGlobeKeyProbe'],
+    );
+  });
+
+  test('Globe probe stop reports whether the controller mapping was restored',
+      () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      channel,
+      (MethodCall methodCall) async {
+        if (methodCall.method == 'stopMacOSGlobeKeyProbe') return false;
+        return null;
+      },
+    );
+
+    expect(await platform.stopMacOSGlobeKeyProbe(), isFalse);
+  });
+
+  test('delivers a payload-free input-source action and allows unsubscribe',
+      () async {
+    var received = 0;
+    late MacOSGlobeKeyProbeCallback listener;
+    listener = () {
+      received++;
+      platform.removeMacOSGlobeKeyProbe(listener);
+    };
+    platform.addMacOSGlobeKeyProbe(listener);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onMacOSGlobeKeyProbe', <String, dynamic>{}),
+      ),
+      null,
+    );
+
+    expect(received, 1);
+    await Future<void>.delayed(Duration.zero);
+  });
+
+  test('decodes macOS Globe probe event-tap status', () async {
+    bool? armed;
+    void listener(bool value) {
+      armed = value;
+      platform.removeMacOSGlobeKeyProbeStatus(listener);
+    }
+
+    platform.addMacOSGlobeKeyProbeStatus(listener);
+
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      'hardware_simulator',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onMacOSGlobeKeyProbeStatus', <String, dynamic>{
+          'armed': true,
+        }),
+      ),
+      null,
+    );
+
+    expect(armed, isTrue);
+  });
+
+  test('selectNextMacOSInputSource invokes the semantic native method',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      calls.add(methodCall);
+      return true;
+    });
+
+    expect(await platform.selectNextMacOSInputSource(), isTrue);
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'selectNextMacOSInputSource');
+    expect(calls.single.arguments, isNull);
+  });
+
   test('first and last text input listeners manage native capture', () async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

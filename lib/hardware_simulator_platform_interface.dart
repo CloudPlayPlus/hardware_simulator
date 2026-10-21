@@ -14,6 +14,8 @@ typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
+typedef MacOSGlobeKeyProbeCallback = void Function();
+typedef MacOSGlobeKeyProbeStatusCallback = void Function(bool armed);
 typedef TextInputDecisionCallback = void Function(
   TextInputDecision decision,
 );
@@ -246,6 +248,42 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
+
+  /// Registers for the macOS input-source capture when implemented.
+  void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
+
+  /// Removes a macOS input-source capture listener.
+  void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
+
+  /// Registers for the native-capture availability status.
+  void addMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {}
+
+  /// Removes a native-capture availability status listener.
+  void removeMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {}
+
+  /// Starts the macOS input-source capture.
+  Future<bool> startMacOSGlobeKeyProbe() async {
+    return false;
+  }
+
+  /// Stops the macOS input-source capture.
+  ///
+  /// Returns true when any temporary controller key remap is restored and
+  /// confirmed. False means native recovery continues in the background; the
+  /// remote capture path itself has still stopped immediately.
+  Future<bool> stopMacOSGlobeKeyProbe() async {
+    return true;
+  }
+
+  /// Asks a macOS Host to select its next enabled, selectable input source.
+  /// Other platforms return false without changing any input source.
+  Future<bool> selectNextMacOSInputSource() async {
+    return false;
+  }
 
   /// 注册 Host 远端点击后的文本输入决策。
   void addTextInputDecision(

@@ -4,6 +4,8 @@ export 'hardware_simulator_platform_interface.dart'
     show
         GamepadRumbleEvent,
         DisplayCountChangedCallback,
+        MacOSGlobeKeyProbeCallback,
+        MacOSGlobeKeyProbeStatusCallback,
         TrackpadScrollCallback,
         TrackpadScrollEvent,
         TrackpadScrollPhase,
@@ -312,6 +314,45 @@ class HardwareSimulator {
 
   static void removeTrackpadScroll(TrackpadScrollCallback callback) {
     HardwareSimulatorPlatform.instance.removeTrackpadScroll(callback);
+  }
+
+  /// Registers for the focus-scoped macOS input-source capture.
+  static void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    HardwareSimulatorPlatform.instance.addMacOSGlobeKeyProbe(callback);
+  }
+
+  static void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {
+    HardwareSimulatorPlatform.instance.removeMacOSGlobeKeyProbe(callback);
+  }
+
+  static void addMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.addMacOSGlobeKeyProbeStatus(callback);
+  }
+
+  static void removeMacOSGlobeKeyProbeStatus(
+    MacOSGlobeKeyProbeStatusCallback callback,
+  ) {
+    HardwareSimulatorPlatform.instance.removeMacOSGlobeKeyProbeStatus(
+      callback,
+    );
+  }
+
+  /// Starts the focus-scoped macOS input-source key capture.
+  static Future<bool> startMacOSGlobeKeyProbe() {
+    return HardwareSimulatorPlatform.instance.startMacOSGlobeKeyProbe();
+  }
+
+  /// Stops the focus-scoped macOS input-source key capture and restores any
+  /// temporary key mapping when possible.
+  static Future<bool> stopMacOSGlobeKeyProbe() {
+    return HardwareSimulatorPlatform.instance.stopMacOSGlobeKeyProbe();
+  }
+
+  /// macOS Host only. Cycles the Host's own enabled input-source list.
+  static Future<bool> selectNextMacOSInputSource() {
+    return HardwareSimulatorPlatform.instance.selectNextMacOSInputSource();
   }
 
   /// 注册 Host 远端点击后的软件盘决策。
