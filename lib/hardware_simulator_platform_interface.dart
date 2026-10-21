@@ -14,7 +14,7 @@ typedef KeyboardPressedCallback = void Function(int button, bool isDown);
 typedef KeyBlockedCallback = void Function(int keyCode, bool isDown);
 typedef CursorWheelCallback = void Function(double deltaX, double deltaY);
 typedef TrackpadScrollCallback = void Function(TrackpadScrollEvent event);
-typedef MacOSGlobeKeyProbeCallback = void Function(MacOSGlobeKeyProbe event);
+typedef MacOSGlobeKeyProbeCallback = void Function();
 typedef MacOSGlobeKeyProbeStatusCallback = void Function(bool armed);
 typedef TextInputDecisionCallback = void Function(
   TextInputDecision decision,
@@ -62,28 +62,6 @@ class TrackpadScrollEvent {
   final double deltaY;
   final TrackpadScrollPhase phase;
   final bool isMomentum;
-}
-
-/// Result of a viewer-side macOS Globe/Fn interception attempt.
-@immutable
-class MacOSGlobeKeyProbe {
-  const MacOSGlobeKeyProbe({
-    required this.beforeInputSourceId,
-    required this.afterInputSourceId,
-  });
-
-  factory MacOSGlobeKeyProbe.fromMap(Map<Object?, Object?> map) {
-    return MacOSGlobeKeyProbe(
-      beforeInputSourceId: map['beforeInputSourceId'] as String?,
-      afterInputSourceId: map['afterInputSourceId'] as String?,
-    );
-  }
-
-  final String? beforeInputSourceId;
-  final String? afterInputSourceId;
-
-  bool get inputSourceUnchanged =>
-      beforeInputSourceId != null && beforeInputSourceId == afterInputSourceId;
 }
 
 /// 远端主鼠标、触摸或笔抬起后，Host 原生可访问性 API 给出的软件盘决策。
@@ -271,13 +249,13 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Stops native precision trackpad capture when implemented.
   Future<void> stopTrackpadScrollCapture() async {}
 
-  /// Registers for the macOS Globe/Fn interception POC when implemented.
+  /// Registers for the macOS input-source capture when implemented.
   void addMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
 
-  /// Removes a macOS Globe/Fn interception POC listener.
+  /// Removes a macOS input-source capture listener.
   void removeMacOSGlobeKeyProbe(MacOSGlobeKeyProbeCallback callback) {}
 
-  /// Registers for the POC's native-capture availability status.
+  /// Registers for the native-capture availability status.
   void addMacOSGlobeKeyProbeStatus(
     MacOSGlobeKeyProbeStatusCallback callback,
   ) {}
@@ -287,12 +265,12 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     MacOSGlobeKeyProbeStatusCallback callback,
   ) {}
 
-  /// Starts the macOS Globe/Fn interception POC.
+  /// Starts the macOS input-source capture.
   Future<bool> startMacOSGlobeKeyProbe() async {
     return false;
   }
 
-  /// Stops the macOS Globe/Fn interception POC.
+  /// Stops the macOS input-source capture.
   ///
   /// Returns true when any temporary controller key remap is restored and
   /// confirmed. False means native recovery continues in the background; the
@@ -303,7 +281,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   /// Asks a macOS Host to select its next enabled, selectable input source.
   /// Other platforms return false without changing any input source.
-  Future<bool> selectNextMacOSInputSource({int? requestOrdinal}) async {
+  Future<bool> selectNextMacOSInputSource() async {
     return false;
   }
 

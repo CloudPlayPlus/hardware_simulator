@@ -74,11 +74,10 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       } else if (call.method == "onMacOSGlobeKeyProbe") {
         final arguments = call.arguments;
         if (arguments is Map) {
-          final event = MacOSGlobeKeyProbe.fromMap(arguments);
           for (final callback in List<MacOSGlobeKeyProbeCallback>.of(
             macOSGlobeKeyProbeCallbacks,
           )) {
-            callback(event);
+            callback();
           }
         }
       } else if (call.method == "onMacOSGlobeKeyProbeStatus") {
@@ -410,11 +409,10 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<bool> selectNextMacOSInputSource({int? requestOrdinal}) async {
+  Future<bool> selectNextMacOSInputSource() async {
     try {
       final selected = await methodChannel.invokeMethod<Object?>(
         'selectNextMacOSInputSource',
-        requestOrdinal == null ? null : {'requestOrdinal': requestOrdinal},
       );
       return selected == true;
     } on MissingPluginException {

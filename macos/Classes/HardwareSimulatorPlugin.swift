@@ -40,12 +40,6 @@ private enum MacOSInputSourceClass: String {
   case unknown
 }
 
-private struct MacOSInputSourceSnapshot {
-  let id: String?
-  let sourceClass: MacOSInputSourceClass
-  let selectableCount: Int
-}
-
 private let macOSInputSourceChangedCallback: CFNotificationCallback = {
   _, observer, _, _, _ in
   guard let observer else { return }
@@ -92,8 +86,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var macOSGlobeKeyProbeCapturesCapsLock = false
   private var macOSGlobeKeyProbeCapturesFn = false
   private var macOSGlobeKeyProbeOwnsCapsLockRemap = false
-  private var macOSGlobeKeyProbeOwnsFnSystemAction = false
-  private var macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor: Int32?
   private var macOSGlobeKeyProbeCapsLockRemapLeaseFileDescriptor: Int32?
   private var macOSGlobeKeyProbeStopRequested = false
   private var macOSGlobeKeyProbeRestoreRetryWorkItem: DispatchWorkItem?
@@ -121,9 +113,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let keyboardRepeatQueue = DispatchQueue(
     label: "com.cloudplayplus.hardware-simulator.keyboard-repeat"
   )
-  private let keyboardInjectionQueue = DispatchQueue(
-    label: "com.cloudplayplus.hardware-simulator.keyboard-injection"
-  )
   private var activeKeyRepeatTimer: DispatchSourceTimer?
   private var activeRepeatingWindowsKeyCode: Int?
   private var activeKeyMacCodes: [Int: CGKeyCode] = [:]
@@ -133,11 +122,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private let remoteKeyboardEventSource = CGEventSource(stateID: .privateState)
   private var remoteCapsLockEnabled = false
   private let macOSInputSourceSnapshotLock = NSLock()
-  private var macOSInputSourceSnapshot = MacOSInputSourceSnapshot(
-    id: nil,
-    sourceClass: .unknown,
-    selectableCount: 0
-  )
+  private var cachedMacOSInputSourceClass: MacOSInputSourceClass = .unknown
   private var macOSInputSourceNotificationRegistered = false
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
   private let macTextInputQueue = DispatchQueue(
@@ -197,9 +182,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   var macOSUserKeyMappingWriterForTesting: ((MacOSUserKeyMapping) -> Bool)?
   var macOSCapsLockRemapStateSynchronizerForTesting: (() -> Bool)?
   var macOSFnUsageTypeReaderForTesting: (() -> Int32?)?
-  var macOSFnUsageTypeWriterForTesting: ((Int32) -> Void)?
-  var macOSFnUsageTypePreferenceClearerForTesting: (() -> Void)?
-  var macOSKeyboardInputSourceIdReaderForTesting: (() -> String?)?
   static var macOSCapsLockRemapLeaseFilePathForTesting: String?
 
   static var macOSCapsLockRemapStateDataForTesting: Data? {
@@ -222,24 +204,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   @discardableResult
-  func restoreMacOSGlobeKeyProbeFnSuppressionForTesting() -> Bool {
-    restoreMacOSGlobeKeyProbeFnSuppression()
-  }
-
-  func recoverMacOSGlobeKeyProbeFnSuppressionForTesting() {
-    recoverMacOSGlobeKeyProbeFnSuppressionIfNeeded()
-  }
-
-  func abandonMacOSGlobeKeyProbeFnSuppressionForTesting() {
-    macOSGlobeKeyProbeOwnsFnSystemAction = false
-    releaseMacOSGlobeKeyProbeFnSystemActionLease()
-  }
-
-  var ownsMacOSGlobeKeyProbeFnSuppressionForTesting: Bool {
-    macOSGlobeKeyProbeOwnsFnSystemAction
-  }
-
-  @discardableResult
   func restoreMacOSGlobeKeyProbeCapsLockRemapForTesting() -> Bool {
     restoreMacOSGlobeKeyProbeCapsLockRemap()
   }
@@ -259,24 +223,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
 
   func inputSourceTapDisabledForTesting() {
     inputSourceTapDisabled()
-  }
-
-  func currentMacOSUserKeyMappingForTesting() -> MacOSUserKeyMapping? {
-    currentMacOSUserKeyMapping()
-  }
-
-  @discardableResult
-  func setMacOSUserKeyMappingForTesting(_ mapping: MacOSUserKeyMapping) -> Bool {
-    setMacOSUserKeyMapping(mapping)
-  }
-
-  /// Exercises the production Host-side direct-TIS selection path in the
-  /// signed same-process AppKit integration harness.
-  ///
-  /// It is deliberately unavailable from production plugin APIs.
-  @discardableResult
-  func selectNextMacOSInputSourceInProcessForTesting() -> Bool {
-    selectNextMacOSInputSource()
   }
 
   func recoverMacOSGlobeKeyProbeCapsLockRemapForTesting() {
@@ -306,17 +252,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     }
     macOSCapsLockRemapLeaseOwner = nil
     macOSCapsLockRemapLeaseLock.unlock()
-    macOSFnSystemActionLeaseLock.lock()
-    if let owner = macOSFnSystemActionLeaseOwner,
-       let descriptor = owner.macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor {
-      _ = flock(descriptor, LOCK_UN)
-      _ = close(descriptor)
-      owner.macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor = nil
-    }
-    macOSFnSystemActionLeaseOwner = nil
-    macOSFnSystemActionLeaseLock.unlock()
     UserDefaults.standard.removeObject(forKey: macOSCapsLockRemapStateKey)
-    UserDefaults.standard.removeObject(forKey: macOSFnSystemActionStateKey)
     UserDefaults.standard.synchronize()
   }
 #endif
@@ -349,7 +285,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     instance.defaultCursorHasher = CursorHasher()
     instance.startDisplayBoundsCache()
     instance.recoverMacOSGlobeKeyProbeCapsLockRemapIfNeeded()
-    instance.recoverMacOSGlobeKeyProbeFnSuppressionIfNeeded()
     instance.registerMacOSGlobeKeyProbeTerminationObserver()
     instance.installInputSourceSafetyWatch()
 #if CLOUDPLAYPLUS_DMG_DISTRIBUTION
@@ -376,7 +311,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     // here lets a future plugin instance treat it as crash recovery instead of
     // being blocked forever by an object that is going away.
     releaseMacOSGlobeKeyProbeCapsLockRemapLease()
-    releaseMacOSGlobeKeyProbeFnSystemActionLease()
     if let displayBoundsCacheObserver {
       NotificationCenter.default.removeObserver(displayBoundsCacheObserver)
     }
@@ -636,11 +570,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       reportMacOSGlobeKeyProbeStatus(armed: false)
     }
     macOSInputSourceCaptureLastDiagnostic = nil
-    let capsRestored = restoreMacOSGlobeKeyProbeCapsLockRemap()
-    let fnRestored = restoreMacOSGlobeKeyProbeFnSuppression()
-    let restored = capsRestored && fnRestored
+    let restored = restoreMacOSGlobeKeyProbeCapsLockRemap()
     if !restored {
-      reportMacOSInputSourceCaptureDiagnostic("Input-source mapping restore failed caps=\(capsRestored) fn=\(fnRestored)")
+      reportMacOSInputSourceCaptureDiagnostic("Caps input-source mapping restore failed")
     }
     if restored {
       finishMacOSGlobeKeyProbeStopIfRestored()
@@ -653,10 +585,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   @discardableResult
   private func finishMacOSGlobeKeyProbeStopIfRestored() -> Bool {
     guard macOSGlobeKeyProbeStopRequested else { return true }
-    guard
-      restoreMacOSGlobeKeyProbeCapsLockRemap(),
-      restoreMacOSGlobeKeyProbeFnSuppression()
-    else {
+    guard restoreMacOSGlobeKeyProbeCapsLockRemap() else {
       scheduleMacOSGlobeKeyProbeRestoreRetry()
       return false
     }
@@ -664,7 +593,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     macOSGlobeKeyProbeRestoreRetryWorkItem?.cancel()
     macOSGlobeKeyProbeRestoreRetryWorkItem = nil
     releaseMacOSGlobeKeyProbeCapsLockRemapLease()
-    releaseMacOSGlobeKeyProbeFnSystemActionLease()
     return true
   }
 
@@ -687,9 +615,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private static let macOSCapsLockHidUsage: UInt64 = 0x700000039
   private static let macOSGlobeRemappedF20HidUsage: UInt64 = 0x70000006F
   private static let macOSGlobeRemappedF20KeyCode: UInt16 = 0x5A
-  private static let macOSGlobeFnKeyCode: UInt16 = 0x3F
   private static let macOSFnUsageTypeChangeInputSource: Int32 = 1
-  private static let macOSFnUsageTypeDoNothing: Int32 = 0
   private static let macOSUserKeyMappingSourceKey =
     "HIDKeyboardModifierMappingSrc"
   private static let macOSUserKeyMappingDestinationKey =
@@ -698,18 +624,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private static let macOSCapsLockRemapStateVersion = 1
   private static let macOSCapsLockRemapStateKey =
     "com.cloudplayplus.hardwareSimulator.macosCapsLockRemapState"
-  private static let macOSFnSystemActionStateVersion = 1
-  private static let macOSFnSystemActionStateKey =
-    "com.cloudplayplus.hardwareSimulator.macosFnSystemActionState"
-  private static let macOSHIToolboxPreferenceDomain =
-    "com.apple.HIToolbox" as CFString
-  private static let macOSFnUsagePreferenceKey =
-    "AppleFnUsageType" as CFString
   private static let macOSCapsLockRemapLeaseLock = NSLock()
   private static weak var macOSCapsLockRemapLeaseOwner: HardwareSimulatorPlugin?
-  private static let macOSFnSystemActionLeaseLock = NSLock()
-  private static weak var macOSFnSystemActionLeaseOwner: HardwareSimulatorPlugin?
-
   private struct MacOSGlobeKeyProbeRemapAttempt {
     let applied: Bool
     let reason: String
@@ -724,30 +640,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   }
 
   private typealias MacOSGetFnUsageType = @convention(c) () -> Int32
-  private typealias MacOSUpdateFnUsageType = @convention(c) (Int32) -> Void
-
-  private struct MacOSFnSystemActionState: Codable {
-    let version: Int
-    let originalUsageType: Int32
-    let preferenceExisted: Bool
-  }
-
-  private static let macOSFnUsageTypeEntryPoints:
-    (get: MacOSGetFnUsageType, update: MacOSUpdateFnUsageType)? = {
+  private static let macOSFnUsageTypeGetter: MacOSGetFnUsageType? = {
     guard
       let carbon = dlopen(
         "/System/Library/Frameworks/Carbon.framework/Carbon",
         RTLD_LAZY
       ),
-      let get = dlsym(carbon, "TISGetFnUsageType"),
-      let update = dlsym(carbon, "TISUpdateFnUsageType")
+      let get = dlsym(carbon, "TISGetFnUsageType")
     else {
       return nil
     }
-    return (
-      get: unsafeBitCast(get, to: MacOSGetFnUsageType.self),
-      update: unsafeBitCast(update, to: MacOSUpdateFnUsageType.self)
-    )
+    return unsafeBitCast(get, to: MacOSGetFnUsageType.self)
   }()
 
   /// `UserKeyMapping` is a per-user global. Hold this advisory lock for the
@@ -804,57 +707,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     body()
   }
 
-  private static func macOSFnSystemActionLeaseFilePath() -> String? {
-#if DEBUG
-    if let macOSCapsLockRemapLeaseFilePathForTesting {
-      return macOSCapsLockRemapLeaseFilePathForTesting + ".fn"
-    }
-#endif
-    guard let supportDirectory = FileManager.default.urls(
-      for: .applicationSupportDirectory,
-      in: .userDomainMask
-    ).first else {
-      return nil
-    }
-    let directory = supportDirectory.appendingPathComponent(
-      "CloudPlayPlus",
-      isDirectory: true
-    )
-    do {
-      try FileManager.default.createDirectory(
-        at: directory,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-      )
-    } catch {
-      return nil
-    }
-    return directory.appendingPathComponent(
-      "macos-fn-input-source-action.lock",
-      isDirectory: false
-    ).path
-  }
-
-  private static func withMacOSFnSystemActionRecoveryLease(
-    _ body: () -> Void
-  ) {
-    macOSFnSystemActionLeaseLock.lock()
-    defer { macOSFnSystemActionLeaseLock.unlock() }
-    guard
-      macOSFnSystemActionLeaseOwner == nil,
-      let path = macOSFnSystemActionLeaseFilePath()
-    else {
-      return
-    }
-    let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
-    guard descriptor >= 0 else { return }
-    defer { _ = close(descriptor) }
-    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { return }
-    defer { _ = flock(descriptor, LOCK_UN) }
-    body()
-  }
-
-
   private func acquireMacOSGlobeKeyProbeCapsLockRemapLease() -> Bool {
     Self.macOSCapsLockRemapLeaseLock.lock()
     defer { Self.macOSCapsLockRemapLeaseLock.unlock() }
@@ -900,41 +752,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     Self.macOSCapsLockRemapLeaseOwner = nil
   }
 
-  private func acquireMacOSGlobeKeyProbeFnSystemActionLease() -> Bool {
-    Self.macOSFnSystemActionLeaseLock.lock()
-    defer { Self.macOSFnSystemActionLeaseLock.unlock() }
-    if Self.macOSFnSystemActionLeaseOwner === self {
-      return true
-    }
-    guard
-      Self.macOSFnSystemActionLeaseOwner == nil,
-      let path = Self.macOSFnSystemActionLeaseFilePath()
-    else {
-      return false
-    }
-    let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
-    guard descriptor >= 0 else { return false }
-    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-      _ = close(descriptor)
-      return false
-    }
-    macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor = descriptor
-    Self.macOSFnSystemActionLeaseOwner = self
-    return true
-  }
-
-  private func releaseMacOSGlobeKeyProbeFnSystemActionLease() {
-    Self.macOSFnSystemActionLeaseLock.lock()
-    defer { Self.macOSFnSystemActionLeaseLock.unlock() }
-    guard Self.macOSFnSystemActionLeaseOwner === self else { return }
-    if let descriptor = macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor {
-      _ = flock(descriptor, LOCK_UN)
-      _ = close(descriptor)
-    }
-    macOSGlobeKeyProbeFnSystemActionLeaseFileDescriptor = nil
-    Self.macOSFnSystemActionLeaseOwner = nil
-  }
-
   private func handleMacOSGlobeKeyProbe(_ event: NSEvent) -> Bool {
     guard
       let flutterView,
@@ -949,7 +766,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
        event.keyCode == Self.macOSGlobeRemappedF20KeyCode {
       let isDown = event.type == .keyDown
       if isDown && !macOSGlobeKeyProbeCapsLockIsDown {
-        emitMacOSInputSourceKeyCapture(kind: "caps")
+        emitMacOSInputSourceKeyCapture()
       }
       macOSGlobeKeyProbeCapsLockIsDown = isDown
       return true
@@ -993,7 +810,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         captureFn: self.macOSGlobeKeyProbeCapturesFn, captureControlSpace: self.capturesControlSpace)
       if let kind = decision.intent {
         if kind == "fn" { self.globeProcessGate.completedFn(now: ProcessInfo.processInfo.systemUptime) }
-        self.emitMacOSInputSourceKeyCapture(kind: kind)
+        self.emitMacOSInputSourceKeyCapture()
       }
       return decision.consume
     }
@@ -1043,7 +860,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     DispatchQueue.main.async { [weak self] in _ = self?.stopMacOSGlobeKeyProbe() }
   }
 
-  private func emitMacOSInputSourceKeyCapture(kind: String) {
+  private func emitMacOSInputSourceKeyCapture() {
     let epoch = inputSourceCaptureEpoch
     DispatchQueue.main.async { [weak self] in
       guard let self, self.inputSourceCaptureEpoch == epoch,
@@ -1099,127 +916,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return macOSFnUsageTypeReaderForTesting()
     }
 #endif
-    return Self.macOSFnUsageTypeEntryPoints?.get()
-  }
-
-  /// Restores the independently journalled Globe/Fn system action after an
-  /// abnormal exit. This only writes when the current value remains our
-  /// temporary Do Nothing value; a user or another tool's later choice wins.
-  private func recoverMacOSGlobeKeyProbeFnSuppressionIfNeeded() {
-    Self.withMacOSFnSystemActionRecoveryLease { [weak self] in
-      guard let self else { return }
-      guard
-        let data = UserDefaults.standard.data(
-          forKey: Self.macOSFnSystemActionStateKey
-        ),
-        let state = try? JSONDecoder().decode(
-          MacOSFnSystemActionState.self,
-          from: data
-        ),
-        state.version == Self.macOSFnSystemActionStateVersion
-      else {
-        return
-      }
-      guard self.currentMacOSFnUsageType() == Self.macOSFnUsageTypeDoNothing else {
-        self.clearMacOSGlobeKeyProbeFnSystemActionState()
-        self.macOSInputSourceDiagnosticLog(
-          "Startup Fn recovery skipped: current setting changed outside capture."
-        )
-        return
-      }
-      self.setMacOSFnUsageType(state.originalUsageType)
-      guard self.currentMacOSFnUsageType() == state.originalUsageType else {
-        self.macOSInputSourceDiagnosticLog(
-          "Startup Fn recovery failed: usage type readback did not restore."
-        )
-        return
-      }
-      if !state.preferenceExisted {
-        self.clearMacOSFnUsagePreference()
-      }
-      self.clearMacOSGlobeKeyProbeFnSystemActionState()
-      self.macOSInputSourceDiagnosticLog(
-        "Startup Fn recovery restored usageType=\(state.originalUsageType)."
-      )
-    }
-  }
-
-  @discardableResult
-  private func restoreMacOSGlobeKeyProbeFnSuppression() -> Bool {
-    guard macOSGlobeKeyProbeOwnsFnSystemAction else { return true }
-    guard
-      let data = UserDefaults.standard.data(
-        forKey: Self.macOSFnSystemActionStateKey
-      ),
-      let state = try? JSONDecoder().decode(
-        MacOSFnSystemActionState.self,
-        from: data
-      ),
-      state.version == Self.macOSFnSystemActionStateVersion
-    else {
-      macOSInputSourceDiagnosticLog("Fn restore failed: journal unreadable.")
-      return false
-    }
-    // A deliberate user/other-tool setting update must not be overwritten.
-    // If the original setting was Do Nothing, no system mutation was
-    // performed and there is nothing to restore.
-    guard currentMacOSFnUsageType() == Self.macOSFnUsageTypeDoNothing else {
-      macOSGlobeKeyProbeOwnsFnSystemAction = false
-      clearMacOSGlobeKeyProbeFnSystemActionState()
-      macOSInputSourceDiagnosticLog(
-        "Fn restore skipped: current setting changed outside capture."
-      )
-      return true
-    }
-    setMacOSFnUsageType(state.originalUsageType)
-    guard currentMacOSFnUsageType() == state.originalUsageType else {
-      macOSInputSourceDiagnosticLog(
-        "Fn restore failed: usage type readback did not restore."
-      )
-      return false
-    }
-    if !state.preferenceExisted {
-      clearMacOSFnUsagePreference()
-    }
-    clearMacOSGlobeKeyProbeFnSystemActionState()
-    macOSGlobeKeyProbeOwnsFnSystemAction = false
-    return true
-  }
-
-  private func setMacOSFnUsageType(_ usageType: Int32) {
-#if DEBUG
-    if let macOSFnUsageTypeWriterForTesting {
-      macOSFnUsageTypeWriterForTesting(usageType)
-      return
-    }
-#endif
-    Self.macOSFnUsageTypeEntryPoints?.update(usageType)
-  }
-
-  private func clearMacOSGlobeKeyProbeFnSystemActionState() {
-    UserDefaults.standard.removeObject(forKey: Self.macOSFnSystemActionStateKey)
-    UserDefaults.standard.synchronize()
-  }
-
-  private func clearMacOSFnUsagePreference() {
-#if DEBUG
-    if let macOSFnUsageTypePreferenceClearerForTesting {
-      macOSFnUsageTypePreferenceClearerForTesting()
-      return
-    }
-#endif
-    CFPreferencesSetValue(
-      Self.macOSFnUsagePreferenceKey,
-      nil,
-      Self.macOSHIToolboxPreferenceDomain,
-      kCFPreferencesCurrentUser,
-      kCFPreferencesAnyHost
-    )
-    CFPreferencesSynchronize(
-      Self.macOSHIToolboxPreferenceDomain,
-      kCFPreferencesCurrentUser,
-      kCFPreferencesAnyHost
-    )
+    return Self.macOSFnUsageTypeGetter?()
   }
 
   /// Restores a remap left only by a previous CloudPlayPlus crash. The
@@ -1310,8 +1007,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     captureCapsLock: Bool
   ) -> MacOSGlobeKeyProbeRemapAttempt {
     guard captureCapsLock else {
-      // Fn capture has its own reversible TIS adapter and must not require the
-      // global UserKeyMapping transaction at all.
+      // Fn使用event tap，不依赖全局UserKeyMapping事务。
       return .success("not_configured")
     }
     guard acquireMacOSGlobeKeyProbeCapsLockRemapLease() else {
@@ -1381,9 +1077,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return .failure(remapFailure)
     }
 
-    // Both configured keys may already have the exact F20 user mapping. It is
-    // safe to consume F20 for this focused session, but there is nothing to
-    // journal or restore.
+    // 用户已自行映射Caps→F20时只复用，不认领或恢复该映射。
     guard addedRemap else {
       return .success("reused_exact_existing_f20_mapping")
     }
@@ -1580,22 +1274,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     )
   }
 
-  private func currentMacOSKeyboardInputSourceId() -> String? {
-#if DEBUG
-    if let macOSKeyboardInputSourceIdReaderForTesting {
-      return macOSKeyboardInputSourceIdReaderForTesting()
-    }
-#endif
-    let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-    guard let rawId = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
-    else {
-      return nil
-    }
-    return Unmanaged<CFString>
-      .fromOpaque(rawId)
-      .takeUnretainedValue() as String
-  }
-
   private func macOSSelectableKeyboardInputSources() -> [TISInputSource] {
     let filter = [
       kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource,
@@ -1637,25 +1315,12 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     return .inputMethod
   }
 
-  private func macOSInputSourceSnapshot(
-    selectableSources: [TISInputSource]? = nil
-  ) -> MacOSInputSourceSnapshot {
-    let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-    let sources = selectableSources ?? macOSSelectableKeyboardInputSources()
-    return MacOSInputSourceSnapshot(
-      id: macOSKeyboardInputSourceId(current),
-      sourceClass: macOSInputSourceClass(current),
-      selectableCount: sources.count
-    )
-  }
-
-  private func refreshMacOSInputSourceSnapshot(
-    selectableSources: [TISInputSource]? = nil
-  ) {
+  private func refreshMacOSInputSourceSnapshot() {
     guard Thread.isMainThread else { return }
-    let snapshot = macOSInputSourceSnapshot(selectableSources: selectableSources)
+    let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+    let sourceClass = macOSInputSourceClass(current)
     macOSInputSourceSnapshotLock.lock()
-    macOSInputSourceSnapshot = snapshot
+    cachedMacOSInputSourceClass = sourceClass
     macOSInputSourceSnapshotLock.unlock()
   }
 
@@ -1690,10 +1355,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     refreshMacOSInputSourceSnapshot()
   }
 
-  private func readMacOSInputSourceSnapshot() -> MacOSInputSourceSnapshot {
+  private func readMacOSInputSourceClass() -> MacOSInputSourceClass {
     macOSInputSourceSnapshotLock.lock()
     defer { macOSInputSourceSnapshotLock.unlock() }
-    return macOSInputSourceSnapshot
+    return cachedMacOSInputSourceClass
   }
 
   /// Selects the next enabled/selectable keyboard input source owned by this
@@ -1702,7 +1367,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   /// The Viewer supplies no source identity or language. The Host owns the
   /// selectable list and cycles it directly with `TISSelectInputSource`, which
   /// is the previously user-validated production path.
-  private func selectNextMacOSInputSource(requestOrdinal: Int? = nil) -> Bool {
+  private func selectNextMacOSInputSource() -> Bool {
     guard Thread.isMainThread else {
       macOSInputSourceDiagnosticLog("selection_rejected reason=not_main_thread")
       return false
@@ -1731,33 +1396,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       return false
     }
     return true
-  }
-
-  private func macOSInputSourceRequestOrdinal(
-    from arguments: Any?
-  ) -> Int? {
-    guard
-      let values = arguments as? [String: Any],
-      let ordinal = values["requestOrdinal"] as? Int,
-      ordinal > 0
-    else {
-      return nil
-    }
-    return ordinal
-  }
-
-  private func macOSKeyboardInputSourceId(_ source: TISInputSource) -> String? {
-    guard let rawId = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
-    else {
-      return nil
-    }
-    return Unmanaged<CFString>
-      .fromOpaque(rawId)
-      .takeUnretainedValue() as String
-  }
-
-  private func macOSInputSourceLogValue(_ value: String?) -> String {
-    value ?? "none"
   }
 
   private func macOSInputSourceDiagnosticLog(_ message: String) {
@@ -3375,11 +3013,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
           return
       }
 
-      let inputSourceSnapshot = readMacOSInputSourceSnapshot()
+      let inputSourceClass = readMacOSInputSourceClass()
       let flags = Self.keyboardFlagsForPressedKeyCodes(
         Array(activeKeyMacCodes.values),
         capsLockEnabled: remoteCapsLockEnabled &&
-            inputSourceSnapshot.sourceClass == .keyboardLayout
+            inputSourceClass == .keyboardLayout
       )
       // Create and post the keyboard event.
       //
@@ -3388,9 +3026,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
       // such an event latches Fn into the shared session modifier state — and
       // because the key-up event carries Fn too, it is never released. Every
-      // subsequent injected key needs the normal system event source so the
-      // frontmost application's input method receives a real composition.
-      // We still assemble flags solely from remote state below, which prevents
+      // 后续注入使用独立的 privateState source，flags仅由远端状态重建。
+      // This prevents
       // stray local Fn/NumPad state from leaking onto ordinary keys; the
       // virtual key code still drives arrows.
       let event = CGEvent(
@@ -5557,11 +5194,7 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopMacOSGlobeKeyProbe":
       result(stopMacOSGlobeKeyProbe())
     case "selectNextMacOSInputSource":
-      result(
-        selectNextMacOSInputSource(
-          requestOrdinal: macOSInputSourceRequestOrdinal(from: call.arguments)
-        )
-      )
+      result(selectNextMacOSInputSource())
     case "checkMacOSPermissions":
       // Reports the *current process's* live TCC status. Does NOT prompt.
       // - screenCapture: needed to grab the screen (ScreenCaptureKit / CGDisplayStream)

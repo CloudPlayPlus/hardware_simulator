@@ -78,28 +78,6 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(third.currentMapping(), original)
   }
 
-  func testCapsRemapAcceptsIOHIDReadbackInDifferentOrder() {
-    let original: KeyMapping = []
-    let subject = plugin(mapping: original)
-    var currentMapping = original
-    subject.plugin.macOSUserKeyMappingReaderForTesting = {
-      Array(currentMapping.reversed())
-    }
-    subject.plugin.macOSUserKeyMappingWriterForTesting = { nextMapping in
-      currentMapping = nextMapping
-      return true
-    }
-
-    XCTAssertTrue(
-      subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
-    )
-    XCTAssertEqual(currentMapping.count, 1)
-    XCTAssertTrue(currentMapping.contains(globeMapping()))
-
-    XCTAssertTrue(subject.plugin.restoreMacOSGlobeKeyProbeCapsLockRemapForTesting())
-    XCTAssertEqual(currentMapping, original)
-  }
-
   func testCapsWriteWithMissingReadbackRollsBackBeforeCaptureCanArm() {
     let original: KeyMapping = []
     let subject = plugin(mapping: original)
@@ -141,30 +119,6 @@ class RunnerTests: XCTestCase {
       subject.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
     )
     XCTAssertEqual(subject.currentMapping(), unrelatedF20Mapping)
-  }
-
-  func testCapsLockRemapLiveOwnerCannotBeRestoredByAnotherProcess() {
-    let original: KeyMapping = []
-    let first = plugin(mapping: original)
-    XCTAssertTrue(first.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting())
-    let persistedState = try! XCTUnwrap(
-      HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting
-    )
-    XCTAssertEqual(first.currentMapping(), [globeMapping()])
-
-    // The in-process owner is the product gate. A POSIX `flock` probe from a
-    // child process is not reliable here because XCTest process launching may
-    // share an inherited file description; lifecycle/cross-process recovery is
-    // separately covered by the owner/recovery tests above.
-    let second = plugin(mapping: first.currentMapping())
-    XCTAssertFalse(
-      second.plugin.enableMacOSGlobeKeyProbeCapsLockRemapForTesting()
-    )
-    XCTAssertEqual(first.currentMapping(), [globeMapping()])
-    XCTAssertEqual(
-      HardwareSimulatorPlugin.macOSCapsLockRemapStateDataForTesting,
-      persistedState
-    )
   }
 
   func testCapsLockRemapCrashRecoveryWaitsForPriorOwnerToReleaseLease() {
@@ -391,11 +345,6 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  /// Opt-in integration coverage for the real user-wide IOKit mapping. This
-  /// cannot run in ordinary CI because it intentionally mutates the live
-  /// keyboard mapping, but it makes the exit-safety acceptance executable on
-  /// a dedicated test Mac. The defer is deliberately independent of the
-  /// plugin's test hooks so a failed assertion cannot strand the keyboard.
   func testCursorDisplayOrderPrefersMainAndMirrorMasters() {
     let order = MacDisplayCoordinateMapper.cursorDisplayOrder(
       displayIds: [30, 20, 10, 30],
@@ -597,15 +546,6 @@ class RunnerTests: XCTestCase {
       capsLockEnabled: true
     )
     XCTAssertTrue(enabled.contains(.maskAlphaShift))
-  }
-
-  func testInputMethodSnapshotStripsRemoteCapsLockFromInjectedKeys() {
-    let inputMethodFlags = HardwareSimulatorPlugin.keyboardFlagsForPressedKeyCodes(
-      [],
-      capsLockEnabled: false
-    )
-
-    XCTAssertFalse(inputMethodFlags.contains(.maskAlphaShift))
   }
 
   func testMacTextInputObserverOnlyUsesFocusedElementChanges() {
