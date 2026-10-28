@@ -24,6 +24,7 @@ final class MacOSSystemShortcutRouter {
     return result
   }
   func stop() { armed = false; tails.formUnion(pressed); pressed.removeAll() }
+  func reset() { armed = false; pressed.removeAll(); tails.removeAll() }
   func reconcileReleasedKeys() {
     tails = Set(tails.filter { CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0)) })
   }

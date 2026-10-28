@@ -27,6 +27,7 @@ final class MacOSInputCaptureRegistry {
   func dispatchForTesting(id: String, type: CGEventType, event: CGEvent) -> Bool {
     entries[id]?.handler(type, event) ?? false
   }
+  func containsForTesting(id: String) -> Bool { entries[id] != nil }
 
   @discardableResult
   func register(id: String, processID: pid_t? = nil, mask: CGEventMask,
@@ -38,7 +39,10 @@ final class MacOSInputCaptureRegistry {
     let callback: CGEventTapCallBack = { _, type, event, context in
       guard let context else { return Unmanaged.passUnretained(event) }
       let entry = Unmanaged<Entry>.fromOpaque(context).takeUnretainedValue()
-      return entry.handler(type, event) ? nil : Unmanaged.passUnretained(event)
+      // handler可能同步注销自身，保证回调结束前context仍然有效。
+      return withExtendedLifetime(entry) {
+        entry.handler(type, event) ? nil : Unmanaged.passUnretained(event)
+      }
     }
     let tap: CFMachPort?
     if let processID {
