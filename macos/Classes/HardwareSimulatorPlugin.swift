@@ -3034,15 +3034,9 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       )
       // Create and post the keyboard event.
       //
-      // Strip the Fn (secondaryFn) and NumericPad flags before posting.
-      // Arrow / navigation keys (kVK 0x7B–0x7E) are macOS function + numpad
-      // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
-      // such an event latches Fn into the shared session modifier state — and
-      // because the key-up event carries Fn too, it is never released. Every
-      // 后续注入使用独立的 privateState source，flags仅由远端状态重建。
-      // This prevents
-      // stray local Fn/NumPad state from leaking onto ordinary keys; the
-      // virtual key code still drives arrows.
+      // 私有source与远端pressed表隔离本机modifier，不继承旧session-state中的Fn。
+      // 普通键去掉Fn/NumPad；仅精确Ctrl+方向键补secondaryFn，macOS系统动作需要它。
+      // modifier的keyUp继续从剩余pressed表构造flags，完整组合释放后不保留Fn。
       let event = CGEvent(
         keyboardEventSource: remoteKeyboardEventSource,
         virtualKey: macKeyCode,
