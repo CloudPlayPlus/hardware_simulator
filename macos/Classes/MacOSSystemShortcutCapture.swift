@@ -84,6 +84,9 @@ final class MacOSSystemShortcutCapture {
       }
     }
   }
+  static func isToggleChord(_ flags: CGEventFlags) -> Bool {
+    flags.intersection(MacOSSystemShortcutRouter.modifiers) == [.maskControl,.maskCommand]
+  }
   private func handleToggle(_ event: NSEvent) -> NSEvent? {
     guard let eventFlags=event.cgEvent?.flags else { return event }
     let flags=eventFlags.intersection(MacOSSystemShortcutRouter.modifiers)
@@ -91,7 +94,7 @@ final class MacOSSystemShortcutCapture {
     if !eligible { togglePending=false; toggleEscapeDown=false }
     if event.keyCode == 53 && event.type == .keyDown {
       if toggleEscapeDown { return nil }
-      if eligible && !event.isARepeat && flags == [.maskControl,.maskAlternate] {
+      if eligible && !event.isARepeat && Self.isToggleChord(flags) {
         togglePending=true;toggleEscapeDown=true;return nil
       }
     }

@@ -3,6 +3,10 @@ import AppKit
 @main struct SystemShortcutHealthHarness {
   static func main() {
     _ = NSApplication.shared
+    precondition(MacOSSystemShortcutCapture.isToggleChord([.maskControl,.maskCommand]))
+    precondition(!MacOSSystemShortcutCapture.isToggleChord([.maskControl,.maskAlternate]))
+    precondition(!MacOSSystemShortcutCapture.isToggleChord([.maskControl,.maskCommand,.maskShift]))
+    precondition(!MacOSSystemShortcutCapture.isToggleChord(.maskCommand))
     var now: TimeInterval = 10
     var events: [[String:Any]] = []
     var healthy = true
