@@ -300,10 +300,6 @@ class HardwareSimulator {
           String owner, int challenge) =>
       HardwareSimulatorPlatform.instance
           .acknowledgeMacOSSystemShortcutCapture(owner, challenge);
-  static Future<void> setMacOSSystemShortcutToggle(
-          String owner, bool enabled) =>
-      HardwareSimulatorPlatform.instance
-          .setMacOSSystemShortcutToggle(owner, enabled);
   static Future<bool> setMacOSSystemShortcutCapture(
     String owner,
     bool enabled,
