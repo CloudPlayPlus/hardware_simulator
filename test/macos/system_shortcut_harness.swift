@@ -35,12 +35,11 @@ import AppKit
     router.armed = true
     precondition(router.handle(code:126, down:true, flags:.maskControl, repeatKey:false) == .send)
     precondition(router.handle(code:126, down:false, flags:[], repeatKey:false) == .send)
-    precondition(router.handle(code:53, down:true, flags:[.maskControl,.maskAlternate], repeatKey:false) == .escape)
-    precondition(!router.armed)
-    precondition(router.handle(code:53, down:false, flags:[], repeatKey:false) == .consume)
+    // 切换开关由本地monitor处理，router不再实现第二套单向释放。
+    precondition(router.handle(code:53, down:true, flags:[.maskControl,.maskAlternate], repeatKey:false) == .pass)
     precondition(MacOSSystemShortcutRouter.hostFlags(code:126, flags:.maskControl).contains(.maskSecondaryFn))
     precondition(!MacOSSystemShortcutRouter.hostFlags(code:126, flags:[.maskControl,.maskShift]).contains(.maskSecondaryFn))
     precondition(!MacOSSystemShortcutRouter.hostFlags(code:14, flags:.maskControl).contains(.maskSecondaryFn))
-    print("PASS: system shortcut matching, repeat, tail, escape, modifier release, host flags")
+    print("PASS: system shortcut matching, repeat, tail, modifier release, host flags")
   }
 }

@@ -8,7 +8,8 @@ import AppKit
     var healthy = true
     let registry=MacOSInputCaptureRegistry()
     let capture=MacOSSystemShortcutCapture(registry:registry,view:nil,
-      emit:{ events.append($0) },log:{ _ in },clock:{ now },healthCheck:{ healthy })
+      emit:{ events.append($0) },log:{ _ in },clock:{ now })
+    capture.healthCheckForTesting = { healthy }
     capture.armForTesting(owner:"A")
     now=10.5;capture.checkHealthForTesting()
     let first=events.last!["challenge"] as! Int

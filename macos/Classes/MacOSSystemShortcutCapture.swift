@@ -11,7 +11,6 @@ final class MacOSSystemShortcutCapture {
   private var owner: String?
   private var observers: [NSObjectProtocol] = []
   private let id = "system-shortcuts"
-  private var repeats = 0
   private var toggleOwner: String?
   private var toggleMonitor: Any?
   private var togglePending = false
@@ -21,7 +20,21 @@ final class MacOSSystemShortcutCapture {
   private var challenge = 0
   private var pendingChallenge: Int?
   private var tailDeadline: TimeInterval?
-  private let healthCheck: (() -> Bool)?
+#if DEBUG
+  var healthCheckForTesting: (() -> Bool)?
+#endif
+  private var permissionAvailable: Bool {
+#if DEBUG
+    if let healthCheckForTesting { return healthCheckForTesting() }
+#endif
+    return AXIsProcessTrusted() && !IsSecureEventInputEnabled()
+  }
+  private var tapAvailable: Bool {
+#if DEBUG
+    if let healthCheckForTesting { return healthCheckForTesting() }
+#endif
+    return registry.isActive(id:id)
+  }
   private let clock: () -> TimeInterval
   private func startHealthCheck() {
     tailDeadline=nil
@@ -41,7 +54,7 @@ final class MacOSSystemShortcutCapture {
       stop(reason:"tail-timeout",discardPending:true)
     }
     guard router.armed || router.hasPendingKeys else { return }
-    if !(healthCheck?() ?? (AXIsProcessTrusted() && registry.isActive(id:id) && !IsSecureEventInputEnabled())) {
+    if !permissionAvailable || !tapAvailable {
       stop(reason:"capture-unavailable",discardPending:true)
       return
     }
@@ -100,10 +113,8 @@ final class MacOSSystemShortcutCapture {
   func updateView(_ view: NSView?) { self.view = view }
   init(registry: MacOSInputCaptureRegistry, view: NSView?, emit: @escaping ([String: Any]) -> Void,
        log: @escaping (String) -> Void,
-       clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-       healthCheck: (() -> Bool)? = nil) {
+       clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
     self.registry=registry; self.view=view; self.emit=emit; self.log=log; self.clock=clock
-    self.healthCheck=healthCheck
     for name in [NSWindow.didResignKeyNotification, NSApplication.didResignActiveNotification] {
       observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
         guard let self, !self.focused else { return }
@@ -145,10 +156,9 @@ final class MacOSSystemShortcutCapture {
     log("armed owner=\(next) tap_active=\(registry.isActive(id:id)) ax=\(AXIsProcessTrusted()) listen=\(CGPreflightListenEventAccess())")
     return true
   }
-  private func closeTap(reason: String) {
+  private func closeTap() {
     registry.unregister(id:id)
     healthTimer?.invalidate();healthTimer=nil;pendingChallenge=nil;tailDeadline=nil
-    log("tap_removed owner=\(owner ?? "none") reason=\(reason)")
   }
   func stop(reason: String, discardPending: Bool = false) {
     let wasArmed=router.armed
@@ -156,26 +166,26 @@ final class MacOSSystemShortcutCapture {
     pendingChallenge=nil
     if discardPending { router.reset() }
     if !router.hasPendingKeys {
-      closeTap(reason:reason)
+      closeTap()
     } else if tailDeadline == nil {
       // 正常停止仅短暂配对已捕获的up；不能无限保留全局tap。
       tailDeadline=clock()+2
     }
     guard wasArmed, let owner else { return }
-    log("stopped owner=\(owner) reason=\(reason) repeat_consumed=\(repeats)")
-    repeats=0;emit(["owner":owner,"kind":"stopped","reason":reason])
+    log("stopped owner=\(owner) reason=\(reason)")
+    emit(["owner":owner,"kind":"stopped","reason":reason])
   }
   private func handle(_ type: CGEventType,_ event: CGEvent) -> Bool {
     expireIfNeeded()
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { stop(reason:"tap-disabled",discardPending:true);return false }
     guard type == .keyDown || type == .keyUp || type == .flagsChanged else { return false }
-    if (router.armed || router.hasPendingKeys) && !(healthCheck?() ?? (!IsSecureEventInputEnabled() && AXIsProcessTrusted())) {
+    if (router.armed || router.hasPendingKeys) && !permissionAvailable {
       stop(reason:"native-gate",discardPending:true)
       return false
     }
     if router.armed && !focused { stop(reason:"native-focus") }
     defer {
-      if !router.armed && !router.hasPendingKeys && tailDeadline != nil { closeTap(reason:"tail-complete") }
+      if !router.armed && !router.hasPendingKeys && tailDeadline != nil { closeTap() }
     }
     if type == .flagsChanged {
       if router.armed, let owner {
@@ -185,23 +195,16 @@ final class MacOSSystemShortcutCapture {
       return false
     }
     let code=Int(event.getIntegerValueField(.keyboardEventKeycode))
-    // 开关快捷键统一交给local monitor，关闭转发时同样可用。
-    if code == 53 && toggleOwner != nil { return false }
     let down=type == .keyDown
     let repeatKey=event.getIntegerValueField(.keyboardEventAutorepeat) != 0
     let decision=router.handle(code:code,down:down,flags:event.flags,repeatKey:repeatKey)
     switch decision {
     case .pass:return false
-    case .consume:if repeatKey { repeats += 1 };return true
-    case .escape:
-      stop(reason:"escape")
-      if let owner { log("escape owner=\(owner)"); emit(["owner":owner,"kind":"stopped","reason":"escape"]) }
-      return true
+    case .consume:return true
     case .send:
       guard let owner else { return true }
       let vk = [48:0x09,123:0x25,124:0x27,125:0x28,126:0x26][code]!
       let flags=event.flags.intersection(MacOSSystemShortcutRouter.modifiers).rawValue
-      log("capture owner=\(owner) vk=\(vk) down=\(down) flags=\(flags)")
       emit(["owner":owner,"kind":"key","keyCode":vk,"isDown":down,"flags":Int(flags)])
       return true
     }

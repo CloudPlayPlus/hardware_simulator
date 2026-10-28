@@ -2,7 +2,7 @@ import AppKit
 
 /// 仅识别当前支持的系统组合；按下归属与抬起消费保持成对。
 final class MacOSSystemShortcutRouter {
-  enum Decision { case pass, consume, send, escape }
+  enum Decision { case pass, consume, send }
   static let modifiers: CGEventFlags = [.maskCommand,.maskControl,.maskShift,.maskAlternate]
   var armed = false
   private var pressed = Set<Int>()
@@ -37,9 +37,6 @@ final class MacOSSystemShortcutRouter {
         if !down { tails.remove(code) }
         return .consume
       }
-    }
-    if down && armed && code == 53 && flags.intersection(Self.modifiers) == [.maskControl,.maskAlternate] {
-      stop(); tails.insert(code); return .escape
     }
     if !down { return pressed.remove(code) != nil ? .send : .pass }
     if pressed.contains(code) { return .consume } // Host既有repeat机制负责长按。

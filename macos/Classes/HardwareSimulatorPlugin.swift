@@ -3048,10 +3048,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         keyDown: isDown
       )
       event?.flags = MacOSSystemShortcutRouter.hostFlags(code: Int(macKeyCode), flags: flags)
-      if [48,123,124,125,126].contains(Int(macKeyCode)) &&
-          (!flags.intersection([.maskControl,.maskCommand]).isEmpty || !isDown) && !isRepeat {
-          macOSSystemShortcutLog("inject mac=\(macKeyCode) down=\(isDown) flags=\(event?.flags.rawValue ?? 0) pressed=\(activeKeyMacCodes.count)")
-      }
       // Keep Shift/Control/Option/Command as ordinary keyDown/keyUp events.
       // Recasting them as flagsChanged can leave the combined session modifier
       // state latched after key-up (for example, after remote Ctrl+Tab).
