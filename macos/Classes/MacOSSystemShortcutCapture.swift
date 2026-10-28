@@ -11,10 +11,6 @@ final class MacOSSystemShortcutCapture {
   private var owner: String?
   private var observers: [NSObjectProtocol] = []
   private let id = "system-shortcuts"
-  private var toggleOwner: String?
-  private var toggleMonitor: Any?
-  private var togglePending = false
-  private var toggleEscapeDown = false
   private var healthTimer: Timer?
   private var lastAcknowledged: TimeInterval = 0
   private var challenge = 0
@@ -69,50 +65,6 @@ final class MacOSSystemShortcutCapture {
     pendingChallenge=nil
     lastAcknowledged=clock()
   }
-  func setToggle(owner: String, enabled: Bool) {
-    if !enabled {
-      guard toggleOwner == owner else { return }
-      toggleOwner=nil; togglePending=false; toggleEscapeDown=false
-      return
-    }
-    if toggleOwner != owner { togglePending=false; toggleEscapeDown=false }
-    toggleOwner=owner
-    if toggleMonitor == nil {
-      toggleMonitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.keyUp,.flagsChanged]) { [weak self] event in
-        guard let self else { return event }
-        return self.handleToggle(event)
-      }
-    }
-  }
-  static func isToggleChord(_ flags: CGEventFlags) -> Bool {
-    flags.intersection(MacOSSystemShortcutRouter.modifiers) == [.maskControl,.maskCommand]
-  }
-  private func handleToggle(_ event: NSEvent) -> NSEvent? {
-    guard let eventFlags=event.cgEvent?.flags else { return event }
-    let flags=eventFlags.intersection(MacOSSystemShortcutRouter.modifiers)
-    let eligible=toggleOwner != nil && focused && !IsSecureEventInputEnabled()
-    if !eligible { togglePending=false; toggleEscapeDown=false }
-    if event.keyCode == 53 && event.type == .keyDown {
-      if toggleEscapeDown { return nil }
-      if eligible && !event.isARepeat && Self.isToggleChord(flags) {
-        togglePending=true;toggleEscapeDown=true;return nil
-      }
-    }
-    let consume=event.keyCode == 53 && event.type == .keyUp && toggleEscapeDown
-    if consume { toggleEscapeDown=false }
-    if togglePending && !toggleEscapeDown && flags.isEmpty, let owner=toggleOwner {
-      togglePending=false
-      // 本机释放不依赖Dart是否能处理toggle；通知仅同步界面设置。
-      stop(reason:"local-toggle")
-      // 让当前modifier up先经过Flutter，再切换并重新检查arm条件。
-      DispatchQueue.main.async { [weak self] in
-        guard let self, self.toggleOwner == owner, self.focused else { return }
-        self.log("toggle owner=\(owner)")
-        self.emit(["owner":owner,"kind":"toggle"])
-      }
-    }
-    return consume ? nil : event
-  }
   func updateView(_ view: NSView?) { self.view = view }
   init(registry: MacOSInputCaptureRegistry, view: NSView?, emit: @escaping ([String: Any]) -> Void,
        log: @escaping (String) -> Void,
@@ -121,8 +73,6 @@ final class MacOSSystemShortcutCapture {
     for name in [NSWindow.didResignKeyNotification, NSApplication.didResignActiveNotification] {
       observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
         guard let self, !self.focused else { return }
-        self.togglePending=false
-        self.toggleEscapeDown=false
         if self.router.armed { self.stop(reason:"native-focus") }
       })
     }
@@ -214,7 +164,6 @@ final class MacOSSystemShortcutCapture {
   }
   deinit {
     healthTimer?.invalidate()
-    if let toggleMonitor { NSEvent.removeMonitor(toggleMonitor) }
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     registry.unregister(id:id)
   }

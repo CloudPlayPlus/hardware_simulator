@@ -5206,12 +5206,6 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
             let challenge = arguments["challenge"] as? Int else { result(nil); return }
       systemShortcutCapture.acknowledge(owner:owner,challenge:challenge)
       result(nil)
-    case "setMacOSSystemShortcutToggle":
-      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
-            let enabled = arguments["enabled"] as? Bool else { result(false); return }
-      systemShortcutCapture.updateView(registrar?.view ?? registrar?.viewController?.view)
-      systemShortcutCapture.setToggle(owner:owner,enabled:enabled)
-      result(nil)
     case "setMacOSSystemShortcutCapture":
       guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
             let enabled = arguments["enabled"] as? Bool else { result(false); return }

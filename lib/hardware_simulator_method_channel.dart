@@ -19,12 +19,6 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     await methodChannel.invokeMethod<void>('acknowledgeMacOSSystemShortcutCapture',
         {'owner': owner, 'challenge': challenge});
   }
-  @override
-  Future<void> setMacOSSystemShortcutToggle(String owner, bool enabled) async {
-    if (!isinitialized) init();
-    await methodChannel.invokeMethod<void>(
-        'setMacOSSystemShortcutToggle', {'owner': owner, 'enabled': enabled});
-  }
 
   final _systemShortcutEvents =
       StreamController<Map<String, dynamic>>.broadcast(sync: true);
