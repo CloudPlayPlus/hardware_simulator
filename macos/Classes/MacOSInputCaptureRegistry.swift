@@ -19,6 +19,15 @@ final class MacOSInputCaptureRegistry {
   }
   private var entries: [String: Entry] = [:]
 
+  // 测试只替换OS tap安装/投递；仍使用同一entries与生产注销路径。
+  func registerForTesting(id: String, handler: @escaping Handler) {
+    unregister(id: id)
+    entries[id] = Entry(handler)
+  }
+  func dispatchForTesting(id: String, type: CGEventType, event: CGEvent) -> Bool {
+    entries[id]?.handler(type, event) ?? false
+  }
+
   @discardableResult
   func register(id: String, processID: pid_t? = nil, mask: CGEventMask,
                 handler: @escaping Handler) -> Bool {

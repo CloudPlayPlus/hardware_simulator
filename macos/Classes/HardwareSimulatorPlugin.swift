@@ -217,6 +217,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     stopMacOSGlobeKeyProbe()
   }
 
+  var inputCaptureRegistryForTesting: MacOSInputCaptureRegistry {
+    inputCaptureRegistry
+  }
+
   func stopMacOSGlobeKeyProbeForTerminationForTesting() {
     stopMacOSGlobeKeyProbeForTermination()
   }
@@ -559,7 +563,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       NSEvent.removeMonitor(monitor)
     }
     macOSGlobeKeyProbeLocalMonitor = nil
-    inputCaptureRegistry.unregisterAll()
+    inputCaptureRegistry.unregister(id: "input-source")
+    inputCaptureRegistry.unregister(id: "globe-system")
     globeProcessGate.reset()
     inputSourceChordRouter.reset()
     inputSourceCaptureEpoch += 1

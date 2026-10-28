@@ -90,6 +90,29 @@ import Foundation
     precondition(mapping.isEmpty)
     precondition(!owner.startInputCaptureForTesting(caps: false, fn: true, control: true,
       hid: { false }, globe: { false }))
+    // 两类捕获共享真实registry，输入源停止不能删除系统快捷键的配对up。
+    let registry = owner.inputCaptureRegistryForTesting
+    let router = MacOSSystemShortcutRouter()
+    router.armed = true
+    var sent: [Bool] = []
+    registry.registerForTesting(id: "system-shortcuts") { type, event in
+      let down = type == .keyDown
+      let decision = router.handle(code: 48, down: down, flags: event.flags, repeatKey: false)
+      if decision == .send { sent.append(down) }
+      return decision != .pass
+    }
+    for id in ["input-source", "globe-system"] {
+      registry.registerForTesting(id: id) { _, _ in true }
+    }
+    let event = CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: true)!
+    event.flags = .maskCommand
+    precondition(registry.dispatchForTesting(id: "system-shortcuts", type: .keyDown, event: event))
+    precondition(owner.stopMacOSGlobeKeyProbeForTesting())
+    for id in ["input-source", "globe-system"] {
+      precondition(!registry.dispatchForTesting(id: id, type: .keyUp, event: event))
+    }
+    precondition(registry.dispatchForTesting(id: "system-shortcuts", type: .keyUp, event: event))
+    precondition(sent == [true, false] && !router.hasPendingKeys)
     print("PASS: eligible preserved; stale owner restored; other owner/custom mapping protected; idempotent; failure retained journal; retry restored")
   }
 }
