@@ -42,6 +42,18 @@ void main() {
   MethodChannelHardwareSimulator platform = MethodChannelHardwareSimulator();
   const MethodChannel channel = MethodChannel('hardware_simulator');
 
+  test('shortcut heartbeat acknowledges exact owner and challenge', () async {
+    MethodCall? sent;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      sent = call;
+      return null;
+    });
+    await platform.acknowledgeMacOSSystemShortcutCapture('owner-A', 7);
+    expect(sent?.method, 'acknowledgeMacOSSystemShortcutCapture');
+    expect(sent?.arguments, {'owner': 'owner-A', 'challenge': 7});
+  });
+
   setUp(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(

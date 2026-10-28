@@ -5205,6 +5205,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopTrackpadScrollCapture":
       stopTrackpadScrollCapture()
       result(nil)
+    case "acknowledgeMacOSSystemShortcutCapture":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let challenge = arguments["challenge"] as? Int else { result(nil); return }
+      systemShortcutCapture.acknowledge(owner:owner,challenge:challenge)
+      result(nil)
     case "setMacOSSystemShortcutToggle":
       guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
             let enabled = arguments["enabled"] as? Bool else { result(false); return }

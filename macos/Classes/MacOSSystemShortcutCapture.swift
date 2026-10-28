@@ -16,6 +16,35 @@ final class MacOSSystemShortcutCapture {
   private var toggleMonitor: Any?
   private var togglePending = false
   private var toggleEscapeDown = false
+  private var healthTimer: Timer?
+  private var lastAcknowledged: TimeInterval = 0
+  private var challenge = 0
+  private var pendingChallenge: Int?
+  private let clock: () -> TimeInterval
+  private func startHealthCheck() {
+    lastAcknowledged=clock()
+    pendingChallenge=nil
+    healthTimer?.invalidate()
+    let timer=Timer(timeInterval:0.5,repeats:true) { [weak self] _ in self?.checkHealth() }
+    healthTimer=timer
+    RunLoop.main.add(timer,forMode:.common)
+  }
+  private func expireIfNeeded() {
+    if router.armed && clock()-lastAcknowledged >= 2 { stop(reason:"consumer-timeout") }
+  }
+  private func checkHealth() {
+    expireIfNeeded()
+    guard router.armed, pendingChallenge == nil, let owner else { return }
+    challenge += 1
+    pendingChallenge=challenge
+    emit(["owner":owner,"kind":"heartbeat","challenge":challenge])
+  }
+  func acknowledge(owner: String, challenge: Int) {
+    expireIfNeeded()
+    guard router.armed, self.owner == owner, pendingChallenge == challenge else { return }
+    pendingChallenge=nil
+    lastAcknowledged=clock()
+  }
   func setToggle(owner: String, enabled: Bool) {
     if !enabled {
       guard toggleOwner == owner else { return }
@@ -46,6 +75,8 @@ final class MacOSSystemShortcutCapture {
     if consume { toggleEscapeDown=false }
     if togglePending && !toggleEscapeDown && flags.isEmpty, let owner=toggleOwner {
       togglePending=false
+      // 本机释放不依赖Dart是否能处理toggle；通知仅同步界面设置。
+      stop(reason:"local-toggle")
       // 让当前modifier up先经过Flutter，再切换并重新检查arm条件。
       DispatchQueue.main.async { [weak self] in
         guard let self, self.toggleOwner == owner, self.focused else { return }
@@ -57,8 +88,9 @@ final class MacOSSystemShortcutCapture {
   }
   func updateView(_ view: NSView?) { self.view = view }
   init(registry: MacOSInputCaptureRegistry, view: NSView?, emit: @escaping ([String: Any]) -> Void,
-       log: @escaping (String) -> Void) {
-    self.registry=registry; self.view=view; self.emit=emit; self.log=log
+       log: @escaping (String) -> Void,
+       clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    self.registry=registry; self.view=view; self.emit=emit; self.log=log; self.clock=clock
     for name in [NSWindow.didResignKeyNotification, NSApplication.didResignActiveNotification] {
       observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
         guard let self, !self.focused else { return }
@@ -71,6 +103,7 @@ final class MacOSSystemShortcutCapture {
   private var focused: Bool { NSApp.isActive && view?.window?.isKeyWindow == true }
   func set(owner next: String, enabled: Bool) -> Bool {
     precondition(Thread.isMainThread)
+    expireIfNeeded()
     if !enabled { if owner == next { stop(reason:"binding-stop") }; return false }
     if owner == next && router.armed && registry.isActive(id:id) && focused && !IsSecureEventInputEnabled() { return true }
     if owner != next { stop(reason:"owner-change") }
@@ -95,17 +128,20 @@ final class MacOSSystemShortcutCapture {
       }
     }
     router.armed=true
+    startHealthCheck()
     log("armed owner=\(next) tap_active=\(registry.isActive(id:id)) ax=\(AXIsProcessTrusted()) listen=\(CGPreflightListenEventAccess())")
     return true
   }
   func stop(reason: String) {
     let wasArmed=router.armed
     router.stop()
+    healthTimer?.invalidate();healthTimer=nil;pendingChallenge=nil
     guard wasArmed, let owner else { return }
     log("stopped owner=\(owner) reason=\(reason) repeat_consumed=\(repeats)")
     repeats=0;emit(["owner":owner,"kind":"stopped","reason":reason])
   }
   private func handle(_ type: CGEventType,_ event: CGEvent) -> Bool {
+    expireIfNeeded()
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { stop(reason:"tap-disabled");return false }
     guard type == .keyDown || type == .keyUp || type == .flagsChanged else { return false }
     if router.armed && (!focused || IsSecureEventInputEnabled() || !AXIsProcessTrusted()) { stop(reason:"native-gate") }
@@ -138,8 +174,17 @@ final class MacOSSystemShortcutCapture {
     }
   }
   deinit {
+    healthTimer?.invalidate()
     if let toggleMonitor { NSEvent.removeMonitor(toggleMonitor) }
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     registry.unregister(id:id)
   }
+#if DEBUG
+  // 无TCC依赖地测试同一生产计时/停止路径，不替换其状态逻辑。
+  func armForTesting(owner: String) {
+    self.owner=owner;router.armed=true;startHealthCheck()
+  }
+  func checkHealthForTesting() { checkHealth() }
+  func handleForTesting(_ type: CGEventType, _ event: CGEvent) -> Bool { handle(type,event) }
+#endif
 }

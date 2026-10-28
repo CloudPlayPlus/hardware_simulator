@@ -296,6 +296,10 @@ class HardwareSimulator {
 
   static Stream<Map<String, dynamic>> get macOSSystemShortcutEvents =>
       HardwareSimulatorPlatform.instance.macOSSystemShortcutEvents;
+  static Future<void> acknowledgeMacOSSystemShortcutCapture(
+          String owner, int challenge) =>
+      HardwareSimulatorPlatform.instance
+          .acknowledgeMacOSSystemShortcutCapture(owner, challenge);
   static Future<void> setMacOSSystemShortcutToggle(
           String owner, bool enabled) =>
       HardwareSimulatorPlatform.instance

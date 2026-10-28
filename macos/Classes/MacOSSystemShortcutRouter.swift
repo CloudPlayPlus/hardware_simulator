@@ -28,7 +28,15 @@ final class MacOSSystemShortcutRouter {
     tails = Set(tails.filter { CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0)) })
   }
   func handle(code: Int, down: Bool, flags: CGEventFlags, repeatKey: Bool) -> Decision {
-    if tails.contains(code) { if !down { tails.remove(code) }; return .consume }
+    if tails.contains(code) {
+      if down && !repeatKey {
+        // 新按下意味着旧up已丢失；不能把本机的新按键当作旧尾部。
+        tails.remove(code)
+      } else {
+        if !down { tails.remove(code) }
+        return .consume
+      }
+    }
     if down && armed && code == 53 && flags.intersection(Self.modifiers) == [.maskControl,.maskAlternate] {
       stop(); tails.insert(code); return .escape
     }

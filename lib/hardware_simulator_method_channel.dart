@@ -14,6 +14,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   final methodChannel = const MethodChannel('hardware_simulator');
   bool isinitialized = false;
   @override
+  Future<void> acknowledgeMacOSSystemShortcutCapture(
+      String owner, int challenge) async {
+    await methodChannel.invokeMethod<void>('acknowledgeMacOSSystemShortcutCapture',
+        {'owner': owner, 'challenge': challenge});
+  }
+  @override
   Future<void> setMacOSSystemShortcutToggle(String owner, bool enabled) async {
     if (!isinitialized) init();
     await methodChannel.invokeMethod<void>(

@@ -11,6 +11,18 @@ import AppKit
       precondition(!MacOSSystemShortcutRouter.matches(code: code, flags: [.maskControl, .maskShift]))
     }
     let router = MacOSSystemShortcutRouter()
+    for code in [48,123,124,125,126] {
+      let stopped = MacOSSystemShortcutRouter()
+      let flags: CGEventFlags = code == 48 ? .maskCommand : .maskControl
+      stopped.armed = true
+      precondition(stopped.handle(code:code,down:true,flags:flags,repeatKey:false) == .send)
+      stopped.stop()
+      precondition(stopped.handle(code:code,down:true,flags:flags,repeatKey:true) == .consume)
+      // 旧up丢失后第一次新按下就必须放行，不只是第二次。
+      precondition(stopped.handle(code:code,down:true,flags:flags,repeatKey:false) == .pass)
+      precondition(stopped.handle(code:code,down:false,flags:[],repeatKey:false) == .pass)
+      precondition(!stopped.hasPendingKeys)
+    }
     precondition(router.handle(code:48, down:false, flags:.maskCommand, repeatKey:false) == .pass)
     router.armed = true
     precondition(router.handle(code:48, down:true, flags:.maskCommand, repeatKey:true) == .pass)
