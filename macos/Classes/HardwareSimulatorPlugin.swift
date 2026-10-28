@@ -78,6 +78,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var trackpadScrollMonitor: Any?
   private var macOSGlobeKeyProbeLocalMonitor: Any?
   private let inputCaptureRegistry = MacOSInputCaptureRegistry()
+  private lazy var systemShortcutCapture = MacOSSystemShortcutCapture(
+    registry: inputCaptureRegistry, view: flutterView,
+    emit: { [weak self] event in self?.methodChannel?.invokeMethod("onMacOSSystemShortcut", arguments:event) },
+    log: { [weak self] message in self?.macOSSystemShortcutLog(message) })
   private var globeProcessGate = MacOSGlobeProcessGate()
   private var inputSourceChordRouter = MacOSInputSourceChordRouter()
   private var capturesControlSpace = false
@@ -211,6 +215,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   @discardableResult
   func stopMacOSGlobeKeyProbeForTesting() -> Bool {
     stopMacOSGlobeKeyProbe()
+  }
+
+  var inputCaptureRegistryForTesting: MacOSInputCaptureRegistry {
+    inputCaptureRegistry
   }
 
   func stopMacOSGlobeKeyProbeForTerminationForTesting() {
@@ -555,7 +563,8 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       NSEvent.removeMonitor(monitor)
     }
     macOSGlobeKeyProbeLocalMonitor = nil
-    inputCaptureRegistry.unregisterAll()
+    inputCaptureRegistry.unregister(id: "input-source")
+    inputCaptureRegistry.unregister(id: "globe-system")
     globeProcessGate.reset()
     inputSourceChordRouter.reset()
     inputSourceCaptureEpoch += 1
@@ -1405,6 +1414,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       message.withCString { message in
         emit(2, tag, message)
       }
+    }
+#endif
+  }
+
+  private func macOSSystemShortcutLog(_ message: String) {
+#if CPP_LOG_AVAILABLE
+    guard let emit = macOSCppLogEmit else { return }
+    "RD_SYSTEM_SHORTCUT_NATIVE".withCString { tag in
+      message.withCString { emit(2, tag, $0) }
     }
 #endif
   }
@@ -3021,21 +3039,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       )
       // Create and post the keyboard event.
       //
-      // Strip the Fn (secondaryFn) and NumericPad flags before posting.
-      // Arrow / navigation keys (kVK 0x7B–0x7E) are macOS function + numpad
-      // keys, so CGEvent auto-tags their events with Fn | NumericPad. Posting
-      // such an event latches Fn into the shared session modifier state — and
-      // because the key-up event carries Fn too, it is never released. Every
-      // 后续注入使用独立的 privateState source，flags仅由远端状态重建。
-      // This prevents
-      // stray local Fn/NumPad state from leaking onto ordinary keys; the
-      // virtual key code still drives arrows.
+      // 私有source与远端pressed表隔离本机modifier，不继承旧session-state中的Fn。
+      // 普通键去掉Fn/NumPad；仅精确Ctrl+方向键补secondaryFn，macOS系统动作需要它。
+      // modifier的keyUp继续从剩余pressed表构造flags，完整组合释放后不保留Fn。
       let event = CGEvent(
         keyboardEventSource: remoteKeyboardEventSource,
         virtualKey: macKeyCode,
         keyDown: isDown
       )
-      event?.flags = flags
+      event?.flags = MacOSSystemShortcutRouter.hostFlags(code: Int(macKeyCode), flags: flags)
       // Keep Shift/Control/Option/Command as ordinary keyDown/keyUp events.
       // Recasting them as flagsChanged can leave the combined session modifier
       // state latched after key-up (for example, after remote Ctrl+Tab).
@@ -5189,6 +5201,22 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopTrackpadScrollCapture":
       stopTrackpadScrollCapture()
       result(nil)
+    case "acknowledgeMacOSSystemShortcutCapture":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let challenge = arguments["challenge"] as? Int else { result(nil); return }
+      systemShortcutCapture.acknowledge(owner:owner,challenge:challenge)
+      result(nil)
+    case "setMacOSSystemShortcutToggle":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let enabled = arguments["enabled"] as? Bool else { result(false); return }
+      systemShortcutCapture.updateView(registrar?.view ?? registrar?.viewController?.view)
+      systemShortcutCapture.setToggle(owner:owner,enabled:enabled)
+      result(nil)
+    case "setMacOSSystemShortcutCapture":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let enabled = arguments["enabled"] as? Bool else { result(false); return }
+      systemShortcutCapture.updateView(registrar?.view ?? registrar?.viewController?.view)
+      result(systemShortcutCapture.set(owner: owner, enabled: enabled))
     case "startMacOSGlobeKeyProbe":
       result(startMacOSGlobeKeyProbe())
     case "stopMacOSGlobeKeyProbe":

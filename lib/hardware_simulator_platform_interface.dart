@@ -98,6 +98,13 @@ class TextInputDecision {
 typedef WindowsTextInputDecision = TextInputDecision;
 
 abstract class HardwareSimulatorPlatform extends PlatformInterface {
+  Future<void> setMacOSSystemShortcutToggle(String owner, bool enabled) async {}
+  Future<void> acknowledgeMacOSSystemShortcutCapture(
+      String owner, int challenge) async {}
+  Stream<Map<String, dynamic>> get macOSSystemShortcutEvents =>
+      const Stream.empty();
+  Future<bool> setMacOSSystemShortcutCapture(String owner, bool enabled) async =>
+      false;
   /// Constructs a HardwareSimulatorPlatform.
   HardwareSimulatorPlatform() : super(token: _token);
 
