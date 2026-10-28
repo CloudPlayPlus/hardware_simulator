@@ -963,12 +963,3 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     await methodChannel.invokeMethod('updateStaticMonitors');
   }
 }
-
-  @override
-  Future<void> updateStaticMonitors() async {
-    if (!Platform.isWindows) {
-      return;
-    }
-    await methodChannel.invokeMethod('updateStaticMonitors');
-  }
-}
