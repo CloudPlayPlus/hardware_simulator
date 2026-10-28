@@ -13,6 +13,31 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @visibleForTesting
   final methodChannel = const MethodChannel('hardware_simulator');
   bool isinitialized = false;
+  @override
+  Future<void> setMacOSSystemShortcutToggle(String owner, bool enabled) async {
+    if (!isinitialized) init();
+    await methodChannel.invokeMethod<void>(
+        'setMacOSSystemShortcutToggle', {'owner': owner, 'enabled': enabled});
+  }
+
+  final _systemShortcutEvents =
+      StreamController<Map<String, dynamic>>.broadcast(sync: true);
+  @override
+  Stream<Map<String, dynamic>> get macOSSystemShortcutEvents {
+    if (!isinitialized) init();
+    return _systemShortcutEvents.stream;
+  }
+
+  @override
+  Future<bool> setMacOSSystemShortcutCapture(String owner, bool enabled) async {
+    if (!isinitialized) init();
+    return await methodChannel.invokeMethod<bool>(
+          'setMacOSSystemShortcutCapture',
+          {'owner': owner, 'enabled': enabled},
+        ) ??
+        false;
+  }
+
   final _rumbleEvents =
       StreamController<GamepadRumbleEvent>.broadcast(sync: true);
   @override
@@ -26,7 +51,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   void init() {
     methodChannel.setMethodCallHandler((call) async {
-      if (call.method == "onGamepadRumble") {
+      if (call.method == 'onMacOSSystemShortcut') {
+        final arguments = call.arguments;
+        if (arguments is Map) {
+          _systemShortcutEvents.add(Map<String, dynamic>.from(arguments));
+        }
+      } else if (call.method == "onGamepadRumble") {
         final args = call.arguments;
         if (args is Map &&
             args['id'] is int &&
@@ -924,6 +954,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       'displayIndex': displayIndex,
     });
   }
+
+  @override
+  Future<void> updateStaticMonitors() async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    await methodChannel.invokeMethod('updateStaticMonitors');
+  }
+}
 
   @override
   Future<void> updateStaticMonitors() async {

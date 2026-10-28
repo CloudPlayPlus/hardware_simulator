@@ -294,6 +294,21 @@ class HardwareSimulator {
     HardwareSimulatorPlatform.instance.addKeyBlocked(callback);
   }
 
+  static Stream<Map<String, dynamic>> get macOSSystemShortcutEvents =>
+      HardwareSimulatorPlatform.instance.macOSSystemShortcutEvents;
+  static Future<void> setMacOSSystemShortcutToggle(
+          String owner, bool enabled) =>
+      HardwareSimulatorPlatform.instance
+          .setMacOSSystemShortcutToggle(owner, enabled);
+  static Future<bool> setMacOSSystemShortcutCapture(
+    String owner,
+    bool enabled,
+  ) =>
+      HardwareSimulatorPlatform.instance.setMacOSSystemShortcutCapture(
+        owner,
+        enabled,
+      );
+
   static void removeKeyBlocked(KeyBlockedCallback callback) {
     HardwareSimulatorPlatform.instance.removeKeyBlocked(callback);
   }

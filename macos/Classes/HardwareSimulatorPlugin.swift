@@ -78,6 +78,10 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
   private var trackpadScrollMonitor: Any?
   private var macOSGlobeKeyProbeLocalMonitor: Any?
   private let inputCaptureRegistry = MacOSInputCaptureRegistry()
+  private lazy var systemShortcutCapture = MacOSSystemShortcutCapture(
+    registry: inputCaptureRegistry, view: flutterView,
+    emit: { [weak self] event in self?.methodChannel?.invokeMethod("onMacOSSystemShortcut", arguments:event) },
+    log: { [weak self] message in self?.macOSSystemShortcutLog(message) })
   private var globeProcessGate = MacOSGlobeProcessGate()
   private var inputSourceChordRouter = MacOSInputSourceChordRouter()
   private var capturesControlSpace = false
@@ -1405,6 +1409,15 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
       message.withCString { message in
         emit(2, tag, message)
       }
+    }
+#endif
+  }
+
+  private func macOSSystemShortcutLog(_ message: String) {
+#if CPP_LOG_AVAILABLE
+    guard let emit = macOSCppLogEmit else { return }
+    "RD_SYSTEM_SHORTCUT_NATIVE".withCString { tag in
+      message.withCString { emit(2, tag, $0) }
     }
 #endif
   }
@@ -3035,7 +3048,11 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
         virtualKey: macKeyCode,
         keyDown: isDown
       )
-      event?.flags = flags
+      event?.flags = MacOSSystemShortcutRouter.hostFlags(code: Int(macKeyCode), flags: flags)
+      if [48,123,124,125,126].contains(Int(macKeyCode)) &&
+          (!flags.intersection([.maskControl,.maskCommand]).isEmpty || !isDown) && !isRepeat {
+          macOSSystemShortcutLog("inject mac=\(macKeyCode) down=\(isDown) flags=\(event?.flags.rawValue ?? 0) pressed=\(activeKeyMacCodes.count)")
+      }
       // Keep Shift/Control/Option/Command as ordinary keyDown/keyUp events.
       // Recasting them as flagsChanged can leave the combined session modifier
       // state latched after key-up (for example, after remote Ctrl+Tab).
@@ -5189,6 +5206,17 @@ public class HardwareSimulatorPlugin: NSObject, FlutterPlugin {
     case "stopTrackpadScrollCapture":
       stopTrackpadScrollCapture()
       result(nil)
+    case "setMacOSSystemShortcutToggle":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let enabled = arguments["enabled"] as? Bool else { result(false); return }
+      systemShortcutCapture.updateView(registrar?.view ?? registrar?.viewController?.view)
+      systemShortcutCapture.setToggle(owner:owner,enabled:enabled)
+      result(nil)
+    case "setMacOSSystemShortcutCapture":
+      guard let arguments = call.arguments as? [String: Any], let owner = arguments["owner"] as? String,
+            let enabled = arguments["enabled"] as? Bool else { result(false); return }
+      systemShortcutCapture.updateView(registrar?.view ?? registrar?.viewController?.view)
+      result(systemShortcutCapture.set(owner: owner, enabled: enabled))
     case "startMacOSGlobeKeyProbe":
       result(startMacOSGlobeKeyProbe())
     case "stopMacOSGlobeKeyProbe":

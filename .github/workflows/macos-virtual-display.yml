@@ -25,6 +25,9 @@ jobs:
           xcrun swiftc macos/Classes/MacOSInputSourceChordRouter.swift test/macos/input_source_chord_harness.swift -o "$RUNNER_TEMP/input-source-chords"
           "$RUNNER_TEMP/input-source-chords"
           xcrun swiftc -typecheck macos/Classes/MacOSInputCaptureRegistry.swift
+          xcrun swiftc macos/Classes/MacOSSystemShortcutRouter.swift test/macos/system_shortcut_harness.swift -o "$RUNNER_TEMP/system-shortcuts"
+          "$RUNNER_TEMP/system-shortcuts"
+          xcrun swiftc -typecheck macos/Classes/MacOSInputCaptureRegistry.swift macos/Classes/MacOSSystemShortcutRouter.swift macos/Classes/MacOSSystemShortcutCapture.swift
           bash -n macos/VirtualDisplayHelper/test_mode_updates.sh
           xcrun clang -O2 -fobjc-arc -ObjC -mmacosx-version-min=14.0 \
             -Wall -Wextra -Werror \
