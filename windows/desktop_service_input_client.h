@@ -7,11 +7,16 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "virtual_display.h"
+
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+namespace desktop_svc { class InputDispatcher; }
+#endif
 
 namespace hardware_simulator {
 
@@ -35,13 +40,16 @@ class DesktopServiceInputClient {
   void Close();
 
  private:
-  DesktopServiceInputClient() = default;
+  DesktopServiceInputClient();
   ~DesktopServiceInputClient();
 
   DesktopServiceInputClient(const DesktopServiceInputClient&) = delete;
   DesktopServiceInputClient& operator=(const DesktopServiceInputClient&) = delete;
 
   friend class DesktopServiceInputClientTestPeer;
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  std::unique_ptr<desktop_svc::InputDispatcher> direct_input_;
+#endif
   struct ControlConnection {
     DesktopServiceInputClient* client;
     ~ControlConnection() { client->ClosePipeLocked(); }
