@@ -4,6 +4,9 @@
 #include <chrono>
 
 #include "cpp_log_shim.h"
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+#include "input_dispatcher.h"
+#endif
 
 namespace hardware_simulator {
 namespace {
@@ -147,6 +150,22 @@ bool WriteMessage(HANDLE pipe, HANDLE event, HANDLE interrupt,
 
 }  // namespace
 
+DesktopServiceInputClient::DesktopServiceInputClient() {
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
+  DWORD size = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<uint8_t> bytes(size);
+  if (size && GetTokenInformation(token, TokenUser, bytes.data(), size, &size) &&
+      IsWellKnownSid(reinterpret_cast<TOKEN_USER*>(bytes.data())->User.Sid, WinLocalSystemSid)) {
+    direct_input_ = std::make_unique<desktop_svc::InputDispatcher>();
+    CPPLOG_INFO("direct_input", "SYSTEM uses the in-process input dispatcher");
+  }
+  CloseHandle(token);
+#endif
+}
+
 DesktopServiceInputClient& DesktopServiceInputClient::Instance() {
   static DesktopServiceInputClient client;
   return client;
@@ -157,6 +176,9 @@ DesktopServiceInputClient::~DesktopServiceInputClient() {
 }
 
 void DesktopServiceInputClient::SetServiceAvailable(bool available) {
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  if (direct_input_) return;
+#endif
   std::lock_guard<std::mutex> lock(mutex_);
   service_available_ = available;
   if (!service_available_) {
@@ -171,6 +193,21 @@ void DesktopServiceInputClient::SetServiceAvailable(bool available) {
 }
 
 bool DesktopServiceInputClient::SendInputMessage(const INPUT& input) {
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  if (direct_input_) {
+    if (!direct_input_->start()) return false;
+    if (input.type == INPUT_KEYBOARD) {
+      direct_input_->enqueue_keyboard({input.ki.wVk, input.ki.wScan, input.ki.dwFlags}, 1);
+      return true;
+    }
+    if (input.type == INPUT_MOUSE) {
+      direct_input_->enqueue_mouse({input.mi.dx, input.mi.dy, input.mi.dwFlags,
+        static_cast<int32_t>(input.mi.mouseData)}, 1);
+      return true;
+    }
+    return false;
+  }
+#endif
   std::lock_guard<std::mutex> lock(mutex_);
   if (!input_connected_) {
     return false;
@@ -194,7 +231,11 @@ bool DesktopServiceInputClient::SendTouchInput(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!input_connected_) {
+  if (!input_connected_
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+      && !direct_input_
+#endif
+      ) {
     return false;
   }
 
@@ -220,6 +261,16 @@ bool DesktopServiceInputClient::SendTouchInput(
     target.pressure = source.pressure;
   }
 
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  if (direct_input_) {
+    static_assert(sizeof(payload) == sizeof(desktop_ipc::TouchInput));
+    desktop_ipc::TouchInput direct{};
+    memcpy(&direct, &payload, sizeof(direct));
+    if (!direct_input_->start()) return false;
+    direct_input_->enqueue_touch(direct, 1);
+    return true;
+  }
+#endif
   uint8_t buffer[sizeof(MsgHeader) + sizeof(TouchInputPayload)] = {};
   MsgHeader header = {};
   header.type = kMsgTouchInput;
@@ -236,7 +287,11 @@ bool DesktopServiceInputClient::SendPenInput(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!input_connected_) {
+  if (!input_connected_
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+      && !direct_input_
+#endif
+      ) {
     return false;
   }
 
@@ -253,6 +308,16 @@ bool DesktopServiceInputClient::SendPenInput(
   payload.tilt_x = source.tiltX;
   payload.tilt_y = source.tiltY;
 
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  if (direct_input_) {
+    static_assert(sizeof(payload) == sizeof(desktop_ipc::PenInput));
+    desktop_ipc::PenInput direct{};
+    memcpy(&direct, &payload, sizeof(direct));
+    if (!direct_input_->start()) return false;
+    direct_input_->enqueue_pen(direct, 1);
+    return true;
+  }
+#endif
   uint8_t buffer[sizeof(MsgHeader) + sizeof(PenInputPayload)] = {};
   MsgHeader header = {};
   header.type = kMsgPenInput;
@@ -360,6 +425,12 @@ bool DesktopServiceInputClient::RestoreDisplayConfiguration(
 }
 
 void DesktopServiceInputClient::Close() {
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  if (direct_input_) {
+    direct_input_->stop();
+    return;
+  }
+#endif
   std::thread input_thread;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -509,6 +580,11 @@ HANDLE DesktopServiceInputClient::TryConnect() {
 }
 
 bool DesktopServiceInputClient::EnsureConnectedLocked() {
+#ifdef CLOUDPLAYPLUS_DIRECT_INPUT
+  // Callers already implement local display operations when no service
+  // transport is selected. SYSTEM needs no privilege-forwarding round trip.
+  if (direct_input_) return false;
+#endif
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!service_available_ || stop_requested_) {
