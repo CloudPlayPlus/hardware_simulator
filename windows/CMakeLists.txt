@@ -31,6 +31,7 @@ list(APPEND PLUGIN_SOURCES
   "gamecontroller_manager.h"
   "notification_window.cc"
   "notification_window.h"
+  "pointer_coordinates.h"
   "trackpad_scroll_accumulator.h"
   "windows_editing_event_monitor.cc"
   "windows_editing_event_monitor.h"
@@ -192,7 +193,7 @@ if(include_${PROJECT_NAME}_tests)
       --test-dir "${CMAKE_BINARY_DIR}"
       --build-config "$<CONFIG>"
       --output-on-failure
-    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test desktop_service_input_client_test cursor_position_snapshot_test cursor_visibility_snapshot_test display_restore_client_test exclusive_display_topology_test
+    DEPENDS ${TEST_RUNNER} rumble_callback_registry_test pointer_coordinates_test desktop_service_input_client_test cursor_position_snapshot_test cursor_visibility_snapshot_test display_restore_client_test exclusive_display_topology_test
     USES_TERMINAL
   )
 endif()

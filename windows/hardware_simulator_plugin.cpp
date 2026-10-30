@@ -91,32 +91,12 @@ std::optional<std::int64_t> ReadOptionalInt64(
   return std::nullopt;
 }
 
-bool adjust_touch_to_screen(
+bool adjust_to_screen(
     int screen_index,
     double x_percent,
     double y_percent,
     LONG& out_x,
     LONG& out_y);
-
-std::optional<POINT> NormalizedPointOnMonitor(
-    const RECT& monitor_rect,
-    double x_percent,
-    double y_percent) {
-  if (!std::isfinite(x_percent) || !std::isfinite(y_percent) ||
-      monitor_rect.right <= monitor_rect.left ||
-      monitor_rect.bottom <= monitor_rect.top) {
-    return std::nullopt;
-  }
-  const double clamped_x = (std::clamp)(x_percent, 0.0, 1.0);
-  const double clamped_y = (std::clamp)(y_percent, 0.0, 1.0);
-  const LONG width = monitor_rect.right - monitor_rect.left;
-  const LONG height = monitor_rect.bottom - monitor_rect.top;
-  return POINT{
-      monitor_rect.left +
-          static_cast<LONG>(std::lround(clamped_x * (width - 1))),
-      monitor_rect.top +
-          static_cast<LONG>(std::lround(clamped_y * (height - 1)))};
-}
 
 std::optional<RECT> MonitorRectForScreenId(
     const std::vector<MonitorInfo>& monitors,
@@ -135,7 +115,7 @@ std::optional<POINT> PointerPointForScreen(
     double y) {
   LONG point_x = 0;
   LONG point_y = 0;
-  if (!adjust_touch_to_screen(screen_id, x, y, point_x, point_y)) {
+  if (!adjust_to_screen(screen_id, x, y, point_x, point_y)) {
     return std::nullopt;
   }
   return POINT{point_x, point_y};
@@ -409,28 +389,37 @@ std::vector<MonitorInfo> get_monitors() {
     return HardwareSimulatorPlugin::GetStaticMonitors();
 }
 
-bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
-    auto monitors = get_monitors();
-    const auto monitor_rect = MonitorRectForScreenId(monitors, screen_id);
-    if (!monitor_rect.has_value()) return false;
-    const auto point =
-        NormalizedPointOnMonitor(*monitor_rect, x_percent, y_percent);
-    if (!point.has_value()) return false;
+bool adjust_to_virtual_desktop_pixels(int screen_id, double x_percent, double y_percent,
+                                 LONG& out_x, LONG& out_y) {
+    if (!adjust_to_screen(screen_id, x_percent, y_percent, out_x, out_y)) {
+        return false;
+    }
+    const auto point = PointRelativeToVirtualDesktop(
+        POINT{out_x, out_y},
+        POINT{GetSystemMetrics(SM_XVIRTUALSCREEN),
+              GetSystemMetrics(SM_YVIRTUALSCREEN)});
+    out_x = point.x;
+    out_y = point.y;
+    return true;
+}
 
-    const int virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    const int virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+    // 与触摸/笔共用屏幕映射和原点转换，鼠标仅额外转换到 0..65535。
+    if (!adjust_to_virtual_desktop_pixels(screen_id, x_percent, y_percent, out_x, out_y)) {
+        return false;
+    }
     const int virtual_width =
         (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
     const int virtual_height =
         (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
     out_x = MulDiv(
-        point->x - virtual_x, 65535, (std::max)(1, virtual_width - 1));
+        out_x, 65535, (std::max)(1, virtual_width - 1));
     out_y = MulDiv(
-        point->y - virtual_y, 65535, (std::max)(1, virtual_height - 1));
+        out_y, 65535, (std::max)(1, virtual_height - 1));
     return true;
 }
 
-bool adjust_touch_to_screen(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+bool adjust_to_screen(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
     auto monitors = get_monitors();
     const auto monitor_rect = MonitorRectForScreenId(monitors, screen_id);
     if (!monitor_rect.has_value()) {
@@ -623,9 +612,9 @@ void performTouchEvent(int screenId, double x, double y, uint32_t touchId, bool 
     touchInfo.pointerInfo.pointerType = PT_TOUCH;
 
     LONG out_x, out_y;
-    if (!adjust_touch_to_screen(screenId,x,y,out_x,out_y)) return;
-    touchInfo.pointerInfo.ptPixelLocation.x = out_x;//static_cast<LONG>(x * GetSystemMetrics(SM_CXSCREEN));
-    touchInfo.pointerInfo.ptPixelLocation.y = out_y;//static_cast<LONG>(y * GetSystemMetrics(SM_CYSCREEN));
+    if (!adjust_to_virtual_desktop_pixels(screenId,x,y,out_x,out_y)) return;
+    touchInfo.pointerInfo.ptPixelLocation.x = out_x;
+    touchInfo.pointerInfo.ptPixelLocation.y = out_y;
 
     if (isDown) {
         touchInfo.pointerInfo.pointerFlags = TOUCHEVENTF_PRIMARY | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_DOWN;
@@ -671,9 +660,9 @@ void performTouchMove(int screenId, double x, double y, uint32_t touchId) {
     auto& touchInfo = pointer->touchInfo;
 
     LONG out_x, out_y;
-    if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
-    touchInfo.pointerInfo.ptPixelLocation.x = out_x;//static_cast<LONG>(x * GetSystemMetrics(SM_CXSCREEN));
-    touchInfo.pointerInfo.ptPixelLocation.y = out_y;//static_cast<LONG>(y * GetSystemMetrics(SM_CYSCREEN));
+    if (!adjust_to_virtual_desktop_pixels(screenId, x, y, out_x, out_y)) return;
+    touchInfo.pointerInfo.ptPixelLocation.x = out_x;
+    touchInfo.pointerInfo.ptPixelLocation.y = out_y;
 
     touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE;
 
@@ -702,7 +691,7 @@ void performPenEvent(int screenId, double x, double y, bool isDown, bool hasButt
     penInfo.pointerInfo.pointerId = 0;
 
     LONG out_x, out_y;
-    if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
+    if (!adjust_to_virtual_desktop_pixels(screenId, x, y, out_x, out_y)) return;
     penInfo.pointerInfo.ptPixelLocation.x = out_x;
     penInfo.pointerInfo.ptPixelLocation.y = out_y;
 
@@ -782,7 +771,7 @@ void performPenMove(int screenId, double x, double y, bool hasButton, double pre
     penInfo.pointerInfo.pointerId = 0;
 
     LONG out_x, out_y;
-    if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
+    if (!adjust_to_virtual_desktop_pixels(screenId, x, y, out_x, out_y)) return;
     penInfo.pointerInfo.ptPixelLocation.x = out_x;
     penInfo.pointerInfo.ptPixelLocation.y = out_y;
 
@@ -849,7 +838,7 @@ void performPenHover(int screenId, double x, double y) {
     penInfo.pointerInfo.pointerId = 0;
 
     LONG out_x, out_y;
-    if (!adjust_touch_to_screen(screenId, x, y, out_x, out_y)) return;
+    if (!adjust_to_virtual_desktop_pixels(screenId, x, y, out_x, out_y)) return;
     penInfo.pointerInfo.ptPixelLocation.x = out_x;
     penInfo.pointerInfo.ptPixelLocation.y = out_y;
 
