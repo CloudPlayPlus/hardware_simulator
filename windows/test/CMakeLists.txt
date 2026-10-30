@@ -16,6 +16,11 @@ if(EXISTS "${CLOUDPLAYPLUS_SERVICE_SOURCE}/src/input_dispatcher.cpp")
   add_test(NAME direct_input_client COMMAND direct_input_client_test)
 endif()
 
+add_executable(pointer_coordinates_test pointer_coordinates_test.cpp)
+target_compile_features(pointer_coordinates_test PRIVATE cxx_std_17)
+target_compile_options(pointer_coordinates_test PRIVATE /W4 /WX /utf-8)
+add_test(NAME pointer_coordinates COMMAND pointer_coordinates_test)
+
 add_executable(cursor_position_snapshot_test cursor_position_snapshot_test.cpp)
 target_compile_features(cursor_position_snapshot_test PRIVATE cxx_std_17)
 target_compile_options(cursor_position_snapshot_test PRIVATE /W4 /WX /utf-8)

@@ -14,6 +14,7 @@
 #include <functional>
 #include <map>
 #include "SmartKeyboardBlocker.h"
+#include "pointer_coordinates.h"
 
 struct MonitorInfo {
     RECT rect;
@@ -25,13 +26,6 @@ namespace hardware_simulator {
 
 class WindowsEditingEventMonitor;
 struct WindowsTextInputDecision;
-
-// Converts monitor-local normalized coordinates into physical virtual-desktop
-// pixels. The result intentionally preserves negative virtual origins.
-std::optional<POINT> NormalizedPointOnMonitor(
-    const RECT& monitor_rect,
-    double x_percent,
-    double y_percent);
 
 // Resolves the raw EnumDisplayDevices device index used by libwebrtc and the
 // input protocol to the current monitor bounds. Returns nullopt when the raw
