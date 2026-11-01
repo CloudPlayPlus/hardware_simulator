@@ -15,6 +15,8 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
   "linux_mouse.cc"
+  "linux_text_input.cc"
+  "linux_text_input_setup.cc"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
@@ -74,6 +76,13 @@ if(NOT LIBEVDEV_FOUND)
 endif()
 target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_17)
 target_link_libraries(${PLUGIN_NAME} PRIVATE inputtino::libinputtino)
+
+# 可选依赖：无 IBus 构建不声明原生文本能力，普通 uinput 不受影响。
+pkg_check_modules(IBUS QUIET IMPORTED_TARGET ibus-1.0)
+if(IBUS_FOUND)
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE CPP_HAVE_IBUS)
+  target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::IBUS)
+endif()
 
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xrandr)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::X11)
@@ -135,6 +144,21 @@ endif()  # include_${PROJECT_NAME}_tests
 # 无桌面副作用的 uinput 边界回归测试。
 option(HARDWARE_SIMULATOR_INPUT_TESTS "Build Linux input regression checks" OFF)
 if(HARDWARE_SIMULATOR_INPUT_TESTS)
+  add_executable(linux_text_input_setup_test test/linux_text_input_setup_test.cc linux_text_input_setup.cc)
+  target_include_directories(linux_text_input_setup_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(linux_text_input_setup_test PRIVATE PkgConfig::GTK)
+  target_compile_options(linux_text_input_setup_test PRIVATE -UNDEBUG)
+  add_executable(linux_text_input_test test/linux_text_input_test.cc linux_text_input.cc)
+  target_include_directories(linux_text_input_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(linux_text_input_test PRIVATE flutter PkgConfig::GTK)
+  target_compile_options(linux_text_input_test PRIVATE -UNDEBUG)
+  if(IBUS_FOUND)
+    add_executable(linux_text_input_ibus_test test/linux_text_input_ibus_test.cc linux_text_input.cc)
+    target_include_directories(linux_text_input_ibus_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(linux_text_input_ibus_test PRIVATE CPP_HAVE_IBUS)
+    target_compile_options(linux_text_input_ibus_test PRIVATE -UNDEBUG)
+    target_link_libraries(linux_text_input_ibus_test PRIVATE PkgConfig::IBUS)
+  endif()
   add_executable(linux_input_test test/linux_input_test.cc linux_mouse.cc)
   target_include_directories(linux_input_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(linux_input_test PRIVATE inputtino::libinputtino)

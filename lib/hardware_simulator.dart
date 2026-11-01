@@ -58,6 +58,23 @@ class HWKeyboard {
     HardwareSimulatorPlatform.instance.performKeyEvent(keyCode, isDown);
   }
 
+  Future<Map<String, dynamic>> getLinuxTextInputSetup() =>
+      HardwareSimulatorPlatform.instance.getLinuxTextInputSetup();
+
+  Future<bool> setLinuxTextInputSetup(String expected, String value) =>
+      HardwareSimulatorPlatform.instance
+          .setLinuxTextInputSetup(expected, value);
+
+  Future<bool> isLinuxTextInputAvailable() =>
+      HardwareSimulatorPlatform.instance.isLinuxTextInputAvailable();
+
+  Future<int> prepareLinuxTextInput() =>
+      HardwareSimulatorPlatform.instance.prepareLinuxTextInput();
+
+  Future<void> finishLinuxTextInput(int token, int backspaces, String text) =>
+      HardwareSimulatorPlatform.instance
+          .finishLinuxTextInput(token, backspaces, text);
+
   /// Injects committed text without exposing its contents to Dart-side logs.
   Future<void> performTextInput(String text) {
     return HardwareSimulatorPlatform.instance.performTextInput(text);

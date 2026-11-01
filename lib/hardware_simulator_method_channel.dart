@@ -16,7 +16,8 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @override
   Future<void> acknowledgeMacOSSystemShortcutCapture(
       String owner, int challenge) async {
-    await methodChannel.invokeMethod<void>('acknowledgeMacOSSystemShortcutCapture',
+    await methodChannel.invokeMethod<void>(
+        'acknowledgeMacOSSystemShortcutCapture',
         {'owner': owner, 'challenge': challenge});
   }
 
@@ -588,6 +589,37 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     await methodChannel.invokeMethod('KeyPress', {
       'code': keyCode,
       'isDown': isDown,
+    });
+  }
+
+  @override
+  Future<Map<String, dynamic>> getLinuxTextInputSetup() async =>
+      Map<String, dynamic>.from(await methodChannel
+              .invokeMapMethod<String, dynamic>('getLinuxTextInputSetup') ??
+          {});
+
+  @override
+  Future<bool> setLinuxTextInputSetup(String expected, String value) async =>
+      await methodChannel.invokeMethod<bool>(
+          'setLinuxTextInputSetup', {'expected': expected, 'value': value}) ??
+      false;
+
+  @override
+  Future<bool> isLinuxTextInputAvailable() async =>
+      await methodChannel.invokeMethod<bool>('isLinuxTextInputAvailable') ??
+      false;
+
+  @override
+  Future<int> prepareLinuxTextInput() async =>
+      await methodChannel.invokeMethod<int>('prepareLinuxTextInput') ?? 0;
+
+  @override
+  Future<void> finishLinuxTextInput(
+      int token, int backspaces, String text) async {
+    await methodChannel.invokeMethod<void>('finishLinuxTextInput', {
+      'token': token,
+      'backspaces': backspaces,
+      'text': text,
     });
   }
 
