@@ -2,7 +2,7 @@
 
 This plugin simulates mouse & keyboard input. Currently it is not well documented. 
 
-Current it supports to simulate: mouse & keyboard for Windows/macOS/Linux (Linux mouse uses uinput via inputtino; Linux keyboard still requires X11 + XTest). XBOX Game Controller for windows. See the example for details.
+Current it supports to simulate: mouse & keyboard for Windows/macOS/Linux (Linux mouse and keyboard use uinput; monitor geometry still uses X11/XWayland). XBOX Game Controller for windows. See the example for details.
 
 Linux uinput permission setup:
 
@@ -35,3 +35,17 @@ ctest --test-dir build-input -C Release --output-on-failure --timeout 30
 服务输入由专用发送线程按序写入，调用成功表示已入队。键鼠、触摸和笔的
 原始事件全部逐条保留，不合并、不累加、不节流。配置请求使用独立的短期
 连接。管道故障会丢弃未发送队列并后台重连，不重放送达结果不确定的输入。
+
+## Linux 输入回归
+
+在 CloudPlayPlus 主仓已完成 Linux 构建配置后运行：
+
+```bash
+cmake -S linux -B build/linux/x64/release -DHARDWARE_SIMULATOR_INPUT_TESTS=ON
+cmake --build build/linux/x64/release --target linux_input_test
+./build/linux/x64/release/plugins/hardware_simulator/linux_input_test
+```
+
+测试拦截 libevdev 的设备创建与写入，不会向桌面注入真实输入；覆盖键码映射、
+重复按下、权限失败重试、释放失败重试，以及两轴滚轮余量与相对/绝对设备切换。
+原生 Wayland/X11 应用中的实际输入仍需远控实机验收。

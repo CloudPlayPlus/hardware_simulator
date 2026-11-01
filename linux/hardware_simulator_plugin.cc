@@ -5,9 +5,7 @@
 #include <inputtino/input.hpp>
 #include <sys/utsname.h>
 #include <X11/Xlib.h>
-#include <X11/extensions/XTest.h>
 #include <X11/extensions/Xrandr.h>
-#include <X11/keysym.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,11 +13,12 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <vector>
 
 #include "hardware_simulator_plugin_private.h"
+#include "linux_keyboard.h"
+#include "linux_mouse.h"
 
 #define HARDWARE_SIMULATOR_PLUGIN(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), hardware_simulator_plugin_get_type(), \
@@ -47,9 +46,9 @@ enum class MouseMode {
 
 std::mutex g_input_mutex;
 std::mutex g_mouse_mutex;
-std::set<KeyCode> g_pressed_keys;
+LinuxKeyboard g_keyboard;
 std::map<inputtino::Mouse::MOUSE_BUTTON, MouseMode> g_pressed_mouse_buttons;
-std::unique_ptr<inputtino::Mouse> g_mouse;
+std::unique_ptr<LinuxMouse> g_mouse;
 std::string g_mouse_error;
 MouseMode g_current_mouse_mode = MouseMode::kRelative;
 int g_last_abs_x = 0;
@@ -86,7 +85,7 @@ FlMethodResponse* unsupported(const char* message) {
 FlMethodResponse* linux_display_error() {
   return FL_METHOD_RESPONSE(fl_method_error_response_new(
       "DISPLAY_UNAVAILABLE",
-      "Linux hardware simulation requires an X11 DISPLAY with XTest support.",
+      "Linux hardware simulation requires an X11 DISPLAY for monitor geometry.",
       nullptr));
 }
 
@@ -116,18 +115,6 @@ class XDisplay {
   XDisplay& operator=(const XDisplay&) = delete;
 
   Display* get() const { return display_; }
-
-  bool supports_xtest() const {
-    if (display_ == nullptr) {
-      return false;
-    }
-    int event_base = 0;
-    int error_base = 0;
-    int major = 0;
-    int minor = 0;
-    return XTestQueryExtension(display_, &event_base, &error_base, &major,
-                               &minor) == True;
-  }
 
  private:
   Display* display_;
@@ -221,7 +208,7 @@ MonitorBounds get_root_bounds(const std::vector<MonitorBounds>& monitors) {
   return {left, top, std::max(1, right - left), std::max(1, bottom - top)};
 }
 
-inputtino::Mouse* get_mouse() {
+LinuxMouse* get_mouse() {
   std::lock_guard<std::mutex> lock(g_mouse_mutex);
   if (g_mouse) {
     return g_mouse.get();
@@ -238,7 +225,7 @@ inputtino::Mouse* get_mouse() {
     return nullptr;
   }
 
-  g_mouse = std::make_unique<inputtino::Mouse>(std::move(*mouse));
+  g_mouse = std::make_unique<LinuxMouse>(std::move(*mouse));
   g_mouse_error.clear();
   return g_mouse.get();
 }
@@ -251,66 +238,6 @@ void set_mouse_mode(inputtino::Mouse* mouse, MouseMode mode) {
     mouse->move(0, 0);
   }
   g_current_mouse_mode = mode;
-}
-
-KeySym windows_vk_to_keysym(int vk) {
-  if (vk >= 0x41 && vk <= 0x5A) {
-    return XK_a + (vk - 0x41);
-  }
-  if (vk >= 0x30 && vk <= 0x39) {
-    return XK_0 + (vk - 0x30);
-  }
-  if (vk >= 0x70 && vk <= 0x7B) {
-    return XK_F1 + (vk - 0x70);
-  }
-  if (vk >= 0x60 && vk <= 0x69) {
-    return XK_KP_0 + (vk - 0x60);
-  }
-
-  switch (vk) {
-    case 0x08: return XK_BackSpace;
-    case 0x09: return XK_Tab;
-    case 0x0D: return XK_Return;
-    case 0x14: return XK_Caps_Lock;
-    case 0x1B: return XK_Escape;
-    case 0x20: return XK_space;
-    case 0x21: return XK_Page_Up;
-    case 0x22: return XK_Page_Down;
-    case 0x23: return XK_End;
-    case 0x24: return XK_Home;
-    case 0x25: return XK_Left;
-    case 0x26: return XK_Up;
-    case 0x27: return XK_Right;
-    case 0x28: return XK_Down;
-    case 0x2D: return XK_Insert;
-    case 0x2E: return XK_Delete;
-    case 0x5B: return XK_Super_L;
-    case 0x5C: return XK_Super_R;
-    case 0x5D: return XK_Menu;
-    case 0x6A: return XK_KP_Multiply;
-    case 0x6B: return XK_KP_Add;
-    case 0x6D: return XK_KP_Subtract;
-    case 0x6E: return XK_KP_Decimal;
-    case 0x6F: return XK_KP_Divide;
-    case 0xA0: return XK_Shift_L;
-    case 0xA1: return XK_Shift_R;
-    case 0xA2: return XK_Control_L;
-    case 0xA3: return XK_Control_R;
-    case 0xA4: return XK_Alt_L;
-    case 0xA5: return XK_Alt_R;
-    case 0xBA: return XK_semicolon;
-    case 0xBB: return XK_equal;
-    case 0xBC: return XK_comma;
-    case 0xBD: return XK_minus;
-    case 0xBE: return XK_period;
-    case 0xBF: return XK_slash;
-    case 0xC0: return XK_grave;
-    case 0xDB: return XK_bracketleft;
-    case 0xDC: return XK_backslash;
-    case 0xDD: return XK_bracketright;
-    case 0xDE: return XK_apostrophe;
-    default: return NoSymbol;
-  }
 }
 
 bool mouse_button_to_inputtino(int button_id,
@@ -344,30 +271,18 @@ FlMethodResponse* perform_key_event(FlValue* args) {
     return bad_args("Missing or incorrect arguments for KeyPress");
   }
 
-  XDisplay display;
-  if (!display.supports_xtest()) {
-    return linux_display_error();
-  }
-  KeySym keysym = windows_vk_to_keysym(code);
-  if (keysym == NoSymbol) {
+  if (!LinuxKeyboard::keycode(code)) {
     return unsupported("Unsupported Windows virtual-key code.");
   }
-  KeyCode keycode = XKeysymToKeycode(display.get(), keysym);
-  if (keycode == 0) {
-    return unsupported("No X11 keycode for requested key.");
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  const int result = g_keyboard.send(code, is_down);
+  if (result < 0) {
+    const std::string message =
+        std::string("Linux keyboard requires /dev/uinput access: ") +
+        std::strerror(-result);
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "UINPUT_UNAVAILABLE", message.c_str(), nullptr));
   }
-
-  {
-    std::lock_guard<std::mutex> lock(g_input_mutex);
-    if (is_down) {
-      g_pressed_keys.insert(keycode);
-    } else {
-      g_pressed_keys.erase(keycode);
-    }
-  }
-  XTestFakeKeyEvent(display.get(), keycode, is_down ? True : False,
-                    CurrentTime);
-  XFlush(display.get());
   return success_null();
 }
 
@@ -528,31 +443,15 @@ FlMethodResponse* clear_all_pressed_mouse_buttons() {
 }
 
 FlMethodResponse* clear_all_pressed_events() {
-  if (auto* mouse_error = clear_all_pressed_mouse_buttons()) {
-    return mouse_error;
+  // 一个设备清理失败也必须尝试释放另一个设备。
+  auto* mouse_error = clear_all_pressed_mouse_buttons();
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  const int result = g_keyboard.clear();
+  if (mouse_error) return mouse_error;
+  if (result < 0) {
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "UINPUT_UNAVAILABLE", std::strerror(-result), nullptr));
   }
-
-  {
-    std::lock_guard<std::mutex> lock(g_input_mutex);
-    if (g_pressed_keys.empty()) {
-      return success_null();
-    }
-  }
-
-  XDisplay display;
-  if (!display.supports_xtest()) {
-    return linux_display_error();
-  }
-
-  std::set<KeyCode> keys;
-  {
-    std::lock_guard<std::mutex> lock(g_input_mutex);
-    keys.swap(g_pressed_keys);
-  }
-  for (KeyCode key : keys) {
-    XTestFakeKeyEvent(display.get(), key, False, CurrentTime);
-  }
-  XFlush(display.get());
   return success_null();
 }
 
