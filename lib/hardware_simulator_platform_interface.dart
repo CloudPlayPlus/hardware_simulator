@@ -102,8 +102,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
       String owner, int challenge) async {}
   Stream<Map<String, dynamic>> get macOSSystemShortcutEvents =>
       const Stream.empty();
-  Future<bool> setMacOSSystemShortcutCapture(String owner, bool enabled) async =>
+  Future<bool> setMacOSSystemShortcutCapture(
+          String owner, bool enabled) async =>
       false;
+
   /// Constructs a HardwareSimulatorPlatform.
   HardwareSimulatorPlatform() : super(token: _token);
 
@@ -369,6 +371,21 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
 
   Future<void> performKeyEvent(int keyCode, bool isDown) async {
     throw UnimplementedError('performKeyEvent() has not been implemented.');
+  }
+
+  Future<Map<String, dynamic>> getLinuxTextInputSetup() async => {};
+
+  Future<bool> setLinuxTextInputSetup(String expected, String value) async =>
+      false;
+
+  Future<bool> isLinuxTextInputAvailable() async => false;
+
+  Future<int> prepareLinuxTextInput() async => 0;
+
+  Future<void> finishLinuxTextInput(
+      int token, int backspaces, String text) async {
+    throw UnimplementedError(
+        'finishLinuxTextInput() has not been implemented.');
   }
 
   Future<void> performTextInput(String text) async {

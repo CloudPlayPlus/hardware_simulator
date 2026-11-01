@@ -13,3 +13,10 @@ FlMethodResponse *get_platform_version();
 // for the vertical REL_WHEEL axis (+ is wheel-up/page-up); horizontal
 // REL_HWHEEL already matches the logical +right direction.
 int logical_scroll_to_linux_wheel(double delta, bool invert);
+
+#include <string>
+
+// MethodChannel 的 UTF-8 String 转换；不按 Unicode 字符数截断字节。
+inline std::string linux_committed_text_value(FlValue* value) {
+  return std::string(fl_value_get_string(value));
+}

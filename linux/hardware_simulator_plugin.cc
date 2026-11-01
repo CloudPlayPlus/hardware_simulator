@@ -1,3 +1,4 @@
+#include "linux_text_input_setup.h"
 #include "include/hardware_simulator/hardware_simulator_plugin.h"
 
 #include <flutter_linux/flutter_linux.h>
@@ -19,6 +20,7 @@
 #include "hardware_simulator_plugin_private.h"
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
+#include "linux_text_input.h"
 
 #define HARDWARE_SIMULATOR_PLUGIN(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), hardware_simulator_plugin_get_type(), \
@@ -479,6 +481,94 @@ static void hardware_simulator_plugin_handle_method_call(
     response = get_platform_version();
   } else if (strcmp(method, "getMonitorCount") == 0) {
     response = get_monitor_count();
+  } else if (strcmp(method, "getLinuxTextInputSetup") == 0) {
+    g_autoptr(GSettings) settings = linux_text_input_setup::open_settings();
+    const auto value = settings ? linux_text_input_setup::current(settings) : "";
+    const bool other = linux_text_input_setup::competing_input_method() ||
+        (!value.empty() && value != "'ibus'" && value != "'gtk-im-context-simple'");
+    g_autoptr(FlValue) result = fl_value_new_map();
+    fl_value_set_string_take(result, "gnome", fl_value_new_bool(
+        linux_text_input_setup::supported_desktop()));
+    fl_value_set_string_take(result, "writable", fl_value_new_bool(
+        settings && g_settings_is_writable(settings, "overrides")));
+    fl_value_set_string_take(result, "otherInputMethod", fl_value_new_bool(other));
+    fl_value_set_string_take(result, "override", fl_value_new_string(value.c_str()));
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (strcmp(method, "setLinuxTextInputSetup") == 0) {
+    auto* args = fl_method_call_get_args(method_call);
+    const bool map = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP;
+    auto* expected = map ? fl_value_lookup_string(args, "expected") : nullptr;
+    auto* value = map ? fl_value_lookup_string(args, "value") : nullptr;
+    g_autoptr(GSettings) settings = linux_text_input_setup::open_settings();
+    if (!expected || !value || fl_value_get_type(expected) != FL_VALUE_TYPE_STRING ||
+        fl_value_get_type(value) != FL_VALUE_TYPE_STRING) {
+      response = bad_args("Invalid input method settings.");
+    } else {
+      response = success_bool(settings && linux_text_input_setup::supported_desktop() &&
+          linux_text_input_setup::replace(settings, fl_value_get_string(expected),
+                                         fl_value_get_string(value)));
+    }
+  } else if (strcmp(method, "isLinuxTextInputAvailable") == 0) {
+    g_object_ref(method_call);
+    linux_text_input::available([method_call](bool available) {
+      // 文本可用但编辑键不可用时，不对 Viewer 声明完整输入能力。
+      g_autoptr(FlMethodResponse) response = success_bool(
+          available && g_keyboard.initialize() == 0);
+      fl_method_call_respond(method_call, response, nullptr);
+      g_object_unref(method_call);
+    });
+    return;
+  } else if (strcmp(method, "prepareLinuxTextInput") == 0) {
+    g_object_ref(method_call);
+    linux_text_input::prepare([method_call](uint64_t token) {
+      g_autoptr(FlValue) value = fl_value_new_int(token);
+      g_autoptr(FlMethodResponse) response = FL_METHOD_RESPONSE(
+          fl_method_success_response_new(value));
+      fl_method_call_respond(method_call, response, nullptr);
+      g_object_unref(method_call);
+    });
+    return;
+  } else if (strcmp(method, "finishLinuxTextInput") == 0 ||
+             strcmp(method, "performTextInput") == 0) {
+    FlValue* args = fl_method_call_get_args(method_call);
+    const bool is_map = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP;
+    FlValue* text = is_map ? fl_value_lookup_string(args, "text") : nullptr;
+    bool ok = text && fl_value_get_type(text) == FL_VALUE_TYPE_STRING;
+    const bool prepared = strcmp(method, "finishLinuxTextInput") == 0;
+    int64_t backspaces = 0, token = 0;
+    if (prepared) {
+      FlValue* count = is_map ? fl_value_lookup_string(args, "backspaces") : nullptr;
+      FlValue* id = is_map ? fl_value_lookup_string(args, "token") : nullptr;
+      ok = ok && count && id && fl_value_get_type(count) == FL_VALUE_TYPE_INT &&
+          fl_value_get_type(id) == FL_VALUE_TYPE_INT;
+      if (ok) {
+        backspaces = fl_value_get_int(count);
+        token = fl_value_get_int(id);
+        ok = token > 0;
+      }
+    }
+    const std::string value = ok ? linux_committed_text_value(text) : std::string();
+    if (!ok || !linux_text_input::valid_text(value) ||
+        backspaces < 0 || backspaces > 4096) {
+      response = bad_args("Invalid committed text edit.");
+    } else {
+      g_object_ref(method_call);
+      auto finish = [method_call, backspaces, value](uint64_t token) {
+        linux_text_input::finish(token, backspaces, value, [method_call](bool ok) {
+          g_autoptr(FlMethodResponse) response = ok ? success_null() :
+              FL_METHOD_RESPONSE(fl_method_error_response_new(
+                  "TEXT_INPUT_UNAVAILABLE", "IBus text transaction failed.", nullptr));
+          fl_method_call_respond(method_call, response, nullptr);
+          g_object_unref(method_call);
+        });
+      };
+      if (prepared) finish(token);
+      else linux_text_input::available([finish](bool available) {
+        if (available) linux_text_input::prepare(finish);
+        else finish(0);
+      });
+      return;
+    }
   } else if (strcmp(method, "KeyPress") == 0) {
     response = perform_key_event(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mouseMoveR") == 0) {
