@@ -25,15 +25,28 @@ using Reply = std::function<void(GVariant*)>;
 class Backend {
  public:
   void available(Completion done) {
-    if (bus_ && !initializing_) {
-      done(ready_ && ibus_bus_is_connected(bus_));
+    if (!initializing_ && ready_ && bus_ && ibus_bus_is_connected(bus_)) {
+      done(true);
       return;
     }
+    // 尚在处理旧事务时不能替换其连接；完成后下一次检查再重试。
+    if (busy_) { done(false); return; }
     waiters_.push_back(std::move(done));
     if (initializing_) return;
     initializing_ = true;
+    ready_ = false;
+    if (factory_) {
+      ibus_object_destroy(IBUS_OBJECT(factory_));
+      g_clear_object(&factory_);
+    }
+    if (bus_) g_clear_object(&bus_);
+    engine_ = nullptr;
+    focused_ = false;
     ibus_init();
     bus_ = ibus_bus_new();
+    g_signal_connect(bus_, "disconnected", G_CALLBACK(+[](IBusBus*, Backend* self) {
+      self->ready_ = false;
+    }), this);
     if (!ibus_bus_is_connected(bus_)) { initialized(false); return; }
     name_ = "cloudplayplus-" + std::to_string(getpid());
     factory_ = ibus_factory_new(ibus_bus_get_connection(bus_));
@@ -160,8 +173,13 @@ class Backend {
   }
 
   void call(const char* method, GVariant* args, Reply done) {
+    auto* connection = bus_ ? ibus_bus_get_connection(bus_) : nullptr;
+    if (!connection || g_dbus_connection_is_closed(connection)) {
+      done(nullptr);
+      return;
+    }
     auto* callback = new Reply(std::move(done));
-    g_dbus_connection_call(ibus_bus_get_connection(bus_), "org.freedesktop.IBus",
+    g_dbus_connection_call(connection, "org.freedesktop.IBus",
         "/org/freedesktop/IBus", "org.freedesktop.IBus", method, args, nullptr,
         G_DBUS_CALL_FLAGS_NONE, 1500, nullptr,
         [](GObject* object, GAsyncResult* result, gpointer data) {

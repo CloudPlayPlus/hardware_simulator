@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/prctl.h>
 
 static void wait_until(std::function<bool()> ready) {
   auto deadline = g_get_monotonic_time() + 10000000;
@@ -134,5 +137,44 @@ int main() {
   });
   wait_until([&] { return completed; });
   assert(!ok && received.size() == 5);
+  // daemon 重启后旧 component 已丢失；重新检测必须重新注册。
+  ibus_bus_exit(bus, FALSE);
+  wait_until([&] { return !ibus_bus_is_connected(bus); });
+  completed = false;
+  linux_text_input::available([&](bool result) { ok = result; completed = true; });
+  wait_until([&] { return completed; });
+  assert(!ok);
+  std::string address_arg = std::string("--address=") + g_getenv("IBUS_ADDRESS");
+  gchar* argv[] = {const_cast<gchar*>("ibus-daemon"), const_cast<gchar*>("--single"),
+      const_cast<gchar*>("--cache=none"), const_cast<gchar*>(address_arg.c_str()), nullptr};
+  GPid daemon = 0;
+  assert(g_spawn_async(nullptr, argv, nullptr,
+      static_cast<GSpawnFlags>(G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD),
+      +[](gpointer) { prctl(PR_SET_PDEATHSIG, SIGTERM); }, nullptr, &daemon, nullptr));
+  // 每次探测都创建连接，覆盖首次离线与 daemon 重启两条恢复路径。
+  wait_until([&] {
+    completed = false;
+    linux_text_input::available([&](bool result) { ok = result; completed = true; });
+    wait_until([&] { return completed; });
+    return ok;
+  });
+  g_object_unref(bus);
+  bus = ibus_bus_new();
+  assert(ibus_bus_is_connected(bus));
+  context = ibus_bus_create_input_context(bus, "cpp-reconnected-test");
+  ibus_input_context_set_capabilities(context, IBUS_CAP_FOCUS | IBUS_CAP_PREEDIT_TEXT);
+  ibus_input_context_focus_in(context);
+  assert(ibus_bus_set_global_engine(bus, "xkb:us::eng"));
+  g_signal_connect(context, "commit-text", G_CALLBACK(+[](IBusInputContext*,
+      IBusText* text, gpointer data) {
+    static_cast<std::vector<std::string>*>(data)->push_back(ibus_text_get_text(text));
+  }), &received);
+  edit(0, "重连😀");
+  assert(ok);
+  wait_until([&] { return received.size() == 6; });
+  assert(received.back() == "重连😀");
+  kill(daemon, SIGTERM);
+  waitpid(daemon, nullptr, 0);
+  g_spawn_close_pid(daemon);
   std::cout << "Isolated IBus text, replacement, validation and restoration passed\n";
 }
