@@ -14,6 +14,7 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
+  "linux_mouse.cc"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
@@ -74,7 +75,7 @@ endif()
 target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_17)
 target_link_libraries(${PLUGIN_NAME} PRIVATE inputtino::libinputtino)
 
-pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xtst xrandr)
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xrandr)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::X11)
 
 # List of absolute paths to libraries that should be bundled with the plugin.
@@ -130,3 +131,13 @@ gtest_discover_tests(${TEST_RUNNER})
 
 endif()  # CMake version check
 endif()  # include_${PROJECT_NAME}_tests
+
+# 无桌面副作用的 uinput 边界回归测试。
+option(HARDWARE_SIMULATOR_INPUT_TESTS "Build Linux input regression checks" OFF)
+if(HARDWARE_SIMULATOR_INPUT_TESTS)
+  add_executable(linux_input_test test/linux_input_test.cc linux_mouse.cc)
+  target_include_directories(linux_input_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(linux_input_test PRIVATE inputtino::libinputtino)
+  set_property(TARGET linux_input_test APPEND_STRING PROPERTY LINK_FLAGS
+    " -Wl,--wrap=libevdev_uinput_create_from_device -Wl,--wrap=libevdev_uinput_destroy -Wl,--wrap=libevdev_uinput_write_event")
+endif()
