@@ -47,12 +47,14 @@ class LinuxKeyboard {
     const int init = initialize();
     if (init < 0) return init;
     // 重发包幂等；按住重复由内核 / compositor 处理。
-    if (down == (pressed_.count(code) != 0)) return 0;
+    if (down == (pressed_.count(code) != 0)) {
+      return sync_pending_ ? synchronize() : 0;
+    }
     const int result = libevdev_uinput_write_event(device_, EV_KEY, code, down ? 1 : 0);
     if (result < 0) return result;
     if (down) pressed_.insert(code);
     else pressed_.erase(code);
-    return libevdev_uinput_write_event(device_, EV_SYN, SYN_REPORT, 0);
+    return synchronize();
   }
 
   int clear() {
@@ -63,13 +65,21 @@ class LinuxKeyboard {
       else it = pressed_.erase(it);
     }
     if (device_) {
-      const int result = libevdev_uinput_write_event(device_, EV_SYN, SYN_REPORT, 0);
+      const int result = synchronize();
       if (result < 0) error = result;
     }
     return error;
   }
 
  private:
+  // EV_KEY 已写入后，即使 SYN_REPORT 失败也保留按键状态并补发同步。
+  int synchronize() {
+    const int result = libevdev_uinput_write_event(device_, EV_SYN, SYN_REPORT, 0);
+    sync_pending_ = result < 0;
+    return result;
+  }
+
+  bool sync_pending_ = false;
   libevdev_uinput* device_ = nullptr;
   std::set<int> pressed_;
 };

@@ -7,7 +7,7 @@
 namespace {
 struct Event { unsigned type, code; int value; };
 std::vector<Event> events;
-int created = 0, creation_error = 0, write_error = 0;
+int created = 0, creation_error = 0, write_error = 0, sync_error = 0;
 #define check(ok) do { \
   if (!(ok)) { \
     std::cerr << "Failed at line " << __LINE__ << ": " << #ok << "\n"; \
@@ -35,6 +35,7 @@ extern "C" int __wrap_libevdev_uinput_create_from_device(const libevdev* dev, in
 extern "C" void __wrap_libevdev_uinput_destroy(libevdev_uinput*) {}
 extern "C" int __wrap_libevdev_uinput_write_event(const libevdev_uinput*, unsigned type, unsigned code, int value) {
   if (write_error) return write_error;
+  if (type == EV_SYN && sync_error) return sync_error;
   events.push_back({type, code, value});
   return 0;
 }
@@ -70,6 +71,21 @@ int main() {
     events.clear();
   }
   check(events.size() == 2 && events[0].code == KEY_RIGHTCTRL && events[0].value == 0);
+  {
+    LinuxKeyboard keyboard;
+    for (bool down : {true, false}) {
+      events.clear();
+      sync_error = -EIO;
+      check(keyboard.send(0x41, down) == -EIO);
+      check(events.size() == 1 && events[0].type == EV_KEY);
+      check(keyboard.send(0x41, down) == -EIO);
+      check(events.size() == 1);
+      sync_error = 0;
+      check(keyboard.send(0x41, down) == 0);
+      check(events.size() == 2 && events[1].type == EV_SYN);
+      check(keyboard.send(0x41, down) == 0 && events.size() == 2);
+    }
+  }
   auto result = inputtino::Mouse::create();
   check(static_cast<bool>(result));
   LinuxMouse mouse(std::move(*result));
