@@ -2,6 +2,7 @@
 #include <glib-object.h>
 #ifdef CPP_HAVE_ATSPI
 #include <atspi/atspi.h>
+#include <algorithm>
 #endif
 
 struct LinuxEditFocus::State {
@@ -9,6 +10,37 @@ struct LinuxEditFocus::State {
 #ifdef CPP_HAVE_ATSPI
   AtspiEventListener* listener = nullptr;
   AtspiAccessible* focused = nullptr;
+  // 首次点击也必须识别连接前的焦点；只在缓存为空时按点击位置剪枝查找。
+  static AtspiAccessible* find_focus(AtspiAccessible* node, int x, int y,
+      int depth, int& remaining, gint64 deadline) {
+    if (!node || depth > 32 || --remaining < 0 ||
+        g_get_monotonic_time() >= deadline) return nullptr;
+    atspi_accessible_clear_cache(node);
+    auto* states = atspi_accessible_get_state_set(node);
+    const bool focused = states && atspi_state_set_contains(states, ATSPI_STATE_FOCUSED) &&
+        atspi_state_set_contains(states, ATSPI_STATE_EDITABLE);
+    if (states) g_object_unref(states);
+    // 桌面和 application 不一定提供屏幕边界；从窗口层开始剪枝。
+    if (depth >= 2 || focused) {
+      auto* component = atspi_accessible_get_component_iface(node);
+      if (component) {
+        const bool contains = atspi_component_contains(
+            component, x, y, ATSPI_COORD_TYPE_SCREEN, nullptr);
+        g_object_unref(component);
+        if (!contains) return nullptr;
+      }
+    }
+    if (focused) return ATSPI_ACCESSIBLE(g_object_ref(node));
+    const int count = std::min(atspi_accessible_get_child_count(node, nullptr), remaining);
+    for (int i = 0; i < count && remaining > 0 &&
+         g_get_monotonic_time() < deadline; ++i) {
+      auto* child = atspi_accessible_get_child_at_index(node, i, nullptr);
+      auto* result = find_focus(child, x, y, depth + 1, remaining, deadline);
+      if (child) g_object_unref(child);
+      if (result) return result;
+    }
+    return nullptr;
+  }
   static void event(AtspiEvent* event, void* data) {
     auto* self = static_cast<State*>(data);
     if (event->detail1) {
@@ -75,6 +107,13 @@ void LinuxEditFocus::inspect(int64_t request, int x, int y, Callback callback) {
     state->pending = 0;
     bool active = false, secure = false;
 #ifdef CPP_HAVE_ATSPI
+    if (!state->focused) {
+      auto* desktop = atspi_get_desktop(0);
+      int remaining = 256;
+      state->focused = State::find_focus(desktop, state->x, state->y, 0,
+          remaining, g_get_monotonic_time() + 250000);
+      if (desktop) g_object_unref(desktop);
+    }
     if (state->focused) {
       auto* target = ATSPI_ACCESSIBLE(g_object_ref(state->focused));
       atspi_accessible_clear_cache(target);

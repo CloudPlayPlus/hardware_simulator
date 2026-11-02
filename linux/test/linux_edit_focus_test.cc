@@ -4,10 +4,23 @@
 
 // 模拟无障碍提供者，覆盖错误、密码、只读及请求取消；不操作真实桌面。
 static AtspiEventListener* listener;
+static AtspiAccessible* desktop = nullptr;
+static AtspiAccessible* existing_focus = nullptr;
 static bool registration_ok = false;
 static bool editable = true, focused = true, inside = true, role_error = false;
 static AtspiRole role = ATSPI_ROLE_ENTRY;
 extern "C" {
+AtspiAccessible* __wrap_atspi_get_desktop(gint) {
+  return desktop ? ATSPI_ACCESSIBLE(g_object_ref(desktop)) : nullptr;
+}
+gint __wrap_atspi_accessible_get_child_count(AtspiAccessible* node, GError**) {
+  return node == desktop && existing_focus ? 1 : 0;
+}
+AtspiAccessible* __wrap_atspi_accessible_get_child_at_index(AtspiAccessible* node, gint index, GError**) {
+  return node == desktop && index == 0 && existing_focus
+      ? ATSPI_ACCESSIBLE(g_object_ref(existing_focus)) : nullptr;
+}
+
 gboolean __wrap_atspi_is_initialized() { return true; }
 void __wrap_atspi_set_timeout(gint, gint) {}
 gboolean __wrap_atspi_event_listener_register(AtspiEventListener* value,
@@ -15,11 +28,11 @@ gboolean __wrap_atspi_event_listener_register(AtspiEventListener* value,
 gboolean __wrap_atspi_event_listener_deregister(AtspiEventListener*,
     const gchar*, GError**) { listener = nullptr; return true; }
 void __wrap_atspi_accessible_clear_cache(AtspiAccessible*) {}
-AtspiStateSet* __wrap_atspi_accessible_get_state_set(AtspiAccessible*) {
+AtspiStateSet* __wrap_atspi_accessible_get_state_set(AtspiAccessible* node) {
   auto* states = atspi_state_set_new(nullptr);
   atspi_state_set_add(states, ATSPI_STATE_ENABLED);
   if (editable) atspi_state_set_add(states, ATSPI_STATE_EDITABLE);
-  if (focused) atspi_state_set_add(states, ATSPI_STATE_FOCUSED);
+  if (focused && node != desktop) atspi_state_set_add(states, ATSPI_STATE_FOCUSED);
   return states;
 }
 AtspiRole __wrap_atspi_accessible_get_role(AtspiAccessible*, GError** error) {
@@ -54,11 +67,14 @@ int main() {
   settle();
   assert(unknown_reported);
   auto* source = ATSPI_ACCESSIBLE(g_object_new(ATSPI_TYPE_ACCESSIBLE, nullptr));
+  desktop = ATSPI_ACCESSIBLE(g_object_new(ATSPI_TYPE_ACCESSIBLE, nullptr));
+  existing_focus = source;
   auto* event = g_new0(AtspiEvent, 1);
   event->type = g_strdup("object:state-changed:focused");
   event->source = ATSPI_ACCESSIBLE(g_object_ref(source));
   event->detail1 = 1;
-  listener->callback(event, listener->user_data);
+  // 不发送焦点事件，模拟连接前已经聚焦的控件。
+  g_boxed_free(ATSPI_TYPE_EVENT, event);
   int calls = 0;
   auto check = [&](bool expected, bool secure) {
     monitor.inspect(42, 10, 20, [&](int64_t id, bool active, bool password) {
@@ -71,6 +87,9 @@ int main() {
     assert(calls == before + 1);
   };
   check(true, false);
+  monitor.stop();
+  assert(monitor.start());
+  check(true, false);  // 重启观察后仍能发现现有焦点。
   role = ATSPI_ROLE_PASSWORD_TEXT;
   check(true, true);
   editable = false; check(false, false); editable = true;
@@ -83,5 +102,8 @@ int main() {
   monitor.stop();
   assert(!monitor.available());
   settle();
+  existing_focus = nullptr;
+  g_object_unref(desktop);
+  desktop = nullptr;
   g_object_unref(source);
 }

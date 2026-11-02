@@ -157,7 +157,8 @@ if(HARDWARE_SIMULATOR_INPUT_TESTS)
     target_compile_definitions(linux_edit_focus_test PRIVATE CPP_HAVE_ATSPI)
     target_compile_options(linux_edit_focus_test PRIVATE -UNDEBUG)
     target_link_libraries(linux_edit_focus_test PRIVATE PkgConfig::ATSPI PkgConfig::GTK)
-    foreach(symbol atspi_is_initialized atspi_set_timeout atspi_event_listener_register
+    foreach(symbol atspi_get_desktop atspi_accessible_get_child_count
+        atspi_accessible_get_child_at_index atspi_is_initialized atspi_set_timeout atspi_event_listener_register
         atspi_event_listener_deregister atspi_accessible_clear_cache
         atspi_accessible_get_state_set atspi_accessible_get_role
         atspi_accessible_get_component_iface atspi_component_contains)
