@@ -605,6 +605,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
       false;
 
   @override
+  Future<bool> isLinuxEditFocusAvailable() async =>
+      await methodChannel.invokeMethod<bool>('isLinuxEditFocusAvailable') ??
+      false;
+
+  @override
   Future<bool> isLinuxTextInputAvailable() async =>
       await methodChannel.invokeMethod<bool>('isLinuxTextInputAvailable') ??
       false;

@@ -15,6 +15,7 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
   "linux_mouse.cc"
+  "linux_edit_focus.cc"
   "linux_text_input.cc"
   "linux_text_input_setup.cc"
 )
@@ -84,6 +85,12 @@ if(IBUS_FOUND)
   target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::IBUS)
 endif()
 
+pkg_check_modules(ATSPI QUIET IMPORTED_TARGET atspi-2)
+if(ATSPI_FOUND)
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE CPP_HAVE_ATSPI)
+  target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::ATSPI)
+endif()
+
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xrandr)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::X11)
 
@@ -144,6 +151,20 @@ endif()  # include_${PROJECT_NAME}_tests
 # 无桌面副作用的 uinput 边界回归测试。
 option(HARDWARE_SIMULATOR_INPUT_TESTS "Build Linux input regression checks" OFF)
 if(HARDWARE_SIMULATOR_INPUT_TESTS)
+  if(ATSPI_FOUND)
+    add_executable(linux_edit_focus_test test/linux_edit_focus_test.cc linux_edit_focus.cc)
+    target_include_directories(linux_edit_focus_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(linux_edit_focus_test PRIVATE CPP_HAVE_ATSPI)
+    target_compile_options(linux_edit_focus_test PRIVATE -UNDEBUG)
+    target_link_libraries(linux_edit_focus_test PRIVATE PkgConfig::ATSPI PkgConfig::GTK)
+    foreach(symbol atspi_get_desktop atspi_accessible_get_child_count
+        atspi_accessible_get_child_at_index atspi_is_initialized atspi_set_timeout atspi_event_listener_register
+        atspi_event_listener_deregister atspi_accessible_clear_cache
+        atspi_accessible_get_state_set atspi_accessible_get_role
+        atspi_accessible_get_component_iface atspi_component_contains)
+      set_property(TARGET linux_edit_focus_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=${symbol}")
+    endforeach()
+  endif()
   add_executable(linux_text_input_setup_test test/linux_text_input_setup_test.cc linux_text_input_setup.cc)
   target_include_directories(linux_text_input_setup_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(linux_text_input_setup_test PRIVATE PkgConfig::GTK)
