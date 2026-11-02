@@ -65,6 +65,9 @@ class HWKeyboard {
       HardwareSimulatorPlatform.instance
           .setLinuxTextInputSetup(expected, value);
 
+  Future<bool> isLinuxEditFocusAvailable() =>
+      HardwareSimulatorPlatform.instance.isLinuxEditFocusAvailable();
+
   Future<bool> isLinuxTextInputAvailable() =>
       HardwareSimulatorPlatform.instance.isLinuxTextInputAvailable();
 

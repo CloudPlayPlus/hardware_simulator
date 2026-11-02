@@ -21,6 +21,7 @@
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
 #include "linux_text_input.h"
+#include "linux_edit_focus.h"
 
 #define HARDWARE_SIMULATOR_PLUGIN(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), hardware_simulator_plugin_get_type(), \
@@ -28,6 +29,8 @@
 
 struct _HardwareSimulatorPlugin {
   GObject parent_instance;
+  LinuxEditFocus* edit_focus;
+  FlMethodChannel* channel;
 };
 
 G_DEFINE_TYPE(HardwareSimulatorPlugin, hardware_simulator_plugin, g_object_get_type())
@@ -479,6 +482,13 @@ static void hardware_simulator_plugin_handle_method_call(
 
   if (strcmp(method, "getPlatformVersion") == 0) {
     response = get_platform_version();
+  } else if (strcmp(method, "startTextInputDecisionCapture") == 0) {
+    response = success_bool(self->edit_focus->start());
+  } else if (strcmp(method, "stopTextInputDecisionCapture") == 0) {
+    self->edit_focus->stop();
+    response = success_null();
+  } else if (strcmp(method, "isLinuxEditFocusAvailable") == 0) {
+    response = success_bool(self->edit_focus->available());
   } else if (strcmp(method, "getMonitorCount") == 0) {
     response = get_monitor_count();
   } else if (strcmp(method, "getLinuxTextInputSetup") == 0) {
@@ -576,7 +586,34 @@ static void hardware_simulator_plugin_handle_method_call(
   } else if (strcmp(method, "mouseMoveA") == 0) {
     response = perform_mouse_move_absolute(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mousePress") == 0) {
-    response = perform_mouse_button(fl_method_call_get_args(method_call));
+    auto* args = fl_method_call_get_args(method_call);
+    response = perform_mouse_button(args);
+    bool ok = true;
+    const int button = get_int_arg(args, "buttonId", &ok);
+    const bool down = get_bool_arg(args, "isDown", &ok);
+    auto* request = ok ? fl_value_lookup_string(args, "editFocusRequestId") : nullptr;
+    if (ok && button == 1 && !down && request &&
+        fl_value_get_type(request) == FL_VALUE_TYPE_INT &&
+        FL_IS_METHOD_SUCCESS_RESPONSE(response)) {
+      XDisplay display;
+      Window root, child;
+      int x, y, wx, wy;
+      unsigned int mask;
+      if (display.get() && XQueryPointer(display.get(),
+          DefaultRootWindow(display.get()), &root, &child, &x, &y, &wx, &wy, &mask)) {
+        self->edit_focus->inspect(fl_value_get_int(request), x, y,
+            [self](int64_t id, bool active, bool secure) {
+          if (!self->channel) return;
+          g_autoptr(FlValue) message = fl_value_new_map();
+          fl_value_set_string_take(message, "active", fl_value_new_bool(active));
+          fl_value_set_string_take(message, "secure",
+              active ? fl_value_new_bool(secure) : fl_value_new_null());
+          fl_value_set_string_take(message, "editFocusRequestId", fl_value_new_int(id));
+          fl_method_channel_invoke_method(self->channel, "onTextInputDecision",
+              message, nullptr, nullptr, nullptr);
+        });
+      }
+    }
   } else if (strcmp(method, "mouseScroll") == 0) {
     response = perform_mouse_scroll(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "clearAllPressedEvents") == 0) {
@@ -617,6 +654,12 @@ FlMethodResponse* get_platform_version() {
 }
 
 static void hardware_simulator_plugin_dispose(GObject* object) {
+  auto* self = HARDWARE_SIMULATOR_PLUGIN(object);
+  delete self->edit_focus;
+  self->edit_focus = nullptr;
+  if (self->channel) g_object_remove_weak_pointer(G_OBJECT(self->channel),
+      reinterpret_cast<gpointer*>(&self->channel));
+  self->channel = nullptr;
   G_OBJECT_CLASS(hardware_simulator_plugin_parent_class)->dispose(object);
 }
 
@@ -624,7 +667,9 @@ static void hardware_simulator_plugin_class_init(HardwareSimulatorPluginClass* k
   G_OBJECT_CLASS(klass)->dispose = hardware_simulator_plugin_dispose;
 }
 
-static void hardware_simulator_plugin_init(HardwareSimulatorPlugin* self) {}
+static void hardware_simulator_plugin_init(HardwareSimulatorPlugin* self) {
+  self->edit_focus = new LinuxEditFocus();
+}
 
 static void method_call_cb(FlMethodChannel* channel, FlMethodCall* method_call,
                            gpointer user_data) {
@@ -641,6 +686,8 @@ void hardware_simulator_plugin_register_with_registrar(FlPluginRegistrar* regist
       fl_method_channel_new(fl_plugin_registrar_get_messenger(registrar),
                             "hardware_simulator",
                             FL_METHOD_CODEC(codec));
+  plugin->channel = channel;
+  g_object_add_weak_pointer(G_OBJECT(channel), reinterpret_cast<gpointer*>(&plugin->channel));
   fl_method_channel_set_method_call_handler(channel, method_call_cb,
                                             g_object_ref(plugin),
                                             g_object_unref);

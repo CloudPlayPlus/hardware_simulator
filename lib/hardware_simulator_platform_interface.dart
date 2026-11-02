@@ -378,6 +378,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   Future<bool> setLinuxTextInputSetup(String expected, String value) async =>
       false;
 
+  Future<bool> isLinuxEditFocusAvailable() async => false;
+
   Future<bool> isLinuxTextInputAvailable() async => false;
 
   Future<int> prepareLinuxTextInput() async => 0;
