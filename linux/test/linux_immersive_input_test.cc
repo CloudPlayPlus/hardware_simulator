@@ -65,7 +65,22 @@ int main(int argc, char** argv) {
     XUngrabKeyboard(display, CurrentTime);
     XSetInputFocus(display, xid, RevertToParent, CurrentTime);
     XSync(display, False); pump();
-    assert(input.set_enabled(true));
+    assert(grab() == AlreadyGrabbed); // 无 Dart 重发也在原生重新激活后恢复。
+    XSetInputFocus(display, DefaultRootWindow(display), RevertToParent, CurrentTime);
+    XSync(display, False); pump();
+    assert(input.set_enabled(false)); // 停用优先于迟到的焦点恢复。
+    XSetInputFocus(display, xid, RevertToParent, CurrentTime);
+    XSync(display, False); pump();
+    assert(grab() == GrabSuccess);
+    XUngrabKeyboard(display, CurrentTime); XSync(display, False); pump();
+    XSetInputFocus(display, DefaultRootWindow(display), RevertToParent, CurrentTime);
+    XSync(display, False); pump();
+    assert(input.set_enabled(true)); // Dart resume 早于 GTK 激活，接受等待。
+    assert(grab() == GrabSuccess); // 后台不能提前抓取。
+    XUngrabKeyboard(display, CurrentTime);
+    XSetInputFocus(display, xid, RevertToParent, CurrentTime);
+    XSync(display, False); pump();
+    assert(grab() == AlreadyGrabbed);
     gtk_widget_hide(window); pump();
     assert(!input.set_enabled(true));
     gtk_widget_show_all(window); pump();
