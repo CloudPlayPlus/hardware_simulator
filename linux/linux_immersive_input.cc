@@ -15,6 +15,8 @@ struct LinuxImmersiveInput::Impl {
   GdkWindow* window = nullptr;
   gulong focus_handler = 0, unmap_handler = 0, destroy_handler = 0;
   bool grabbed = false;
+  bool wanted = false;
+  bool preparing = false;
   guint focus_watch = 0;
   wl_registry* registry = nullptr;
   zwp_keyboard_shortcuts_inhibit_manager_v1* manager = nullptr;
@@ -75,13 +77,19 @@ struct LinuxImmersiveInput::Impl {
     g_object_add_weak_pointer(G_OBJECT(top), reinterpret_cast<gpointer*>(&top));
     focus_handler = g_signal_connect(top, "notify::is-active", G_CALLBACK(+[](
         GObject* object, GParamSpec*, gpointer data) {
-      if (!gtk_window_is_active(GTK_WINDOW(object))) static_cast<Impl*>(data)->release();
+      auto* self = static_cast<Impl*>(data);
+      if (!gtk_window_is_active(GTK_WINDOW(object))) {
+        self->release();
+      } else if (self->wanted) {
+        // 授权对话框可只改变原生焦点，Dart 不一定收到一次完整的 inactive/resume。
+        self->set_enabled(true);
+      }
     }), this);
     unmap_handler = g_signal_connect(top, "unmap", G_CALLBACK(+[](GtkWidget*, gpointer data) {
-      static_cast<Impl*>(data)->release();
+      static_cast<Impl*>(data)->set_enabled(false);
     }), this);
     destroy_handler = g_signal_connect(top, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer data) {
-      static_cast<Impl*>(data)->release();
+      static_cast<Impl*>(data)->set_enabled(false);
     }), this);
   }
   static void global(void* data, wl_registry* registry, uint32_t name,
@@ -102,21 +110,34 @@ struct LinuxImmersiveInput::Impl {
     self->manager_name = 0;
   }
   bool set_enabled(bool enabled) {
+    wanted = enabled;
     if (!enabled) { release(); return true; }
-    if (!view) return false;
+    // Wayland roundtrip 会分派焦点通知，不能重入创建第二个 inhibitor。
+    if (preparing) return true;
+    preparing = true;
+    struct ResetPreparing {
+      bool& value;
+      ~ResetPreparing() { value = false; }
+    } reset_preparing{preparing};
+    if (!view) { wanted = false; return false; }
     watch_window();
-    if (!top || !gtk_widget_get_mapped(view) || !gtk_window_is_active(GTK_WINDOW(top))) {
+    if (!top || !gtk_widget_get_mapped(view)) {
+      wanted = false;
       release(); return false;
+    }
+    if (!gtk_window_is_active(GTK_WINDOW(top))) {
+      // 请求被接受但尚未抓取；显式 false 始终能取消此等待。
+      release(); return true;
     }
     if (window) return true;
     auto* native_window = gtk_widget_get_window(top);
-    if (!native_window) return false;
+    if (!native_window) { wanted = false; return false; }
     g_autoptr(GdkWindow) w = GDK_WINDOW(g_object_ref(native_window));
     auto* display = gdk_window_get_display(w);
     if (GDK_IS_X11_DISPLAY(display)) {
       // owner_events 保留 GTK/Flutter 的正常键盘路径，不生成 onKeyBlocked。
       if (XGrabKeyboard(GDK_DISPLAY_XDISPLAY(display), GDK_WINDOW_XID(w), True,
-                        GrabModeAsync, GrabModeAsync, CurrentTime) != GrabSuccess) return false;
+                        GrabModeAsync, GrabModeAsync, CurrentTime) != GrabSuccess) { wanted = false; return false; }
       grabbed = true;
     } else if (GDK_IS_WAYLAND_DISPLAY(display)) {
       auto* d = gdk_wayland_display_get_wl_display(display);
@@ -124,14 +145,17 @@ struct LinuxImmersiveInput::Impl {
         registry = wl_display_get_registry(d);
         static const wl_registry_listener listener = {global, removed};
         wl_registry_add_listener(registry, &listener, this);
-        if (wl_display_roundtrip(d) < 0) return false;
+        if (wl_display_roundtrip(d) < 0) { wanted = false; return false; }
       }
       auto* seat = gdk_display_get_default_seat(display);
       auto* native_seat = seat ? gdk_wayland_seat_get_wl_seat(seat) : nullptr;
       auto* surface = gdk_wayland_window_get_wl_surface(w);
       // roundtrip 可分派失焦/销毁事件，必须重新检查窗口。
-      if (!manager || !native_seat || !surface || !top || !view || gdk_window_is_destroyed(w) ||
-          !gtk_widget_get_mapped(view) || !gtk_window_is_active(GTK_WINDOW(top))) return false;
+      if (!wanted || !manager || !native_seat || !surface || !top || !view ||
+          gdk_window_is_destroyed(w) || !gtk_widget_get_mapped(view)) {
+        wanted = false; return false;
+      }
+      if (!gtk_window_is_active(GTK_WINDOW(top))) return true;
       inhibitor = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(manager, surface, native_seat);
       static const zwp_keyboard_shortcuts_inhibitor_v1_listener listener = {
         [](void*, zwp_keyboard_shortcuts_inhibitor_v1*) {
@@ -144,7 +168,7 @@ struct LinuxImmersiveInput::Impl {
       };
       zwp_keyboard_shortcuts_inhibitor_v1_add_listener(inhibitor, &listener, this);
     } else {
-      return false;
+      wanted = false; return false;
     }
     window = GDK_WINDOW(g_object_ref(w));
     if (grabbed) focus_watch = g_timeout_add(50, check_focus, this);
