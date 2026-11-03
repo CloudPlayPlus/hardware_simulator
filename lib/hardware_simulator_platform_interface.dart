@@ -178,10 +178,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     return;
   }
 
-  Stream<Map<String, dynamic>> get linuxPointerCaptureEvents =>
-      const Stream.empty();
-  Future<bool> isLinuxPointerCaptureSupported() async => false;
-  Future<void> setLinuxPointerCapture(bool enabled, int generation) async {}
+  /// Native confirmation/revocation where capture is asynchronous.
+  Stream<bool> get pointerCaptureChanges => const Stream.empty();
 
   Future<void> lockCursor() async {
     // if not implemented, just care about main monitor.

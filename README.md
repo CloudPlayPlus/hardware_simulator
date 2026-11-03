@@ -56,14 +56,12 @@ Build dependencies: `libxi-dev`, `libwayland-dev`, `wayland-protocols` (and
 `wayland-scanner`). The runtime backend follows the GTK display, including X11
 for an XWayland window. No evdev/root access is required for Viewer capture.
 
-Use `linuxPointerCaptureEvents` and `setLinuxPointerCapture(enabled, generation)`.
-Each lock request needs a unique generation. Only a matching `locked: true` event
-confirms activation; `lockCursor` completing is not confirmation. Motion events
-carry the same generation and floating-point `dx/dy`. Unlock cancels pending
-requests too. Unsupported, unfocused, or busy displays fail explicitly; Wayland
-requests that do not activate are released after five seconds. Focus loss,
-unmap, destruction and compositor unlock release capture. Buttons/wheel continue
-through GTK; consumers must suppress ordinary motion while capturing.
+Use the shared `lockCursor` / `unlockCursor` methods, `addCursorMoved`, and
+`pointerCaptureChanges` (native confirmed/revoked state). The plugin owns Linux
+request generations and ignores stale events and motion before confirmation.
+Unlock cancels pending activation as well as active capture. Wayland does not
+support arbitrary global cursor warping; `unlockCursorAndReseed` releases capture
+without a global warp on Linux.
 
 The native integration test requires an **isolated** display (it injects input):
 configure with `HARDWARE_SIMULATOR_POINTER_TESTS=ON`, build
