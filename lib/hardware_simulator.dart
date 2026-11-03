@@ -259,9 +259,16 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.showNotification(content);
   }
 
-  static Future<void> lockCursor() async {
+  /// Native confirmation/revocation where capture is asynchronous.
+  static Stream<bool> get pointerCaptureChanges =>
+      HardwareSimulatorPlatform.instance.pointerCaptureChanges;
+
+  static Future<void> lockCursor({int nativeRelativeSender = 0}) async {
     cursorlocked = true;
-    return HardwareSimulatorPlatform.instance.lockCursor();
+    return nativeRelativeSender == 0
+        ? HardwareSimulatorPlatform.instance.lockCursor()
+        : HardwareSimulatorPlatform.instance
+            .lockCursorWithRelativeSender(nativeRelativeSender);
   }
 
   static Future<void> unlockCursor() async {

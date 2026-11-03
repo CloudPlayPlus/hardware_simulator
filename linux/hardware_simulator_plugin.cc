@@ -18,10 +18,12 @@
 #include <vector>
 
 #include "hardware_simulator_plugin_private.h"
+#include "linux_edit_focus.h"
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
+#include "linux_pointer_capture.h"
 #include "linux_text_input.h"
-#include "linux_edit_focus.h"
+#include <dlfcn.h>
 
 #define HARDWARE_SIMULATOR_PLUGIN(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), hardware_simulator_plugin_get_type(), \
@@ -30,6 +32,9 @@
 struct _HardwareSimulatorPlugin {
   GObject parent_instance;
   LinuxEditFocus* edit_focus;
+  LinuxPointerCapture* pointer_capture;
+  uint64_t relative_sender;
+  bool (*send_relative)(uint64_t, double, double);
   FlMethodChannel* channel;
 };
 
@@ -618,9 +623,49 @@ static void hardware_simulator_plugin_handle_method_call(
     response = perform_mouse_scroll(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "clearAllPressedEvents") == 0) {
     response = clear_all_pressed_events();
-  } else if (strcmp(method, "lockCursor") == 0 ||
-             strcmp(method, "unlockCursor") == 0 ||
-             strcmp(method, "mouseMoveToWindowPosition") == 0) {
+  } else if (strcmp(method, "isLinuxPointerCaptureSupported") == 0) {
+    response = success_bool(self->pointer_capture && self->pointer_capture->supported());
+  } else if (strcmp(method, "lockCursor") == 0) {
+    auto* args = fl_method_call_get_args(method_call);
+    auto* id = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP
+        ? fl_value_lookup_string(args, "generation") : nullptr;
+    if (!id || fl_value_get_type(id) != FL_VALUE_TYPE_INT || !self->pointer_capture) {
+      response = bad_args("Linux capture requires a generation and a view");
+    } else {
+      auto *sender_value = fl_value_lookup_string(args, "relativeSender");
+      const uint64_t sender =
+          sender_value && fl_value_get_type(sender_value) == FL_VALUE_TYPE_INT
+              ? fl_value_get_int(sender_value)
+              : 0;
+      auto valid = reinterpret_cast<bool (*)(uint64_t)>(
+          dlsym(RTLD_DEFAULT, "cpp_locked_cursor_valid_v1"));
+      auto send = reinterpret_cast<bool (*)(uint64_t, double, double)>(
+          dlsym(RTLD_DEFAULT, "cpp_locked_cursor_move_v1"));
+      if (sender && (!valid || !send || !valid(sender))) {
+        // Dart 已切到新 generation；失败也必须释放无法再被旧 id 解锁的捕获。
+        self->pointer_capture->unlock("invalid_sender");
+        self->relative_sender = 0;
+        response = bad_args("Native relative sender is unavailable");
+      } else {
+        const auto error = self->pointer_capture->lock(fl_value_get_int(id));
+        if (error.empty()) {
+          self->relative_sender = sender;
+          self->send_relative = send;
+        }
+        response = error.empty()
+                       ? success_null()
+                       : FL_METHOD_RESPONSE(fl_method_error_response_new(
+                             "POINTER_CAPTURE_FAILED", error.c_str(), nullptr));
+      }
+    }
+  } else if (strcmp(method, "unlockCursor") == 0) {
+    auto* args = fl_method_call_get_args(method_call);
+    auto* id = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP
+        ? fl_value_lookup_string(args, "generation") : nullptr;
+    if (self->pointer_capture && id && fl_value_get_type(id) == FL_VALUE_TYPE_INT)
+      self->pointer_capture->unlock_generation(fl_value_get_int(id));
+    response = success_null();
+  } else if (strcmp(method, "mouseMoveToWindowPosition") == 0) {
     response = success_null();
   } else if (strcmp(method, "isRunningAsSystem") == 0) {
     response = success_bool(true);
@@ -655,6 +700,8 @@ FlMethodResponse* get_platform_version() {
 
 static void hardware_simulator_plugin_dispose(GObject* object) {
   auto* self = HARDWARE_SIMULATOR_PLUGIN(object);
+  delete self->pointer_capture;
+  self->pointer_capture = nullptr;
   delete self->edit_focus;
   self->edit_focus = nullptr;
   if (self->channel) g_object_remove_weak_pointer(G_OBJECT(self->channel),
@@ -687,6 +734,40 @@ void hardware_simulator_plugin_register_with_registrar(FlPluginRegistrar* regist
                             "hardware_simulator",
                             FL_METHOD_CODEC(codec));
   plugin->channel = channel;
+  auto* view = fl_plugin_registrar_get_view(registrar);
+  if (view)
+    plugin->pointer_capture = new LinuxPointerCapture(
+        GTK_WIDGET(view),
+        [plugin](int64_t generation, bool locked, const char *reason) {
+          if (!locked)
+            plugin->relative_sender = 0;
+          if (!plugin->channel)
+            return;
+          g_autoptr(FlValue) args = fl_value_new_map();
+          fl_value_set_string_take(args, "generation",
+                                   fl_value_new_int(generation));
+          fl_value_set_string_take(args, "locked", fl_value_new_bool(locked));
+          fl_value_set_string_take(args, "reason", fl_value_new_string(reason));
+          fl_method_channel_invoke_method(plugin->channel,
+                                          "onLinuxPointerCapture", args,
+                                          nullptr, nullptr, nullptr);
+        },
+        [plugin](int64_t generation, double dx, double dy) {
+          if (plugin->relative_sender && plugin->send_relative) {
+            plugin->send_relative(plugin->relative_sender, dx, dy);
+            return; // 无效/关闭也丢弃，不回流 Dart 重发。
+          }
+          if (!plugin->channel)
+            return;
+          g_autoptr(FlValue) args = fl_value_new_map();
+          fl_value_set_string_take(args, "generation",
+                                   fl_value_new_int(generation));
+          fl_value_set_string_take(args, "dx", fl_value_new_float(dx));
+          fl_value_set_string_take(args, "dy", fl_value_new_float(dy));
+          fl_method_channel_invoke_method(plugin->channel,
+                                          "onLinuxPointerMotion", args, nullptr,
+                                          nullptr, nullptr);
+        });
   g_object_add_weak_pointer(G_OBJECT(channel), reinterpret_cast<gpointer*>(&plugin->channel));
   fl_method_channel_set_method_call_handler(channel, method_call_cb,
                                             g_object_ref(plugin),

@@ -15,6 +15,7 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
   "linux_mouse.cc"
+  "linux_pointer_capture.cc"
   "linux_edit_focus.cc"
   "linux_text_input.cc"
   "linux_text_input_setup.cc"
@@ -94,6 +95,30 @@ endif()
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xrandr)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::X11)
 
+# 使用发行版协议 XML 生成客户端绑定，与 GTK 共用 Wayland 连接。
+enable_language(C)
+pkg_check_modules(POINTER REQUIRED IMPORTED_TARGET xi wayland-client)
+pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
+pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+find_program(WAYLAND_SCANNER wayland-scanner)
+if(NOT WAYLAND_SCANNER)
+  message(FATAL_ERROR "wayland-scanner is required for Linux pointer capture")
+endif()
+foreach(protocol pointer-constraints relative-pointer)
+  set(xml "${WAYLAND_PROTOCOLS_DIR}/unstable/${protocol}/${protocol}-unstable-v1.xml")
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client.h"
+    COMMAND ${WAYLAND_SCANNER} client-header ${xml} "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client.h"
+    DEPENDS ${xml})
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-protocol.c"
+    COMMAND ${WAYLAND_SCANNER} private-code ${xml} "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-protocol.c"
+    DEPENDS ${xml})
+  list(APPEND POINTER_PROTOCOL_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client.h"
+    "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-protocol.c")
+endforeach()
+target_sources(${PLUGIN_NAME} PRIVATE ${POINTER_PROTOCOL_SOURCES})
+target_include_directories(${PLUGIN_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::POINTER ${CMAKE_DL_LIBS})
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
@@ -132,13 +157,15 @@ FetchContent_MakeAvailable(googletest)
 add_executable(${TEST_RUNNER}
   test/hardware_simulator_plugin_test.cc
   ${PLUGIN_SOURCES}
+  ${POINTER_PROTOCOL_SOURCES}
 )
 apply_standard_settings(${TEST_RUNNER})
 target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(${TEST_RUNNER} PRIVATE flutter)
 target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::GTK)
 target_link_libraries(${TEST_RUNNER} PRIVATE inputtino::libinputtino)
-target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::X11)
+target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::X11 PkgConfig::POINTER)
+target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
 
 # Enable automatic test discovery.
@@ -185,4 +212,21 @@ if(HARDWARE_SIMULATOR_INPUT_TESTS)
   target_link_libraries(linux_input_test PRIVATE inputtino::libinputtino)
   set_property(TARGET linux_input_test APPEND_STRING PROPERTY LINK_FLAGS
     " -Wl,--wrap=libevdev_uinput_create_from_device -Wl,--wrap=libevdev_uinput_destroy -Wl,--wrap=libevdev_uinput_write_event")
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../cpp_log/include/cpp_log/cpp_log.h")
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE CPP_LOG_AVAILABLE=1)
+  target_link_libraries(${PLUGIN_NAME} PRIVATE cpp_log)
+endif()
+
+option(HARDWARE_SIMULATOR_POINTER_TESTS "Build isolated Linux pointer capture integration test" OFF)
+if(HARDWARE_SIMULATOR_POINTER_TESTS)
+  pkg_check_modules(XTST REQUIRED IMPORTED_TARGET xtst)
+  add_executable(linux_pointer_capture_test linux_pointer_capture.cc
+    test/linux_pointer_capture_test.cc ${POINTER_PROTOCOL_SOURCES})
+  target_include_directories(linux_pointer_capture_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_compile_features(linux_pointer_capture_test PRIVATE cxx_std_17)
+  target_compile_options(linux_pointer_capture_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+  target_link_libraries(linux_pointer_capture_test PRIVATE PkgConfig::GTK PkgConfig::X11
+    PkgConfig::POINTER PkgConfig::XTST)
 endif()

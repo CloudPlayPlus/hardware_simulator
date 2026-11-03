@@ -50,9 +50,45 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         'subscribeGamepadRumble', {'id': id, 'token': token});
   }
 
+  final _pointerCaptureChanges = StreamController<bool>.broadcast(sync: true);
+  int _linuxCaptureGeneration = 0;
+  bool _linuxCaptureRequested = false;
+  bool _linuxCaptureConfirmed = false;
+
+  @override
+  Stream<bool> get pointerCaptureChanges {
+    if (!isinitialized) init();
+    return _pointerCaptureChanges.stream;
+  }
+
+  void _handleLinuxPointerEvent(MethodCall call) {
+    final args = call.arguments;
+    if (args is! Map ||
+        !_linuxCaptureRequested ||
+        args['generation'] != _linuxCaptureGeneration) {
+      return;
+    }
+    if (call.method == 'onLinuxPointerCapture' && args['locked'] is bool) {
+      _linuxCaptureConfirmed = args['locked'] == true;
+      _pointerCaptureChanges.add(_linuxCaptureConfirmed);
+    } else if (call.method == 'onLinuxPointerMotion' &&
+        _linuxCaptureConfirmed &&
+        args['dx'] is num &&
+        args['dy'] is num) {
+      for (final callback
+          in List<CursorMovedCallback>.of(cursorMovedCallbacks)) {
+        callback(
+            (args['dx'] as num).toDouble(), (args['dy'] as num).toDouble());
+      }
+    }
+  }
+
   void init() {
     methodChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onMacOSSystemShortcut') {
+      if (call.method == 'onLinuxPointerCapture' ||
+          call.method == 'onLinuxPointerMotion') {
+        _handleLinuxPointerEvent(call);
+      } else if (call.method == 'onMacOSSystemShortcut') {
         final arguments = call.arguments;
         if (arguments is Map) {
           _systemShortcutEvents.add(Map<String, dynamic>.from(arguments));
@@ -200,13 +236,54 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> lockCursor() async {
-    // NOTE: cloudplayplus_nova 版本移除了 pointer_lock 依赖，统一走 native 实现（best-effort）。
+  Future<void> lockCursor() => _lockCursor(0);
+
+  @override
+  Future<void> lockCursorWithRelativeSender(int handle) => _lockCursor(handle);
+
+  Future<void> _lockCursor(int handle) async {
+    if (!isinitialized) init();
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      final generation = ++_linuxCaptureGeneration;
+      final wasConfirmed = _linuxCaptureConfirmed;
+      _linuxCaptureRequested = true;
+      _linuxCaptureConfirmed = false;
+      try {
+        await methodChannel.invokeMethod<void>('lockCursor', {
+          'generation': generation,
+          if (handle != 0) 'relativeSender': handle
+        });
+      } catch (_) {
+        if (generation == _linuxCaptureGeneration) {
+          _linuxCaptureRequested = false;
+          _linuxCaptureConfirmed = false;
+          if (wasConfirmed) _pointerCaptureChanges.add(false);
+        }
+        rethrow;
+      }
+      return;
+    }
+    if (handle != 0) {
+      throw UnsupportedError('Native relative cursor sender is not supported');
+    }
     await methodChannel.invokeMethod('lockCursor');
   }
 
   @override
   Future<void> unlockCursor() async {
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      final generation = _linuxCaptureGeneration++;
+      final wasConfirmed = _linuxCaptureConfirmed;
+      _linuxCaptureRequested = false;
+      _linuxCaptureConfirmed = false;
+      await methodChannel
+          .invokeMethod<void>('unlockCursor', {'generation': generation});
+      // 原生旧 generation 通知已被过滤；只为未被新请求替代的释放发布状态。
+      if (wasConfirmed && _linuxCaptureGeneration == generation + 1) {
+        _pointerCaptureChanges.add(false);
+      }
+      return;
+    }
     await methodChannel.invokeMethod('unlockCursor');
   }
 
@@ -215,6 +292,9 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     double windowXPercent,
     double windowYPercent,
   ) async {
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      return unlockCursor();
+    }
     await methodChannel.invokeMethod('unlockCursorAndReseed', {
       'x': windowXPercent,
       'y': windowYPercent,

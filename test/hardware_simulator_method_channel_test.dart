@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hardware_simulator/hardware_simulator.dart';
 import 'package:hardware_simulator/hardware_simulator_method_channel.dart';
@@ -67,6 +68,110 @@ void main() {
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
+  });
+
+  test('Linux forwards managed sender only for requested native capture',
+      () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final capture = MethodChannelHardwareSimulator();
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    try {
+      await capture.lockCursorWithRelativeSender(42);
+      expect(calls.last.arguments['relativeSender'], 42);
+      await capture.unlockCursor();
+      await capture.lockCursor();
+      expect(
+          (calls.last.arguments as Map).containsKey('relativeSender'), isFalse);
+      await capture.unlockCursor();
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  test('Linux shared capture API filters pending and stale native input',
+      () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final capture = MethodChannelHardwareSimulator();
+    final calls = <MethodCall>[];
+    final states = <bool>[];
+    final movement = <List<double>>[];
+    final subscription = capture.pointerCaptureChanges.listen(states.add);
+    capture.addCursorMoved((dx, dy) => movement.add([dx, dy]));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    Future<void> emit(String method, Map<String, dynamic> args) =>
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+                channel.name,
+                const StandardMethodCodec()
+                    .encodeMethodCall(MethodCall(method, args)),
+                null);
+    try {
+      await capture.lockCursor();
+      final first = (calls.last.arguments as Map)['generation'];
+      await emit(
+          'onLinuxPointerMotion', {'generation': first, 'dx': 1.0, 'dy': 2.0});
+      expect(movement, isEmpty);
+      await emit(
+          'onLinuxPointerCapture', {'generation': first, 'locked': true});
+      await emit(
+          'onLinuxPointerMotion', {'generation': first, 'dx': 1.0, 'dy': 2.0});
+      expect(states, [true]);
+      expect(movement, [
+        [1.0, 2.0]
+      ]);
+      await capture.unlockCursor();
+      expect(calls.last.method, 'unlockCursor');
+      expect((calls.last.arguments as Map)['generation'], first);
+      expect(states, [true, false]);
+      await emit(
+          'onLinuxPointerCapture', {'generation': first, 'locked': false});
+      expect(states, [true, false]);
+      await capture.lockCursor();
+      final second = (calls.last.arguments as Map)['generation'];
+      expect(second, isNot(first));
+      await emit(
+          'onLinuxPointerCapture', {'generation': first, 'locked': true});
+      await emit(
+          'onLinuxPointerMotion', {'generation': first, 'dx': 3.0, 'dy': 4.0});
+      expect(states, [true, false]);
+      expect(movement, hasLength(1));
+      await emit(
+          'onLinuxPointerCapture', {'generation': second, 'locked': true});
+      await emit(
+          'onLinuxPointerCapture', {'generation': second, 'locked': false});
+      await emit(
+          'onLinuxPointerMotion', {'generation': second, 'dx': 3.0, 'dy': 4.0});
+      expect(states, [true, false, true, false]);
+      expect(movement, hasLength(1));
+      await emit(
+          'onLinuxPointerCapture', {'generation': second, 'locked': true});
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'lockCursor')
+          throw PlatformException(code: 'invalid_sender');
+        return null;
+      });
+      await expectLater(capture.lockCursorWithRelativeSender(999),
+          throwsA(isA<PlatformException>()));
+      expect(states, [true, false, true, false, true, false]);
+      await emit(
+          'onLinuxPointerMotion', {'generation': second, 'dx': 9.0, 'dy': 9.0});
+      expect(movement, hasLength(1));
+
+      await capture.unlockCursor();
+    } finally {
+      await subscription.cancel();
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   test('getPlatformVersion', () async {

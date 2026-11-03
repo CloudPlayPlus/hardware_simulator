@@ -49,3 +49,25 @@ cmake --build build/linux/x64/release --target linux_input_test
 测试拦截 libevdev 的设备创建与写入，不会向桌面注入真实输入；覆盖键码映射、
 重复按下、权限失败重试、释放失败重试，以及两轴滚轮余量与相对/绝对设备切换。
 原生 Wayland/X11 应用中的实际输入仍需远控实机验收。
+
+### Linux Viewer pointer capture
+
+Build dependencies: `libxi-dev`, `libwayland-dev`, `wayland-protocols` (and
+`wayland-scanner`). The runtime backend follows the GTK display, including X11
+for an XWayland window. No evdev/root access is required for Viewer capture.
+
+Use the shared `lockCursor` / `unlockCursor` methods, `addCursorMoved`, and
+`pointerCaptureChanges` (native confirmed/revoked state). The plugin owns Linux
+request generations and ignores stale events and motion before confirmation.
+Unlock cancels pending activation as well as active capture. Wayland does not
+support arbitrary global cursor warping; `unlockCursorAndReseed` releases capture
+without a global warp on Linux.
+
+The native integration test requires an **isolated** display (it injects input):
+configure with `HARDWARE_SIMULATOR_POINTER_TESTS=ON`, build
+`linux_pointer_capture_test`, then run with `GDK_BACKEND=x11 DISPLAY=<Xvfb>` or
+`GDK_BACKEND=wayland WAYLAND_DISPLAY=<nested-Weston> DISPLAY=<Weston's Xvfb>`.
+The latter uses Weston's X11 backend with kiosk shell. It checks activation,
+relative movement, buttons/wheel, generation isolation, release and unmap.
+Nested Wayland uses alternating motion because the parent X11 backend clips at
+its screen edge; this does not replace physical GNOME/KDE game testing.
