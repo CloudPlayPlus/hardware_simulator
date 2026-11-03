@@ -6,6 +6,7 @@
 #include "pointer-constraints-client.h"
 #include "relative-pointer-client.h"
 #include <cmath>
+#include <algorithm>
 #include <utility>
 #include <map>
 #ifdef CPP_LOG_AVAILABLE
@@ -96,6 +97,56 @@ struct LinuxPointerCapture::Impl {
     if (notify) {
       CPPLOG_INFO("POINTER_CAPTURE", "released generation=%lld reason=%s", static_cast<long long>(generation), reason);
       state(generation, false, reason);
+    }
+  }
+  void reseed_and_release(double x, double y) {
+    if (!active || !window || !view || gdk_window_is_destroyed(window) ||
+        !std::isfinite(x) || !std::isfinite(y)) {
+      release("released");
+      return;
+    }
+    // API 坐标相对于 Flutter view，GTK 原生 surface 可能还包含窗口装饰。
+    gpointer owner = nullptr;
+    gdk_window_get_user_data(window, &owner);
+    int offset_x = 0, offset_y = 0;
+    if (!GTK_IS_WIDGET(owner) || !gtk_widget_translate_coordinates(
+            view, GTK_WIDGET(owner), 0, 0, &offset_x, &offset_y)) {
+      release("released");
+      return;
+    }
+    double px = offset_x + std::min(
+        std::clamp(x, 0.0, 1.0) * gtk_widget_get_allocated_width(view),
+        static_cast<double>(gtk_widget_get_allocated_width(view) - 1));
+    double py = offset_y + std::min(
+        std::clamp(y, 0.0, 1.0) * gtk_widget_get_allocated_height(view),
+        static_cast<double>(gtk_widget_get_allocated_height(view) - 1));
+    auto* native = window;
+    while (!gdk_window_has_native(native)) {
+      gdk_window_coords_to_parent(native, px, py, &px, &py);
+      native = gdk_window_get_parent(native);
+    }
+    auto* display = gdk_window_get_display(native);
+    if (GDK_IS_WAYLAND_DISPLAY(display)) {
+      if (locked) {
+        auto* surface = gdk_wayland_window_get_wl_surface(native);
+        zwp_locked_pointer_v1_set_cursor_position_hint(
+            locked, wl_fixed_from_double(px), wl_fixed_from_double(py));
+        // hint 是双缓冲状态，必须在销毁 lock 前提交。
+        wl_surface_commit(surface);
+      }
+      release("released");
+      gdk_display_flush(display);
+    } else {
+      const auto xid = GDK_WINDOW_XID(native);
+      const auto scale = gdk_window_get_scale_factor(native);
+      // 先停相对输入，保持隐藏直至 warp 已排入同一 X11 连接。
+      active = false;
+      XUngrabPointer(GDK_DISPLAY_XDISPLAY(display), CurrentTime);
+      grabbed = false;
+      XWarpPointer(GDK_DISPLAY_XDISPLAY(display), None, xid, 0, 0, 0, 0,
+                   std::lround(px * scale), std::lround(py * scale));
+      release("released");
+      gdk_display_flush(display);
     }
   }
   static void global(void* data, wl_registry* r, uint32_t name, const char* interface, uint32_t) {
@@ -283,4 +334,9 @@ void LinuxPointerCapture::unlock(const char* reason) { impl_->release(reason); }
 
 void LinuxPointerCapture::unlock_generation(int64_t generation) {
   if (impl_->generation == generation) impl_->release("released");
+}
+
+void LinuxPointerCapture::unlock_and_reseed_generation(
+    int64_t generation, double x, double y) {
+  if (impl_->generation == generation) impl_->reseed_and_release(x, y);
 }
