@@ -16,7 +16,7 @@ dependencies:
   flutter_web_plugins:
     sdk: flutter
   # NOTE: pointer_lock is intentionally removed in cloudplayplus_nova to avoid a git dependency.
-  # If you need pointer-lock behavior on Linux, re-add it or implement a local alternative.
+  # Linux capture uses the local XInput2 / Wayland implementation.
 
 dev_dependencies:
   flutter_test:

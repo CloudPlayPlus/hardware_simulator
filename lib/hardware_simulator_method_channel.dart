@@ -50,9 +50,33 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         'subscribeGamepadRumble', {'id': id, 'token': token});
   }
 
+  final _linuxPointerEvents =
+      StreamController<Map<String, dynamic>>.broadcast(sync: true);
+  @override
+  Stream<Map<String, dynamic>> get linuxPointerCaptureEvents {
+    if (!isinitialized) init();
+    return _linuxPointerEvents.stream;
+  }
+
+  @override
+  Future<bool> isLinuxPointerCaptureSupported() async =>
+      await methodChannel
+          .invokeMethod<bool>('isLinuxPointerCaptureSupported') ??
+      false;
+  @override
+  Future<void> setLinuxPointerCapture(bool enabled, int generation) async {
+    if (!isinitialized) init();
+    await methodChannel.invokeMethod<void>(
+        enabled ? 'lockCursor' : 'unlockCursor', {'generation': generation});
+  }
+
   void init() {
     methodChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onMacOSSystemShortcut') {
+      if (call.method == 'onLinuxPointerCapture' ||
+          call.method == 'onLinuxPointerMotion') {
+        if (call.arguments is Map)
+          _linuxPointerEvents.add(Map<String, dynamic>.from(call.arguments));
+      } else if (call.method == 'onMacOSSystemShortcut') {
         final arguments = call.arguments;
         if (arguments is Map) {
           _systemShortcutEvents.add(Map<String, dynamic>.from(arguments));

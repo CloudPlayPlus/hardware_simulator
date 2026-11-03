@@ -259,6 +259,14 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.showNotification(content);
   }
 
+  static Stream<Map<String, dynamic>> get linuxPointerCaptureEvents =>
+      HardwareSimulatorPlatform.instance.linuxPointerCaptureEvents;
+  static Future<bool> isLinuxPointerCaptureSupported() =>
+      HardwareSimulatorPlatform.instance.isLinuxPointerCaptureSupported();
+  static Future<void> setLinuxPointerCapture(bool enabled, int generation) =>
+      HardwareSimulatorPlatform.instance
+          .setLinuxPointerCapture(enabled, generation);
+
   static Future<void> lockCursor() async {
     cursorlocked = true;
     return HardwareSimulatorPlatform.instance.lockCursor();

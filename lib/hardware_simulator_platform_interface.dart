@@ -178,6 +178,11 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     return;
   }
 
+  Stream<Map<String, dynamic>> get linuxPointerCaptureEvents =>
+      const Stream.empty();
+  Future<bool> isLinuxPointerCaptureSupported() async => false;
+  Future<void> setLinuxPointerCapture(bool enabled, int generation) async {}
+
   Future<void> lockCursor() async {
     // if not implemented, just care about main monitor.
     print("lockCursor called but not supported.");
