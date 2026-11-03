@@ -70,6 +70,29 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  test('Linux forwards managed sender only for requested native capture',
+      () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final capture = MethodChannelHardwareSimulator();
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    try {
+      await capture.lockCursorWithRelativeSender(42);
+      expect(calls.last.arguments['relativeSender'], 42);
+      await capture.unlockCursor();
+      await capture.lockCursor();
+      expect(
+          (calls.last.arguments as Map).containsKey('relativeSender'), isFalse);
+      await capture.unlockCursor();
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   test('Linux shared capture API filters pending and stale native input',
       () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;

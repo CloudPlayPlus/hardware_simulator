@@ -236,15 +236,22 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
-  Future<void> lockCursor() async {
+  Future<void> lockCursor() => _lockCursor(0);
+
+  @override
+  Future<void> lockCursorWithRelativeSender(int handle) => _lockCursor(handle);
+
+  Future<void> _lockCursor(int handle) async {
     if (!isinitialized) init();
     if (defaultTargetPlatform == TargetPlatform.linux) {
       final generation = ++_linuxCaptureGeneration;
       _linuxCaptureRequested = true;
       _linuxCaptureConfirmed = false;
       try {
-        await methodChannel
-            .invokeMethod<void>('lockCursor', {'generation': generation});
+        await methodChannel.invokeMethod<void>('lockCursor', {
+          'generation': generation,
+          if (handle != 0) 'relativeSender': handle
+        });
       } catch (_) {
         if (generation == _linuxCaptureGeneration) {
           _linuxCaptureRequested = false;
@@ -253,6 +260,9 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         rethrow;
       }
       return;
+    }
+    if (handle != 0) {
+      throw UnsupportedError('Native relative cursor sender is not supported');
     }
     await methodChannel.invokeMethod('lockCursor');
   }

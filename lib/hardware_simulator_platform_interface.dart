@@ -181,6 +181,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   /// Native confirmation/revocation where capture is asynchronous.
   Stream<bool> get pointerCaptureChanges => const Stream.empty();
 
+  Future<void> lockCursorWithRelativeSender(int handle) async {
+    throw UnsupportedError('Native relative cursor sender is not supported');
+  }
+
   Future<void> lockCursor() async {
     // if not implemented, just care about main monitor.
     print("lockCursor called but not supported.");

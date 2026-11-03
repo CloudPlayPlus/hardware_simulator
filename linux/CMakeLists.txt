@@ -117,7 +117,7 @@ foreach(protocol pointer-constraints relative-pointer)
 endforeach()
 target_sources(${PLUGIN_NAME} PRIVATE ${POINTER_PROTOCOL_SOURCES})
 target_include_directories(${PLUGIN_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::POINTER)
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::POINTER ${CMAKE_DL_LIBS})
 
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
