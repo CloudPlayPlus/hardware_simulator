@@ -245,6 +245,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     if (!isinitialized) init();
     if (defaultTargetPlatform == TargetPlatform.linux) {
       final generation = ++_linuxCaptureGeneration;
+      final wasConfirmed = _linuxCaptureConfirmed;
       _linuxCaptureRequested = true;
       _linuxCaptureConfirmed = false;
       try {
@@ -256,6 +257,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
         if (generation == _linuxCaptureGeneration) {
           _linuxCaptureRequested = false;
           _linuxCaptureConfirmed = false;
+          if (wasConfirmed) _pointerCaptureChanges.add(false);
         }
         rethrow;
       }
@@ -271,10 +273,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<void> unlockCursor() async {
     if (defaultTargetPlatform == TargetPlatform.linux) {
       final generation = _linuxCaptureGeneration++;
+      final wasConfirmed = _linuxCaptureConfirmed;
       _linuxCaptureRequested = false;
       _linuxCaptureConfirmed = false;
       await methodChannel
           .invokeMethod<void>('unlockCursor', {'generation': generation});
+      // 原生旧 generation 通知已被过滤；只为未被新请求替代的释放发布状态。
+      if (wasConfirmed && _linuxCaptureGeneration == generation + 1) {
+        _pointerCaptureChanges.add(false);
+      }
       return;
     }
     await methodChannel.invokeMethod('unlockCursor');

@@ -642,6 +642,9 @@ static void hardware_simulator_plugin_handle_method_call(
       auto send = reinterpret_cast<bool (*)(uint64_t, double, double)>(
           dlsym(RTLD_DEFAULT, "cpp_locked_cursor_move_v1"));
       if (sender && (!valid || !send || !valid(sender))) {
+        // Dart 已切到新 generation；失败也必须释放无法再被旧 id 解锁的捕获。
+        self->pointer_capture->unlock("invalid_sender");
+        self->relative_sender = 0;
         response = bad_args("Native relative sender is unavailable");
       } else {
         const auto error = self->pointer_capture->lock(fl_value_get_int(id));

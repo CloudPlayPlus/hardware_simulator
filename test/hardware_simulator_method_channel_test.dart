@@ -131,6 +131,10 @@ void main() {
       await capture.unlockCursor();
       expect(calls.last.method, 'unlockCursor');
       expect((calls.last.arguments as Map)['generation'], first);
+      expect(states, [true, false]);
+      await emit(
+          'onLinuxPointerCapture', {'generation': first, 'locked': false});
+      expect(states, [true, false]);
       await capture.lockCursor();
       final second = (calls.last.arguments as Map)['generation'];
       expect(second, isNot(first));
@@ -138,7 +142,7 @@ void main() {
           'onLinuxPointerCapture', {'generation': first, 'locked': true});
       await emit(
           'onLinuxPointerMotion', {'generation': first, 'dx': 3.0, 'dy': 4.0});
-      expect(states, [true]);
+      expect(states, [true, false]);
       expect(movement, hasLength(1));
       await emit(
           'onLinuxPointerCapture', {'generation': second, 'locked': true});
@@ -146,8 +150,23 @@ void main() {
           'onLinuxPointerCapture', {'generation': second, 'locked': false});
       await emit(
           'onLinuxPointerMotion', {'generation': second, 'dx': 3.0, 'dy': 4.0});
-      expect(states, [true, true, false]);
+      expect(states, [true, false, true, false]);
       expect(movement, hasLength(1));
+      await emit(
+          'onLinuxPointerCapture', {'generation': second, 'locked': true});
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'lockCursor')
+          throw PlatformException(code: 'invalid_sender');
+        return null;
+      });
+      await expectLater(capture.lockCursorWithRelativeSender(999),
+          throwsA(isA<PlatformException>()));
+      expect(states, [true, false, true, false, true, false]);
+      await emit(
+          'onLinuxPointerMotion', {'generation': second, 'dx': 9.0, 'dy': 9.0});
+      expect(movement, hasLength(1));
+
       await capture.unlockCursor();
     } finally {
       await subscription.cancel();
