@@ -128,8 +128,10 @@ void main() {
       expect(movement, [
         [1.0, 2.0]
       ]);
-      await capture.unlockCursor();
-      expect(calls.last.method, 'unlockCursor');
+      await capture.unlockCursorAndReseed(0.25, 0.75);
+      expect(calls.last.method, 'unlockCursorAndReseed');
+      expect((calls.last.arguments as Map)['x'], 0.25);
+      expect((calls.last.arguments as Map)['y'], 0.75);
       expect((calls.last.arguments as Map)['generation'], first);
       expect(states, [true, false]);
       await emit(
@@ -156,8 +158,9 @@ void main() {
           'onLinuxPointerCapture', {'generation': second, 'locked': true});
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'lockCursor')
+        if (call.method == 'lockCursor') {
           throw PlatformException(code: 'invalid_sender');
+        }
         return null;
       });
       await expectLater(capture.lockCursorWithRelativeSender(999),

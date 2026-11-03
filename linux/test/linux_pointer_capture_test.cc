@@ -19,6 +19,7 @@ int main(int argc, char** argv) {
   gtk_init(&argc, &argv);
   auto* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_default_size(GTK_WINDOW(window), 600, 400);
+  gtk_container_set_border_width(GTK_CONTAINER(window), 24);
   auto* view = gtk_drawing_area_new();
   gtk_widget_add_events(view, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_SCROLL_MASK);
   gtk_container_add(GTK_CONTAINER(window), view);
@@ -65,7 +66,7 @@ int main(int argc, char** argv) {
     assert(error.empty());
     pump(300);
     assert(states.size() == 1 && states.back());
-    capture.unlock_generation(41); // 旧会话不能释放新会话。
+    capture.unlock_and_reseed_generation(41, 0.1, 0.9); // 旧会话不能释放新会话。
     pump(30);
     assert(states.size() == 1);
     for (int i = 0; i < 30; ++i) {
@@ -79,8 +80,22 @@ int main(int argc, char** argv) {
     XFlush(driver); pump(200);
     assert(moves > 0 && total_x > 1000); // X11 单向越界；嵌套 Wayland 来回移动，避免测试源 X11 后端边缘裁剪。
     assert(buttons == 1 && scrolls > 0);
-    capture.unlock_generation(42);
+    const auto before_reseed = moves;
+    capture.unlock_and_reseed_generation(42, 0.25, 0.75);
+    pump(100);
+    assert(moves == before_reseed);
+    auto* pointer = gdk_seat_get_pointer(gdk_display_get_default_seat(gtk_widget_get_display(view)));
+    double px = 0, py = 0;
+    gdk_window_get_device_position_double(gtk_widget_get_window(view), pointer, &px, &py, nullptr);
+    assert(std::abs(px - gtk_widget_get_allocated_width(view) * 0.25) <= 2);
+    assert(std::abs(py - gtk_widget_get_allocated_height(view) * 0.75) <= 2);
     assert(states.size() == 2 && !states.back());
+    capture.unlock_and_reseed_generation(42, 0.9, 0.1); // 已解锁不能再次移动。
+    pump(30);
+    double unchanged_x = 0, unchanged_y = 0;
+    gdk_window_get_device_position_double(gtk_widget_get_window(view), pointer,
+                                         &unchanged_x, &unchanged_y, nullptr);
+    assert(px == unchanged_x && py == unchanged_y);
     const auto stopped = moves;
     XTestFakeRelativeMotionEvent(driver, 5, 0, CurrentTime);
     XFlush(driver); pump(50);

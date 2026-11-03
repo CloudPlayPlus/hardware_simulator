@@ -227,6 +227,8 @@ if(HARDWARE_SIMULATOR_POINTER_TESTS)
     test/linux_pointer_capture_test.cc ${POINTER_PROTOCOL_SOURCES})
   target_include_directories(linux_pointer_capture_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
   target_compile_features(linux_pointer_capture_test PRIVATE cxx_std_17)
+  target_compile_definitions(linux_pointer_capture_test PRIVATE CPP_LOG_AVAILABLE)
+  target_link_libraries(linux_pointer_capture_test PRIVATE cpp_log)
   target_compile_options(linux_pointer_capture_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
   target_link_libraries(linux_pointer_capture_test PRIVATE PkgConfig::GTK PkgConfig::X11
     PkgConfig::POINTER PkgConfig::XTST)

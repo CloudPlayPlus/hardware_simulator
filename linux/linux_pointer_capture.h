@@ -15,6 +15,7 @@ class LinuxPointerCapture {
   std::string lock(int64_t generation);
   void unlock(const char* reason = "released");
   void unlock_generation(int64_t generation);
+  void unlock_and_reseed_generation(int64_t generation, double x, double y);
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

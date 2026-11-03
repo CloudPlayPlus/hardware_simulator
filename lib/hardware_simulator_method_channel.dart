@@ -272,19 +272,24 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   @override
   Future<void> unlockCursor() async {
     if (defaultTargetPlatform == TargetPlatform.linux) {
-      final generation = _linuxCaptureGeneration++;
-      final wasConfirmed = _linuxCaptureConfirmed;
-      _linuxCaptureRequested = false;
-      _linuxCaptureConfirmed = false;
-      await methodChannel
-          .invokeMethod<void>('unlockCursor', {'generation': generation});
-      // 原生旧 generation 通知已被过滤；只为未被新请求替代的释放发布状态。
-      if (wasConfirmed && _linuxCaptureGeneration == generation + 1) {
-        _pointerCaptureChanges.add(false);
-      }
+      await _unlockLinuxCursor('unlockCursor');
       return;
     }
     await methodChannel.invokeMethod('unlockCursor');
+  }
+
+  Future<void> _unlockLinuxCursor(String method,
+      [Map<String, double> position = const {}]) async {
+    final generation = _linuxCaptureGeneration++;
+    final wasConfirmed = _linuxCaptureConfirmed;
+    _linuxCaptureRequested = false;
+    _linuxCaptureConfirmed = false;
+    await methodChannel
+        .invokeMethod<void>(method, {'generation': generation, ...position});
+    // 原生旧 generation 通知已被过滤；只为未被新请求替代的释放发布状态。
+    if (wasConfirmed && _linuxCaptureGeneration == generation + 1) {
+      _pointerCaptureChanges.add(false);
+    }
   }
 
   @override
@@ -293,7 +298,10 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     double windowYPercent,
   ) async {
     if (defaultTargetPlatform == TargetPlatform.linux) {
-      return unlockCursor();
+      return _unlockLinuxCursor('unlockCursorAndReseed', {
+        'x': windowXPercent,
+        'y': windowYPercent,
+      });
     }
     await methodChannel.invokeMethod('unlockCursorAndReseed', {
       'x': windowXPercent,

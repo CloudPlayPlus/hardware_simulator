@@ -665,6 +665,22 @@ static void hardware_simulator_plugin_handle_method_call(
                              "POINTER_CAPTURE_FAILED", error.c_str(), nullptr));
       }
     }
+  } else if (strcmp(method, "unlockCursorAndReseed") == 0) {
+    auto* args = fl_method_call_get_args(method_call);
+    auto* id = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP
+        ? fl_value_lookup_string(args, "generation") : nullptr;
+    auto* x = id ? fl_value_lookup_string(args, "x") : nullptr;
+    auto* y = id ? fl_value_lookup_string(args, "y") : nullptr;
+    if (!id || fl_value_get_type(id) != FL_VALUE_TYPE_INT ||
+        !x || fl_value_get_type(x) != FL_VALUE_TYPE_FLOAT ||
+        !y || fl_value_get_type(y) != FL_VALUE_TYPE_FLOAT) {
+      response = bad_args("Linux reseed requires generation and position");
+    } else {
+      if (self->pointer_capture)
+        self->pointer_capture->unlock_and_reseed_generation(
+            fl_value_get_int(id), fl_value_get_float(x), fl_value_get_float(y));
+      response = success_null();
+    }
   } else if (strcmp(method, "unlockCursor") == 0) {
     auto* args = fl_method_call_get_args(method_call);
     auto* id = args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP

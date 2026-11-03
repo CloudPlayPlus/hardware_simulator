@@ -59,9 +59,10 @@ for an XWayland window. No evdev/root access is required for Viewer capture.
 Use the shared `lockCursor` / `unlockCursor` methods, `addCursorMoved`, and
 `pointerCaptureChanges` (native confirmed/revoked state). The plugin owns Linux
 request generations and ignores stale events and motion before confirmation.
-Unlock cancels pending activation as well as active capture. Wayland does not
-support arbitrary global cursor warping; `unlockCursorAndReseed` releases capture
-without a global warp on Linux.
+Unlock cancels pending activation as well as active capture.
+`unlockCursorAndReseed` uses a view-local position: X11 warps after releasing the
+grab; Wayland commits a cursor position hint before releasing the lock. The
+compositor may ignore the hint; this is not arbitrary global cursor warping.
 
 The native integration test requires an **isolated** display (it injects input):
 configure with `HARDWARE_SIMULATOR_POINTER_TESTS=ON`, build
