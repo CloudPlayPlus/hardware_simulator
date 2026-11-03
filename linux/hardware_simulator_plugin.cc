@@ -22,6 +22,7 @@
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
 #include "linux_pointer_capture.h"
+#include "linux_immersive_input.h"
 #include "linux_text_input.h"
 #include <dlfcn.h>
 
@@ -33,6 +34,7 @@ struct _HardwareSimulatorPlugin {
   GObject parent_instance;
   LinuxEditFocus* edit_focus;
   LinuxPointerCapture* pointer_capture;
+  LinuxImmersiveInput* immersive_input;
   uint64_t relative_sender;
   bool (*send_relative)(uint64_t, double, double);
   FlMethodChannel* channel;
@@ -623,6 +625,11 @@ static void hardware_simulator_plugin_handle_method_call(
     response = perform_mouse_scroll(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "clearAllPressedEvents") == 0) {
     response = clear_all_pressed_events();
+  } else if (strcmp(method, "putImmersiveModeEnabled") == 0) {
+    bool ok = true;
+    const bool enabled = get_bool_arg(fl_method_call_get_args(method_call), "enabled", &ok);
+    response = !ok ? bad_args("enabled must be a boolean")
+        : success_bool(self->immersive_input && self->immersive_input->set_enabled(enabled));
   } else if (strcmp(method, "isLinuxPointerCaptureSupported") == 0) {
     response = success_bool(self->pointer_capture && self->pointer_capture->supported());
   } else if (strcmp(method, "lockCursor") == 0) {
@@ -700,6 +707,8 @@ FlMethodResponse* get_platform_version() {
 
 static void hardware_simulator_plugin_dispose(GObject* object) {
   auto* self = HARDWARE_SIMULATOR_PLUGIN(object);
+  delete self->immersive_input;
+  self->immersive_input = nullptr;
   delete self->pointer_capture;
   self->pointer_capture = nullptr;
   delete self->edit_focus;
@@ -735,6 +744,7 @@ void hardware_simulator_plugin_register_with_registrar(FlPluginRegistrar* regist
                             FL_METHOD_CODEC(codec));
   plugin->channel = channel;
   auto* view = fl_plugin_registrar_get_view(registrar);
+  if (view) plugin->immersive_input = new LinuxImmersiveInput(GTK_WIDGET(view));
   if (view)
     plugin->pointer_capture = new LinuxPointerCapture(
         GTK_WIDGET(view),

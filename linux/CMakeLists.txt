@@ -16,6 +16,7 @@ list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
   "linux_mouse.cc"
   "linux_pointer_capture.cc"
+  "linux_immersive_input.cc"
   "linux_edit_focus.cc"
   "linux_text_input.cc"
   "linux_text_input_setup.cc"
@@ -104,7 +105,7 @@ find_program(WAYLAND_SCANNER wayland-scanner)
 if(NOT WAYLAND_SCANNER)
   message(FATAL_ERROR "wayland-scanner is required for Linux pointer capture")
 endif()
-foreach(protocol pointer-constraints relative-pointer)
+foreach(protocol pointer-constraints relative-pointer keyboard-shortcuts-inhibit)
   set(xml "${WAYLAND_PROTOCOLS_DIR}/unstable/${protocol}/${protocol}-unstable-v1.xml")
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client.h"
     COMMAND ${WAYLAND_SCANNER} client-header ${xml} "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client.h"
@@ -228,5 +229,15 @@ if(HARDWARE_SIMULATOR_POINTER_TESTS)
   target_compile_features(linux_pointer_capture_test PRIVATE cxx_std_17)
   target_compile_options(linux_pointer_capture_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
   target_link_libraries(linux_pointer_capture_test PRIVATE PkgConfig::GTK PkgConfig::X11
+    PkgConfig::POINTER PkgConfig::XTST)
+endif()
+
+if(HARDWARE_SIMULATOR_POINTER_TESTS)
+  add_executable(linux_immersive_input_test linux_immersive_input.cc
+    test/linux_immersive_input_test.cc ${POINTER_PROTOCOL_SOURCES})
+  target_include_directories(linux_immersive_input_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_compile_features(linux_immersive_input_test PRIVATE cxx_std_17)
+  target_compile_options(linux_immersive_input_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+  target_link_libraries(linux_immersive_input_test PRIVATE PkgConfig::GTK PkgConfig::X11
     PkgConfig::POINTER PkgConfig::XTST)
 endif()
