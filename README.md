@@ -14,6 +14,16 @@ Log out and back in after adding your user to the `input` group.
 
 Any pull request is welcome. It is designed for https://github.com/zhuhaichao518/cloudplayplus_stone.
 
+## Android 捕获鼠标分发
+
+Android 11+ 在 `lockCursor` 时对 content View 请求
+`requestUnbufferedDispatch(SOURCE_CLASS_TRACKBALL)`，减少捕获鼠标事件等待帧调度的时间。
+请求在 View attach 后生效；解锁或插件脱离时移除 attach 监听并恢复默认分发。
+旧版 Android 保持原行为，不改变触摸 source class、MethodChannel 或当前位移读取方式。
+真机验证需覆盖捕获移动、点击/滚轮、解锁后本地鼠标、退出并重新进入远控。
+红米实测与剩余长尾跟踪见
+[CloudPlayPlus #1000](https://github.com/CloudPlayPlus/cloudplayplus/issues/1000)。
+
 ## macOS 输入源回归
 
 仅保留 `input_source_chord_harness.swift`（Fn/Control+Space和事件配对）与
