@@ -29,6 +29,27 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private var isAndroidTV = false
   private var flutterView: View? = null
   private var lockedKeyEventHandler: ((KeyEvent) -> Boolean)? = null
+  private val mouseDispatchAttachListener = object : View.OnAttachStateChangeListener {
+    override fun onViewAttachedToWindow(view: View) {
+      if (isCursorLocked && flutterView === view) setMouseUnbufferedDispatch(view, true)
+    }
+    override fun onViewDetachedFromWindow(view: View) {}
+  }
+
+  private fun setMouseUnbufferedDispatch(view: View, enabled: Boolean) {
+    // Android 11–13 在 attach 前调用无效；捕获鼠标属于 TRACKBALL 类。
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !view.isAttachedToWindow) return
+    view.requestUnbufferedDispatch(
+      if (enabled) InputDevice.SOURCE_CLASS_TRACKBALL else InputDevice.SOURCE_CLASS_NONE
+    )
+  }
+
+  private fun resetMouseDispatch() {
+    flutterView?.let { view ->
+      view.removeOnAttachStateChangeListener(mouseDispatchAttachListener)
+      setMouseUnbufferedDispatch(view, false)
+    }
+  }
 
   override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "hardware_simulator")
@@ -73,6 +94,8 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     flutterView?.isFocusable = true
     flutterView?.isFocusableInTouchMode = true
     flutterView?.let { view ->
+      view.addOnAttachStateChangeListener(mouseDispatchAttachListener)
+      setMouseUnbufferedDispatch(view, true)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         //view.isFocusable = true
         view.requestFocus()
@@ -150,6 +173,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
 
   private fun unlockCursor() {
     if (!isCursorLocked) return;
+    resetMouseDispatch()
     flutterView?.let { view ->
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         view.releasePointerCapture()
@@ -161,6 +185,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   }
 
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    resetMouseDispatch()
     channel.setMethodCallHandler(null)
   }
 
@@ -339,6 +364,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   }
 
   override fun onDetachedFromActivityForConfigChanges() {
+    resetMouseDispatch()
     (activity as? HardwareSimulatorActivityBridge)?.registerLockedKeyEventHandler(null)
     activity = null
     flutterView = null
@@ -350,6 +376,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   }
 
   override fun onDetachedFromActivity() {
+    resetMouseDispatch()
     (activity as? HardwareSimulatorActivityBridge)?.registerLockedKeyEventHandler(null)
     activity = null
     flutterView = null
