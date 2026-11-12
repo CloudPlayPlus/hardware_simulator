@@ -68,6 +68,12 @@ apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
+if(TARGET desktop_service_client)
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+  target_include_directories(${PLUGIN_NAME} PRIVATE
+    "$<TARGET_PROPERTY:desktop_service_client,INTERFACE_INCLUDE_DIRECTORIES>")
+  target_link_libraries(${PLUGIN_NAME} PRIVATE "$<LINK_ONLY:desktop_service_client>")
+endif()
 if(TARGET desktop_service_direct_input)
   target_compile_definitions(${PLUGIN_NAME} PRIVATE CLOUDPLAYPLUS_DIRECT_INPUT)
   target_link_libraries(${PLUGIN_NAME} PRIVATE desktop_service_direct_input)

@@ -1,6 +1,9 @@
 #include "virtual_display_control.h"
 #include "desktop_service_input_client.h"
 #include "cpp_log_shim.h"
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+#include "unattended_runtime.h"
+#endif
 #include <iostream>
 #include <thread>
 #include <mutex>
@@ -333,37 +336,24 @@ static bool HasActiveRdpSession() {
 
 // Reconnect the given session to the physical console via `tscon`.
 static bool RunTscon(DWORD sid) {
-    // Resolve tscon.exe by its full System32 path and launch it directly (no
-    // cmd.exe shell). Passing lpApplicationName lets the loader skip the CWD in
-    // its search order — that search path is a binary-planting surface for an
-    // admin/SYSTEM process on a headless box.
-    wchar_t sysDir[MAX_PATH] = {};
-    UINT n = GetSystemDirectoryW(sysDir, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) {
-        std::cout << "[VDD] tscon: GetSystemDirectory failed, error=" << GetLastError() << std::endl;
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+    DWORD caller_session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &caller_session) || sid != caller_session) {
+        CPPLOG_WARN("RDP_RECOVERY", "Console recovery rejected non-caller session=%lu", sid);
         return false;
     }
-    std::wstring exePath = std::wstring(sysDir) + L"\\tscon.exe";
-    std::wstring cmdLine = L"tscon.exe " + std::to_wstring(sid) + L" /dest:console";
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(exePath.c_str(), &cmdLine[0], nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        std::cout << "[VDD] tscon: CreateProcess failed, error=" << GetLastError() << std::endl;
+    try {
+        cloudplayplus::unattended::SendCommand(cloudplayplus::unattended::Command::restore_console);
+        return true;
+    } catch (const cloudplayplus::unattended::Error& failure) {
+        CPPLOG_WARN("RDP_RECOVERY", "Service console recovery failed session=%lu error=%lu", sid, failure.code);
         return false;
     }
-    WaitForSingleObject(pi.hProcess, 10000);
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    if (exitCode != 0) {
-        std::cout << "[VDD] tscon exited with code " << exitCode
-                  << " (may need admin privileges)" << std::endl;
-        return false;
-    }
-    return true;
+#else
+    static_cast<void>(sid);
+    CPPLOG_WARN("RDP_RECOVERY", "Console recovery unavailable without desktop service SDK");
+    return false;
+#endif
 }
 
 }  // namespace
