@@ -273,35 +273,11 @@ static bool HasActiveDisplay() {
     return false;
 }
 
-// The interactive session we want on the console: sid > 0 with a logged-in user.
-// Prefer a Disconnected session (the common post-RDP-disconnect case); otherwise
-// fall back to the first user session found. Returns 0 if none.
-static DWORD FindTargetSession() {
-    WTS_SESSION_INFOW* sessions = nullptr;
-    DWORD count = 0;
-    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
-        return 0;
-
-    DWORD chosen = 0, firstUser = 0;
-    for (DWORD i = 0; i < count; ++i) {
-        DWORD sid = sessions[i].SessionId;
-        if (sid == 0) continue;  // skip services session
-
-        LPWSTR user = nullptr;
-        DWORD bytes = 0;
-        bool hasUser = false;
-        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
-                                        WTSUserName, &user, &bytes)) {
-            hasUser = (user && user[0] != L'\0');
-            WTSFreeMemory(user);
-        }
-        if (!hasUser) continue;
-
-        if (firstUser == 0) firstUser = sid;
-        if (sessions[i].State == WTSDisconnected) { chosen = sid; break; }
-    }
-    WTSFreeMemory(sessions);
-    return chosen ? chosen : firstUser;
+// 只把本进程自己的会话作为切回 Console 的目标；不再枚举“任意断开用户”，
+// 避免（尤其是 SYSTEM 实例）把其他用户的会话切到物理显示器。Returns 0 if unknown.
+static DWORD OwnSession() {
+    DWORD session = 0;
+    return ProcessIdToSessionId(GetCurrentProcessId(), &session) ? session : 0;
 }
 
 // True if an RDP session is currently active. tscon /dest:console would disconnect
@@ -343,7 +319,8 @@ static bool RunTscon(DWORD sid) {
         return false;
     }
     try {
-        cloudplayplus::unattended::SendCommand(cloudplayplus::unattended::Command::restore_console);
+        // 服务切回本进程会话后锁屏；远端在串流画面中解锁。
+        cloudplayplus::unattended::RestoreOwnConsoleAndLock();
         return true;
     } catch (const cloudplayplus::unattended::Error& failure) {
         CPPLOG_WARN("RDP_RECOVERY", "Service console recovery failed session=%lu error=%lu", sid, failure.code);
@@ -380,9 +357,9 @@ bool VirtualDisplayControl::EnsureConsoleForDisplay() {
         return true;
     }
 
-    DWORD target = FindTargetSession();
+    DWORD target = OwnSession();
     if (target == 0) {
-        std::cout << "[VDD] EnsureConsoleForDisplay: no interactive user session" << std::endl;
+        std::cout << "[VDD] EnsureConsoleForDisplay: no interactive session" << std::endl;
         return false;
     }
 
