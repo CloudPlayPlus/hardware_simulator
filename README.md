@@ -19,7 +19,10 @@ Any pull request is welcome. It is designed for https://github.com/zhuhaichao518
 Android 11+ 在 `lockCursor` 时对 content View 请求
 `requestUnbufferedDispatch(SOURCE_CLASS_TRACKBALL)`，减少捕获鼠标事件等待帧调度的时间。
 请求在 View attach 后生效；解锁或插件脱离时移除 attach 监听并恢复默认分发。
-旧版 Android 保持原行为，不改变触摸 source class、MethodChannel 或当前位移读取方式。
+旧版 Android 保持默认分发，不改变触摸 source class 或 MethodChannel。
+移动回调按事件来源选择轴：捕获鼠标使用 `AXIS_X/Y`，捕获触摸板使用
+`AXIS_RELATIVE_X/Y`，并累加该事件全部历史样本与当前位移后发送一次。
+零位移不切换坐标轴，不跨回调重放，也不新增等待或平滑。
 真机验证需覆盖捕获移动、点击/滚轮、解锁后本地鼠标、退出并重新进入远控。
 红米实测与剩余长尾跟踪见
 [CloudPlayPlus #1000](https://github.com/CloudPlayPlus/cloudplayplus/issues/1000)。

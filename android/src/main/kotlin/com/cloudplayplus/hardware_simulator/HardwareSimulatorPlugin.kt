@@ -106,10 +106,8 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       when (event.actionMasked) {
         MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> {
           // 处理鼠标移动
-          val relX = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-          val relY = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-          val dx = if (relX != 0f) relX else event.x
-          val dy = if (relY != 0f) relY else event.y
+          val dx = CapturedMouseMotion.deltaX(event)
+          val dy = CapturedMouseMotion.deltaY(event)
           channel.invokeMethod("onCursorMoved", mapOf(
             "dx" to dx,
             "dy" to dy
