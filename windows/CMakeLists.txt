@@ -72,7 +72,13 @@ if(TARGET desktop_service_client)
   target_compile_definitions(${PLUGIN_NAME} PRIVATE CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
   target_include_directories(${PLUGIN_NAME} PRIVATE
     "$<TARGET_PROPERTY:desktop_service_client,INTERFACE_INCLUDE_DIRECTORIES>")
-  target_link_libraries(${PLUGIN_NAME} PRIVATE "$<LINK_ONLY:desktop_service_client>")
+  # 只链接服务 SDK 的静态库文件，不继承其编译定义（NOMINMAX 等）。
+  # LINK_ONLY 在 CMake 3.24 前仍传播编译要求，不满足本文件声明的 3.14 下限。
+  add_dependencies(${PLUGIN_NAME} desktop_service_client)
+  target_link_libraries(${PLUGIN_NAME} PRIVATE
+    "$<TARGET_LINKER_FILE:desktop_service_client>"
+    "$<TARGET_LINKER_FILE:unattended_store>"
+    advapi32 crypt32 d3d11 dxgi user32 wtsapi32)
 endif()
 if(TARGET desktop_service_direct_input)
   target_compile_definitions(${PLUGIN_NAME} PRIVATE CLOUDPLAYPLUS_DIRECT_INPUT)
