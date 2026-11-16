@@ -2059,8 +2059,8 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      }
      auto displayId = displayId_iter->second;
      if (VirtualDisplayControl::IsInitialized()) {
-        VirtualDisplayControl::RemoveDisplay(static_cast<int>(std::get<int>((displayId))));
-         result->Success(flutter::EncodableValue(true));
+        const bool removed = VirtualDisplayControl::RemoveDisplay(static_cast<int>(std::get<int>((displayId))));
+        result->Success(flutter::EncodableValue(removed));
      } else {
          result->Error("NOT_INITIALIZED", "Parsec not initialized");
      }

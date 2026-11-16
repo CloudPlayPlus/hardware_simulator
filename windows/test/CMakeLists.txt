@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.14)
 project(hardware_simulator_input_tests LANGUAGES CXX)
 enable_testing()
 
+add_executable(display_handoff_ready_test display_handoff_ready_test.cpp)
+target_compile_features(display_handoff_ready_test PRIVATE cxx_std_17)
+target_compile_options(display_handoff_ready_test PRIVATE /W4 /WX /utf-8)
+add_test(NAME display_handoff_ready COMMAND display_handoff_ready_test)
+
 add_executable(input_desktop_operation_test input_desktop_operation_test.cpp)
 target_compile_features(input_desktop_operation_test PRIVATE cxx_std_17)
 target_compile_options(input_desktop_operation_test PRIVATE /W4 /WX /EHsc /utf-8)

@@ -2,6 +2,7 @@
 #include "desktop_service_input_client.h"
 #include "cpp_log_shim.h"
 #include "input_desktop_operation.h"
+#include "display_handoff_ready.h"
 #if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
 #include "unattended_runtime.h"
 #include "display_handoff.h"
@@ -1363,8 +1364,15 @@ bool VirtualDisplayControl::RecoverDisplayHandoff(int& uid, std::string& viewer,
         persistent_modes_.assign(data.persistent.modes, data.persistent.modes + data.persistent.mode_count);
         has_backup_ = true;
         handed_display = data;
-        if (!Initialize()) throw Error(ERROR_NOT_READY);
     }
+    const auto ready = PrepareRecoveredDisplay([] { return Initialize(); }, [] {
+        GetAllDisplays();
+        return std::any_of(displays_.begin(), displays_.end(), [](const auto& display) {
+            return display->GetDisplayInfo().is_virtual &&
+                display->GetDisplayUid() == static_cast<int>(handed_display.uid);
+        });
+    });
+    if (ready != ERROR_SUCCESS) throw Error(ready);
     uid = static_cast<int>(handed_display.uid); viewer = handed_display.viewer;
     width = static_cast<int>(handed_display.width); height = static_cast<int>(handed_display.height);
     hz = static_cast<int>(handed_display.hz);
