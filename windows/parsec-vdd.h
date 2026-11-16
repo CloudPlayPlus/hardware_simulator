@@ -57,6 +57,21 @@ typedef enum {
     DEVICE_NOT_INSTALLED       // Driver is not installed
 } DeviceStatus;
 
+// 问题码优先于 DRIVER_LOADED：Code 43 时驱动仍可能处于已加载状态。
+static DeviceStatus ClassifyDeviceStatus(ULONG flags, ULONG problem)
+{
+    if (flags & DN_HAS_PROBLEM) {
+        switch (problem) {
+        case CM_PROB_NEED_RESTART: return DEVICE_RESTART_REQUIRED;
+        case CM_PROB_DISABLED:
+        case CM_PROB_HARDWARE_DISABLED: return DEVICE_DISABLED;
+        case CM_PROB_DISABLED_SERVICE: return DEVICE_DISABLED_SERVICE;
+        case CM_PROB_FAILED_POST_START: return DEVICE_DRIVER_ERROR;
+        default: return DEVICE_UNKNOWN_PROBLEM;
+        }
+    }
+    return (flags & (DN_DRIVER_LOADED | DN_STARTED)) ? DEVICE_OK : DEVICE_UNKNOWN;
+}
 /**
 * Query the driver status.
 *
@@ -125,36 +140,7 @@ static DeviceStatus QueryDeviceStatus(const GUID *classGuid, const char *deviceI
                             goto except;
                         }
 
-                        if ((devStatus & (DN_DRIVER_LOADED | DN_STARTED)) != 0)
-                        {
-                            status = DEVICE_OK;
-                        }
-                        else if ((devStatus & DN_HAS_PROBLEM) != 0)
-                        {
-                            switch (devProblemNum)
-                            {
-                            case CM_PROB_NEED_RESTART:
-                                status = DEVICE_RESTART_REQUIRED;
-                                break;
-                            case CM_PROB_DISABLED:
-                            case CM_PROB_HARDWARE_DISABLED:
-                                status = DEVICE_DISABLED;
-                                break;
-                            case CM_PROB_DISABLED_SERVICE:
-                                status = DEVICE_DISABLED_SERVICE;
-                                break;
-                            default:
-                                if (devProblemNum == CM_PROB_FAILED_POST_START)
-                                    status = DEVICE_DRIVER_ERROR;
-                                else
-                                    status = DEVICE_UNKNOWN_PROBLEM;
-                                break;
-                            }
-                        }
-                        else
-                        {
-                            status = DEVICE_UNKNOWN;
-                        }
+                        status = ClassifyDeviceStatus(devStatus, devProblemNum);
                     }
                 }
 

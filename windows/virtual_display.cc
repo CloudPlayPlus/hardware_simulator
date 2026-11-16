@@ -1,5 +1,7 @@
 #include "virtual_display.h"
 #include "parsec-vdd.h"
+#include "cpp_log_shim.h"
+#include "input_desktop_operation.h"
 #include <cstring>
 #include <cstdio>
 #include <iostream>
@@ -29,6 +31,7 @@ VirtualDisplay::~VirtualDisplay() {
 }
 
 bool VirtualDisplay::ChangeDisplaySettings(const DisplayConfig& config) {
+    return RunDisplayOperationOnInputDesktop([&] {
     
     DEVMODEW dm = {};
     dm.dmSize = sizeof(dm);
@@ -40,7 +43,33 @@ bool VirtualDisplay::ChangeDisplaySettings(const DisplayConfig& config) {
     std::wstring device_name_w(info_.device_name.begin(), info_.device_name.end());
     LONG result = ChangeDisplaySettingsExW(device_name_w.c_str(), 
                                            &dm, NULL, CDS_UPDATEREGISTRY, NULL);
+#ifdef CPP_LOG_AVAILABLE
+    // 仅在显式设置模式时记录；保留 DISP_CHANGE 返回码，不用 GetLastError 代替。
+    wchar_t current_desktop[128] = L"<unknown>";
+    wchar_t input_desktop[128] = L"<unavailable>";
+    DWORD bytes = 0, session = 0;
+    GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+        current_desktop, sizeof(current_desktop), &bytes);
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    const DWORD input_error = input ? ERROR_SUCCESS : GetLastError();
+    if (input) {
+        GetUserObjectInformationW(input, UOI_NAME, input_desktop, sizeof(input_desktop), &bytes);
+        CloseDesktop(input);
+    }
+    ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    DEVMODEW observed{};
+    observed.dmSize = sizeof(observed);
+    SetLastError(ERROR_SUCCESS);
+    const BOOL read = EnumDisplaySettingsW(device_name_w.c_str(), ENUM_CURRENT_SETTINGS, &observed);
+    const DWORD read_error = read ? ERROR_SUCCESS : GetLastError();
+    CPPLOG_INFO("VDD_MODE", "change uid=%d device=%ls requested=%dx%d@%d result=%ld "
+        "read=%d readError=%lu observed=%lux%lu@%lu pid=%lu session=%lu desktop=%ls inputDesktop=%ls inputError=%lu",
+        display_uid_, device_name_w.c_str(), config.width, config.height, config.refresh_rate, result,
+        read, read_error, observed.dmPelsWidth, observed.dmPelsHeight, observed.dmDisplayFrequency,
+        GetCurrentProcessId(), session, current_desktop, input_desktop, input_error);
+#endif
     return (result == DISP_CHANGE_SUCCESSFUL);
+    });
 }
 
 void VirtualDisplay::FetchAllDisplayConfigs() {

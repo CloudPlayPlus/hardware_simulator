@@ -13,6 +13,7 @@ std::vector<DISPLAYCONFIG_MODE_INFO> active_modes;
 std::vector<DISPLAYCONFIG_MODE_INFO> saved_modes;
 LONG apply_result = ERROR_SUCCESS;
 bool fail_temporary = false;
+bool reject_supplied_target = false;
 
 LONG WINAPI TestBufferSizes(UINT32 flags, UINT32* paths, UINT32* modes) {
     *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths : current_paths).size());
@@ -43,6 +44,12 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
 LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     UINT32 mode_count, DISPLAYCONFIG_MODE_INFO* modes, UINT32 flags) {
     if (apply_result != ERROR_SUCCESS) return apply_result;
+    if (reject_supplied_target) {
+        UINT32 active = 0; const DISPLAYCONFIG_PATH_INFO* target = nullptr;
+        for (UINT32 i = 0; i < count; ++i) if (paths[i].flags & DISPLAYCONFIG_PATH_ACTIVE) { ++active; target = &paths[i]; }
+        if (active == 1 && target->targetInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID)
+            return ERROR_GEN_FAILURE;
+    }
     if (fail_temporary && !(flags & SDC_SAVE_TO_DATABASE)) return ERROR_GEN_FAILURE;
     CHECK(flags & SDC_APPLY);
     current_paths.assign(paths, paths + count);
@@ -130,6 +137,22 @@ public:
         VirtualDisplayControl::Shutdown();
         CHECK(!VirtualDisplayControl::HasPendingConfiguration());
         CHECK(IsActive(0) && IsActive(1));
+        // 目标时序被驱动拒绝时，保留源尺寸重选目标时序；原备份必须完整恢复。
+        DISPLAYCONFIG_MODE_INFO target_mode{};
+        target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+        current_paths[1].targetInfo.modeInfoIdx = static_cast<UINT32>(active_modes.size());
+        active_modes.push_back(target_mode);
+        saved_paths = current_paths; saved_modes = active_modes;
+        reject_supplied_target = true;
+        CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(42));
+        CHECK(current_paths.size() == 1 && active_modes.size() == 1);
+        CHECK(current_paths[0].sourceInfo.id == 1 && current_paths[0].sourceInfo.modeInfoIdx == 0);
+        CHECK(current_paths[0].targetInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
+        CHECK(active_modes[0].sourceMode.position.x == 0);
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(current_paths.size() == 2 && active_modes.size() == 3);
+        CHECK(current_paths[1].targetInfo.modeInfoIdx == 2);
+        reject_supplied_target = false;
         VirtualDisplayControl::displays_.clear();
     }
 };

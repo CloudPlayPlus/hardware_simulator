@@ -510,6 +510,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
         'ensureConsoleForDisplay() has not been implemented.');
   }
 
+  Future<bool> recoverFailedParsecVdd() async => false;
+
   Future<bool> initParsecVdd() {
     throw UnimplementedError('initParsecVdd() has not been implemented.');
   }
@@ -583,6 +585,10 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError(
         'restoreDisplayConfiguration() has not been implemented.');
   }
+
+  Future<bool> retainDisplayForHandoff(Map<String, dynamic> data) async =>
+      false;
+  Future<Map<String, dynamic>?> recoverDisplayHandoff() async => null;
 
   Future<bool> hasPendingConfiguration() {
     throw UnimplementedError(
