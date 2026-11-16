@@ -50,6 +50,8 @@ public:
     static bool SetPrimaryDisplayOnly(int display_uid);
     static bool RestoreDisplayConfiguration();
     static bool HasPendingConfiguration();
+    static bool RetainDisplayForHandoff(int uid, const std::string& viewer, int width, int height, int hz);
+    static bool RecoverDisplayHandoff(int& uid, std::string& viewer, int& width, int& height, int& hz);
 
     // Detailed display information structure
     // This structure mirrors the Dart DisplayData class for consistency

@@ -12,6 +12,12 @@
 
 // This must be included before many other Windows headers.
 #include <windows.h>
+#include "cpp_log_shim.h"
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+#include "unattended_runtime.h"
+#endif
+#include "service_command_result.h"
+#include "service_install_directory.h"
 
 // For getPlatformVersion; remove unless needed for your plugin implementation.
 #include <VersionHelpers.h>
@@ -990,6 +996,19 @@ bool RunExeAsAdmin(
         return false;
     }
 
+    if (_wcsicmp(lpArguments, L"--install") == 0) {
+        wchar_t registered[32768]{};
+        DWORD bytes = sizeof(registered);
+        const DWORD read = RegGetValueW(HKEY_LOCAL_MACHINE,
+            L"SOFTWARE\\CloudPlayPlus\\Release", L"InstallFolder",
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, registered, &bytes);
+        const DWORD error = ValidateServiceInstallDirectory(read, registered, exeDir);
+        if (error != ERROR_SUCCESS) {
+            if (pErrorCode) *pErrorCode = error;
+            return false;
+        }
+    }
+
     SHELLEXECUTEINFOW sei = { sizeof(sei) };
     sei.lpVerb = L"runas";
     sei.lpFile = targetPath;
@@ -1006,11 +1025,8 @@ bool RunExeAsAdmin(
         return false;
     }
 
-    if (bWait && sei.hProcess) {
-        WaitForSingleObject(sei.hProcess, INFINITE);
-        CloseHandle(sei.hProcess);
-    }
-
+    if (bWait) return WaitForServiceCommand(sei.hProcess, pErrorCode);
+    if (pErrorCode) *pErrorCode = ERROR_SUCCESS;
     return true;
 }
 
@@ -1843,13 +1859,26 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         result->Error("NullArguments", "Arguments are null for doControlAction");
     }
   } else if (method_call.method_name().compare("registerService") == 0) {
-        DWORD dword;
-        bool allowed_to_run = RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--install", &dword, true);
-        result->Success(flutter::EncodableValue(allowed_to_run));
+        DWORD error = ERROR_SUCCESS;
+        if (RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--install", &error, true)) {
+            result->Success(flutter::EncodableValue(true));
+        } else if (error == ERROR_CANCELLED) {
+            result->Success(flutter::EncodableValue(false));
+        } else {
+            result->Error("service_install_failed",
+                          error == ERROR_BAD_PATHNAME
+                              ? "当前程序与登记的安装目录不一致，请使用完整安装包修复并从安装目录启动应用。"
+                              : "安装系统服务失败",
+                          flutter::EncodableValue(static_cast<int64_t>(error)));
+        }
   } else if (method_call.method_name().compare("unregisterService") == 0) {
-        DWORD dword;
-        RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--uninstall", &dword, true);
-        result->Success(flutter::EncodableValue());
+        DWORD error = ERROR_SUCCESS;
+        if (RunExeAsAdmin(L"cloudplayplus_desktop_svc.exe", L"--uninstall", &error, true)) {
+            result->Success(flutter::EncodableValue());
+        } else {
+            result->Error("service_uninstall_failed", "卸载系统服务失败",
+                          flutter::EncodableValue(static_cast<int64_t>(error)));
+        }
   } else if (method_call.method_name().compare("isRunningAsSystem") == 0) {
         if (IsRunningAsSystem()) {
             result->Success(flutter::EncodableValue(true));
@@ -1975,6 +2004,23 @@ void HardwareSimulatorPlugin::HandleMethodCall(
     std::thread([shared_result]() {
       bool ok = VirtualDisplayControl::EnsureConsoleForDisplay();
       shared_result->Success(flutter::EncodableValue(ok));
+    }).detach();
+    return;
+  } else if (method_call.method_name().compare("recoverFailedParsecVdd") == 0) {
+    // 服务内核实唯一 Parsec / Code 43；后台等待不阻塞 Flutter 输入线程。
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result = std::move(result);
+    std::thread([shared_result]() {
+      bool recovered = false;
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+      try {
+        cloudplayplus::unattended::SendCommand(cloudplayplus::unattended::Command::recover_parsec);
+        CPPLOG_INFO("VDD_RECOVERY", "Parsec Code 43 recovery succeeded; retrying initialization");
+        recovered = true;
+      } catch (const cloudplayplus::unattended::Error& failure) {
+        CPPLOG_WARN("VDD_RECOVERY", "Parsec recovery rejected/failed error=%lu", failure.code);
+      }
+#endif
+      shared_result->Success(flutter::EncodableValue(recovered));
     }).detach();
     return;
   } else if (method_call.method_name().compare("initParsecVdd") == 0) {
@@ -2225,6 +2271,27 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      bool success = VirtualDisplayControl::SetPrimaryDisplayOnly(display_uid);
      
      result->Success(flutter::EncodableValue(success));
+  } else if (method_call.method_name() == "retainDisplayForHandoff") {
+     try {
+         const auto read = [&](const char* name) { return std::get<int>(args->at(flutter::EncodableValue(name))); };
+         const auto viewer = std::get<std::string>(args->at(flutter::EncodableValue("viewer")));
+         result->Success(flutter::EncodableValue(VirtualDisplayControl::RetainDisplayForHandoff(
+             read("displayUid"), viewer, read("width"), read("height"), read("hz"))));
+     } catch (const std::exception&) { result->Error("DISPLAY_HANDOFF_FAILED", "Cannot retain display resources"); }
+  } else if (method_call.method_name() == "recoverDisplayHandoff") {
+     try {
+         int uid = -1, width = 0, height = 0, hz = 0; std::string viewer;
+         if (!VirtualDisplayControl::RecoverDisplayHandoff(uid, viewer, width, height, hz)) {
+             result->Success();
+         } else {
+             result->Success(flutter::EncodableValue(flutter::EncodableMap{
+                 {flutter::EncodableValue("displayUid"), flutter::EncodableValue(uid)},
+                 {flutter::EncodableValue("viewer"), flutter::EncodableValue(viewer)},
+                 {flutter::EncodableValue("width"), flutter::EncodableValue(width)},
+                 {flutter::EncodableValue("height"), flutter::EncodableValue(height)},
+                 {flutter::EncodableValue("hz"), flutter::EncodableValue(hz)}}));
+         }
+     } catch (const std::exception&) { result->Error("DISPLAY_HANDOFF_FAILED", "Cannot recover display resources"); }
   } else if (method_call.method_name().compare("restoreDisplayConfiguration") == 0) {
      bool success = VirtualDisplayControl::RestoreDisplayConfiguration();
      result->Success(flutter::EncodableValue(success));

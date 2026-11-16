@@ -342,7 +342,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
     if (!Platform.isWindows) {
       return;
     }
-    methodChannel.invokeMethod('unregisterService');
+    await methodChannel.invokeMethod('unregisterService');
   }
 
   @override
@@ -922,6 +922,10 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   }
 
   @override
+  Future<bool> recoverFailedParsecVdd() async =>
+      await methodChannel.invokeMethod<bool>('recoverFailedParsecVdd') ?? false;
+
+  @override
   Future<bool> initParsecVdd() async {
     return await methodChannel.invokeMethod('initParsecVdd');
   }
@@ -1043,6 +1047,15 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<bool> restoreDisplayConfiguration() async {
     return await methodChannel.invokeMethod('restoreDisplayConfiguration');
   }
+
+  @override
+  Future<bool> retainDisplayForHandoff(Map<String, dynamic> data) async =>
+      await methodChannel.invokeMethod<bool>('retainDisplayForHandoff', data) ??
+      false;
+
+  @override
+  Future<Map<String, dynamic>?> recoverDisplayHandoff() =>
+      methodChannel.invokeMapMethod<String, dynamic>('recoverDisplayHandoff');
 
   @override
   Future<bool> hasPendingConfiguration() async {

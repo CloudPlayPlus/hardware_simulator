@@ -1,8 +1,10 @@
 #include "virtual_display_control.h"
 #include "desktop_service_input_client.h"
 #include "cpp_log_shim.h"
+#include "input_desktop_operation.h"
 #if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
 #include "unattended_runtime.h"
+#include "display_handoff.h"
 #endif
 #include <iostream>
 #include <thread>
@@ -49,6 +51,25 @@ std::vector<DISPLAYCONFIG_MODE_INFO> VirtualDisplayControl::persistent_modes_;
 bool VirtualDisplayControl::has_backup_ = false;
 
 namespace {
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+cloudplayplus::unattended::DisplayHandoffData handed_display;
+bool IsManagedDisplayClient() {
+    const auto state = cloudplayplus::unattended::Store().ReadState();
+    return state.enabled && state.committed &&
+        state.managed == cloudplayplus::unattended::CurrentProcessIdentity();
+}
+void ReleaseHandedDisplay(int uid) {
+    if (!handed_display.present || handed_display.uid != static_cast<UINT32>(uid)) return;
+    try {
+        cloudplayplus::unattended::ExchangeDisplayHandoff(
+            cloudplayplus::unattended::Command::release_display, handed_display);
+        handed_display = {};
+        CPPLOG_INFO("VDD_HANDOFF", "released service custody uid=%d", uid);
+    } catch (const cloudplayplus::unattended::Error& error) {
+        CPPLOG_WARN("VDD_HANDOFF", "release custody failed uid=%d error=%lu", uid, error.code);
+    }
+}
+#endif
 
 struct LuidCompare {
     bool operator()(const LUID& a, const LUID& b) const {
@@ -402,10 +423,12 @@ bool VirtualDisplayControl::Initialize() {
         case parsec_vdd::DEVICE_RESTART_REQUIRED:
             break;
         default:
-            break;
+            CPPLOG_WARN("VDD_RECOVERY", "Parsec initialization rejected device status=%d", status);
+            return false;
     }
     
-    vdd_handle_ = parsec_vdd::OpenDeviceHandle(&parsec_vdd::VDD_ADAPTER_GUID);
+    if (vdd_handle_ == NULL || vdd_handle_ == INVALID_HANDLE_VALUE)
+        vdd_handle_ = parsec_vdd::OpenDeviceHandle(&parsec_vdd::VDD_ADAPTER_GUID);
     
     if (vdd_handle_ == NULL || vdd_handle_ == INVALID_HANDLE_VALUE) {
         std::cout << "Error: Failed to open Parsec VDD device handle" << std::endl;
@@ -511,6 +534,9 @@ bool VirtualDisplayControl::RemoveDisplay(int display_uid) {
     
     parsec_vdd::VddRemoveDisplay(vdd_handle_, display_uid);
     displays_.erase(it);
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+    if (!has_backup_) ReleaseHandedDisplay(display_uid);
+#endif
     std::cout << "Virtual display removed: " << display_uid << std::endl;
     return true;
 }
@@ -957,6 +983,7 @@ VirtualDisplay::Orientation VirtualDisplayControl::GetDisplayOrientation(int dis
 }
 
 bool VirtualDisplayControl::SetMultiDisplayMode(MultiDisplayMode mode, int primary_display_id) {
+    return RunDisplayOperationOnInputDesktop([&] {
     // Force the requested topology through to the display driver. In
     // particular, a newly-created VDD target may not yet be part of the last
     // persisted extended topology even though SetDisplayConfig can otherwise
@@ -986,6 +1013,7 @@ bool VirtualDisplayControl::SetMultiDisplayMode(MultiDisplayMode mode, int prima
     }
     
     LONG result = SetDisplayConfig(0, nullptr, 0, nullptr, flags);
+    CPPLOG_INFO("VDD_MODE", "topology mode=%d status=%ld", static_cast<int>(mode), result);
     if (result == ERROR_SUCCESS) {
         std::cout << "Successfully set multi-display mode: " << static_cast<int>(mode) << std::endl;
         return true;
@@ -993,6 +1021,7 @@ bool VirtualDisplayControl::SetMultiDisplayMode(MultiDisplayMode mode, int prima
         std::cout << "Failed to set multi-display mode: " << result << std::endl;
         return false;
     }
+    });
 }
 
 VirtualDisplayControl::MultiDisplayMode VirtualDisplayControl::GetCurrentMultiDisplayMode() {
@@ -1069,6 +1098,7 @@ VirtualDisplayControl::MultiDisplayMode VirtualDisplayControl::GetCurrentMultiDi
 }
 
 bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
+    return RunDisplayOperationOnInputDesktop([&] {
     std::cout << "SetPrimaryDisplayOnly called with display_uid: " << display_uid << std::endl;
     
     // Check if there's already a pending configuration that hasn't been restored
@@ -1148,25 +1178,9 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
         }
     }
     
-    // If not found by device name, try to match by display index
-    if (targetPathIndex == -1) {
-        int displayIndex = static_cast<int>(std::distance(displays_.begin(), displayIt));
-        int activePathCount = 0;
-        
-        for (UINT32 i = 0; i < numPathArrayElements; ++i) {
-            if (pathArray[i].flags & DISPLAYCONFIG_PATH_ACTIVE) {
-                if (activePathCount == displayIndex) {
-                    targetPathIndex = i;
-                    std::wcout << L"Found target display by index: " << GetDisplayTargetName(pathArray[i].targetInfo.adapterId, pathArray[i].targetInfo.id) << std::endl;
-                    break;
-                }
-                activePathCount++;
-            }
-        }
-    }
-
     if (targetPathIndex == -1) {
         std::cerr << "No active display found to set as primary" << std::endl;
+        CPPLOG_WARN("VDD_MODE", "exclusive target not found uid=%d device=%s", display_uid, targetDeviceName.c_str());
         return false;
     }
 
@@ -1205,6 +1219,17 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
         }
     }
 
+    // 重试只引用精确选中的路径，不能重新保存布局覆盖原始备份。
+    auto retryPath = pathArray[targetPathIndex];
+    const auto sourceIndex = retryPath.sourceInfo.modeInfoIdx;
+    const bool hasSource = sourceIndex < numModeInfoArrayElements &&
+        modeInfoArray[sourceIndex].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+    DISPLAYCONFIG_MODE_INFO retryMode{};
+    if (hasSource) retryMode = modeInfoArray[sourceIndex];
+    CPPLOG_INFO("VDD_MODE", "exclusive submit uid=%d device=%s paths=%u modes=%u source=%u target=%u refresh=%u/%u",
+        display_uid, targetDeviceName.c_str(), numPathArrayElements, numModeInfoArrayElements,
+        sourceIndex, retryPath.targetInfo.modeInfoIdx, retryPath.targetInfo.refreshRate.Numerator,
+        retryPath.targetInfo.refreshRate.Denominator);
     // 保存独占布局，避免游戏退出全屏时从系统数据库重新启用实体屏。
     result = SetDisplayConfig(
         numPathArrayElements,
@@ -1214,16 +1239,30 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE
     );
 
+    if ((result == ERROR_GEN_FAILURE || result == ERROR_BAD_CONFIGURATION) && hasSource) {
+        CPPLOG_WARN("VDD_MODE", "exclusive supplied timing rejected uid=%d status=%ld; re-enumerating target timing", display_uid, result);
+        retryPath.sourceInfo.modeInfoIdx = 0;
+        retryPath.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        retryPath.flags = DISPLAYCONFIG_PATH_ACTIVE;
+        result = SetDisplayConfig(1, &retryPath, 1, &retryMode,
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES |
+            SDC_SAVE_TO_DATABASE | SDC_FORCE_MODE_ENUMERATION | SDC_NO_OPTIMIZATION);
+        CPPLOG_INFO("VDD_MODE", "exclusive target timing retry uid=%d status=%ld source=%lux%lu", display_uid,
+            result, retryMode.sourceMode.width, retryMode.sourceMode.height);
+    }
     if (result != ERROR_SUCCESS) {
         std::cerr << "SetDisplayConfig failed: " << result << std::endl;
+        CPPLOG_WARN("VDD_MODE", "exclusive topology uid=%d status=%ld", display_uid, result);
         return false;
     }
 
     std::cout << "Successfully set display " << display_uid << " as primary and disabled other displays" << std::endl;
     return true;
+    });
 }
 
 bool VirtualDisplayControl::RestoreDisplayConfiguration() {
+    return RunDisplayOperationOnInputDesktop([&] {
     
     if (!has_backup_) {
         return true;
@@ -1260,25 +1299,104 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
     persistent_modes_.clear();
     
     return true;
+    });
 }
 
 bool VirtualDisplayControl::HasPendingConfiguration() {
     return has_backup_;
 }
 
+bool VirtualDisplayControl::RetainDisplayForHandoff(int uid, const std::string& viewer,
+    int width, int height, int hz) {
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+    using namespace cloudplayplus::unattended;
+    if (!IsManagedDisplayClient()) return true;
+    if (!has_backup_ || viewer.empty() || viewer.size() >= sizeof(handed_display.viewer)) return false;
+    DisplayHandoffData data;
+    data.present = 1; data.uid = uid; data.width = width; data.height = height; data.hz = hz;
+    data.handle = reinterpret_cast<std::uint64_t>(vdd_handle_);
+    std::copy(viewer.begin(), viewer.end(), data.viewer);
+    const auto copy = [](const auto& paths, const auto& modes, DisplayHandoffLayout& layout) {
+        if (paths.size() > kHandoffPaths || modes.size() > kHandoffModes) return false;
+        layout.path_count = static_cast<UINT32>(paths.size());
+        layout.mode_count = static_cast<UINT32>(modes.size());
+        std::copy(paths.begin(), paths.end(), layout.paths);
+        std::copy(modes.begin(), modes.end(), layout.modes);
+        return true;
+    };
+    if (!copy(original_paths_, original_modes_, data.active) ||
+        !copy(persistent_paths_, persistent_modes_, data.persistent) || !ValidDisplayHandoff(data)) return false;
+    try { ExchangeDisplayHandoff(Command::retain_display, data); }
+    catch (const Error& error) {
+        CPPLOG_WARN("VDD_HANDOFF", "retain failed uid=%d error=%lu", uid, error.code);
+        throw;
+    }
+    handed_display = data;
+    CPPLOG_INFO("VDD_HANDOFF", "retained uid=%d generation=%llu mode=%dx%d@%d", uid,
+        static_cast<unsigned long long>(data.generation), width, height, hz);
+#else
+    (void)uid; (void)viewer; (void)width; (void)height; (void)hz;
+#endif
+    return true;
+}
+
+bool VirtualDisplayControl::RecoverDisplayHandoff(int& uid, std::string& viewer,
+    int& width, int& height, int& hz) {
+#if defined(CLOUDPLAYPLUS_SERVICE_CONSOLE_RECOVERY)
+    using namespace cloudplayplus::unattended;
+    if (!IsManagedDisplayClient()) return false;
+    if (!handed_display.present) {
+        DisplayHandoffData data;
+        try { ExchangeDisplayHandoff(Command::acquire_display, data); }
+        catch (const Error& error) {
+            CPPLOG_WARN("VDD_HANDOFF", "recover failed error=%lu", error.code);
+            throw;
+        }
+        if (!data.present) return false;
+        if (!ValidDisplayHandoff(data) || !data.handle) throw Error(ERROR_INVALID_DATA);
+        const auto handle = reinterpret_cast<HANDLE>(data.handle);
+        if (initialized_ || has_backup_) { CloseHandle(handle); throw Error(ERROR_BUSY); }
+        vdd_handle_ = handle;
+        original_paths_.assign(data.active.paths, data.active.paths + data.active.path_count);
+        original_modes_.assign(data.active.modes, data.active.modes + data.active.mode_count);
+        persistent_paths_.assign(data.persistent.paths, data.persistent.paths + data.persistent.path_count);
+        persistent_modes_.assign(data.persistent.modes, data.persistent.modes + data.persistent.mode_count);
+        has_backup_ = true;
+        handed_display = data;
+        if (!Initialize()) throw Error(ERROR_NOT_READY);
+    }
+    uid = static_cast<int>(handed_display.uid); viewer = handed_display.viewer;
+    width = static_cast<int>(handed_display.width); height = static_cast<int>(handed_display.height);
+    hz = static_cast<int>(handed_display.hz);
+    CPPLOG_INFO("VDD_HANDOFF", "recovered uid=%d generation=%llu mode=%dx%d@%d", uid,
+        static_cast<unsigned long long>(handed_display.generation), width, height, hz);
+    return true;
+#else
+    (void)uid; (void)viewer; (void)width; (void)height; (void)hz;
+    return false;
+#endif
+}
+
 bool VirtualDisplayControl::SaveDisplayConfiguration() {
     auto query = [](UINT32 flags, auto& paths, auto& modes) {
         for (int attempt = 0; attempt < 5; ++attempt) {
             UINT32 path_count = 0, mode_count = 0;
-            if (GetDisplayConfigBufferSizes(flags, &path_count, &mode_count) != ERROR_SUCCESS)
+            const LONG sizes = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+            if (sizes != ERROR_SUCCESS) {
+                CPPLOG_WARN("VDD_MODE", "snapshot sizes flags=%u status=%ld", flags, sizes);
                 return false;
+            }
             paths.resize(path_count);
             modes.resize(mode_count);
             DISPLAYCONFIG_TOPOLOGY_ID topology{};
             LONG result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count,
                 modes.data(), flags == QDC_DATABASE_CURRENT ? &topology : nullptr);
             if (result == ERROR_INSUFFICIENT_BUFFER) continue;
-            if (result != ERROR_SUCCESS || !path_count || !mode_count) return false;
+            if (result != ERROR_SUCCESS || !path_count || !mode_count) {
+                CPPLOG_WARN("VDD_MODE", "snapshot query flags=%u status=%ld paths=%u modes=%u",
+                    flags, result, path_count, mode_count);
+                return false;
+            }
             paths.resize(path_count);
             modes.resize(mode_count);
             return true;

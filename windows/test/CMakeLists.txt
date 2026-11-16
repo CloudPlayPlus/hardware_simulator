@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.14)
 project(hardware_simulator_input_tests LANGUAGES CXX)
 enable_testing()
 
+add_executable(input_desktop_operation_test input_desktop_operation_test.cpp)
+target_compile_features(input_desktop_operation_test PRIVATE cxx_std_17)
+target_compile_options(input_desktop_operation_test PRIVATE /W4 /WX /EHsc /utf-8)
+target_link_libraries(input_desktop_operation_test PRIVATE user32 advapi32)
+add_test(NAME input_desktop_operation COMMAND input_desktop_operation_test)
+
+add_executable(service_command_result_test service_command_result_test.cpp)
+target_compile_features(service_command_result_test PRIVATE cxx_std_17)
+target_compile_options(service_command_result_test PRIVATE /W4 /WX /utf-8)
+add_test(NAME service_command_result COMMAND service_command_result_test)
+
 set(CLOUDPLAYPLUS_SERVICE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../../windows/desktop_service"
   CACHE PATH "Companion service checkout for direct input tests")
 if(EXISTS "${CLOUDPLAYPLUS_SERVICE_SOURCE}/src/input_dispatcher.cpp")
@@ -59,3 +70,8 @@ target_compile_definitions(exclusive_display_topology_test PRIVATE UNICODE _UNIC
 target_compile_options(exclusive_display_topology_test PRIVATE /W4 /WX /utf-8 /wd4245 /wd4505 /wd4100)
 target_link_libraries(exclusive_display_topology_test PRIVATE user32 advapi32 setupapi cfgmgr32 wtsapi32)
 add_test(NAME exclusive_display_topology COMMAND exclusive_display_topology_test)
+add_executable(parsec_status_test parsec_status_test.cpp)
+target_compile_features(parsec_status_test PRIVATE cxx_std_17)
+target_compile_options(parsec_status_test PRIVATE /W4 /WX /utf-8 /wd4505 /wd4245)
+target_link_libraries(parsec_status_test PRIVATE setupapi cfgmgr32)
+add_test(NAME parsec_status COMMAND parsec_status_test)

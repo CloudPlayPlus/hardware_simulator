@@ -557,6 +557,9 @@ class HardwareSimulator {
     return HardwareSimulatorPlatform.instance.initParsecVdd();
   }
 
+  static Future<bool> recoverFailedParsecVdd() =>
+      HardwareSimulatorPlatform.instance.recoverFailedParsecVdd();
+
   static Future<int> createDisplay({
     List<Map<String, dynamic>>? configs,
   }) {
@@ -634,6 +637,11 @@ class HardwareSimulator {
   static Future<bool> restoreDisplayConfiguration() {
     return HardwareSimulatorPlatform.instance.restoreDisplayConfiguration();
   }
+
+  static Future<bool> retainDisplayForHandoff(Map<String, dynamic> data) =>
+      HardwareSimulatorPlatform.instance.retainDisplayForHandoff(data);
+  static Future<Map<String, dynamic>?> recoverDisplayHandoff() =>
+      HardwareSimulatorPlatform.instance.recoverDisplayHandoff();
 
   static Future<bool> hasPendingConfiguration() {
     return HardwareSimulatorPlatform.instance.hasPendingConfiguration();

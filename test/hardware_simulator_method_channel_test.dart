@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,6 +72,27 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });
+
+  test('service uninstall waits for native completion and propagates failure',
+      () async {
+    final native = Completer<Object?>();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) {
+      expect(call.method, 'unregisterService');
+      return native.future;
+    });
+    var completed = false;
+    final pending = platform.unregisterService();
+    unawaited(pending.then((_) {
+      completed = true;
+    }, onError: (Object _) {}));
+    final failure = expectLater(pending, throwsA(isA<PlatformException>()));
+    await pumpEventQueue();
+    expect(completed, isFalse);
+    native.completeError(
+        PlatformException(code: 'service_uninstall_failed', details: 5));
+    await failure;
+  }, skip: !Platform.isWindows);
 
   test('Linux forwards managed sender only for requested native capture',
       () async {
