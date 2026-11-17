@@ -54,6 +54,70 @@ typedef VOID(WINAPI* PFN_DestroySyntheticPointerDevice)(HSYNTHETICPOINTERDEVICE 
 
 namespace hardware_simulator {
 
+#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+void ReadMappingDesktopName(HDESK desktop, wchar_t (&name)[256]) {
+    DWORD needed = 0;
+    if (!desktop || !GetUserObjectInformationW(
+            desktop, UOI_NAME, name, sizeof(name), &needed)) {
+        wcscpy_s(name, L"unavailable");
+    }
+}
+
+void TraceMouseMapping(int screen_id, double x, double y,
+                       bool mapped, LONG absolute_x, LONG absolute_y) {
+    static thread_local ULONGLONG next_log = 0;
+    static thread_local unsigned long long samples = 0;
+    ++samples;
+    const auto now = GetTickCount64();
+    if (now < next_log) return;
+    next_log = now + 1000;
+    const auto monitors = HardwareSimulatorPlugin::GetStaticMonitors();
+    RECT cached{};
+    bool found = false;
+    std::ostringstream snapshot;
+    for (const auto& monitor : monitors) {
+        snapshot << monitor.screen_id << ':' << monitor.rect.left << ','
+                 << monitor.rect.top << ',' << monitor.rect.right << ','
+                 << monitor.rect.bottom << ';';
+        if (monitor.screen_id == screen_id) {
+            cached = monitor.rect;
+            found = true;
+        }
+    }
+    // 只在诊断采样时观测实时枚举；不替换输入使用的缓存或路由。
+    DISPLAY_DEVICEW device{};
+    device.cb = sizeof(device);
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    const bool device_ok = screen_id >= 0 &&
+        EnumDisplayDevicesW(nullptr, static_cast<DWORD>(screen_id), &device, 0);
+    const bool mode_ok = device_ok &&
+        EnumDisplaySettingsW(device.DeviceName, ENUM_CURRENT_SETTINGS, &mode);
+    wchar_t thread_name[256]{}, input_name[256]{};
+    ReadMappingDesktopName(GetThreadDesktop(GetCurrentThreadId()), thread_name);
+    const auto input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    const DWORD desktop_error = input ? 0 : GetLastError();
+    ReadMappingDesktopName(input, input_name);
+    if (input) CloseDesktop(input);
+    DWORD session = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    CPPLOG_INFO("INPUT_MAPPING",
+        "stage=native.map pid=%lu tid=%lu session=%lu raw=%d local=%.5f,%.5f "
+        "mapped=%d absolute=%ld,%ld cachedFound=%d cached=%ld,%ld,%ld,%ld snapshot=%s "
+        "liveDevice=%ls liveFlags=0x%lx liveMode=%d live=%ld,%ld,%lu,%lu "
+        "virtual=%d,%d,%d,%d threadDesktop=%ls inputDesktop=%ls desktopError=%lu samples=%llu",
+        GetCurrentProcessId(), GetCurrentThreadId(), session, screen_id, x, y,
+        mapped, absolute_x, absolute_y, found, cached.left, cached.top,
+        cached.right, cached.bottom, snapshot.str().c_str(), device.DeviceName, device.StateFlags,
+        mode_ok, mode.dmPosition.x, mode.dmPosition.y, mode.dmPelsWidth,
+        mode.dmPelsHeight, GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_CYVIRTUALSCREEN), thread_name, input_name,
+        desktop_error, samples);
+    samples = 0;
+}
+#endif
+
 // Marks the one programmatic mouse move used to re-seed the viewer cursor
 // after pointer lock. The Flutter child-window subclass consumes only moves
 // with this tag so Flutter never forwards them to the remote host.
@@ -342,7 +406,7 @@ std::map<int, std::function<void(int)>> HardwareSimulatorPlugin::display_count_c
 std::mutex HardwareSimulatorPlugin::display_count_callbacks_mutex_;
 int HardwareSimulatorPlugin::previous_display_count_ = -1;
 
-void HardwareSimulatorPlugin::UpdateStaticMonitors() {
+void HardwareSimulatorPlugin::UpdateStaticMonitors(bool notify) {
     static_monitors_.clear();
     
     // Original implementation using EnumDisplayMonitors (commented out)
@@ -379,11 +443,24 @@ void HardwareSimulatorPlugin::UpdateStaticMonitors() {
         }
     }
     
+#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+    wchar_t desktop_name[256]{};
+    ReadMappingDesktopName(GetThreadDesktop(GetCurrentThreadId()), desktop_name);
+    CPPLOG_INFO("INPUT_MAPPING", "stage=native.snapshot pid=%lu tid=%lu desktop=%ls count=%zu virtual=%d,%d,%d,%d",
+        GetCurrentProcessId(), GetCurrentThreadId(), desktop_name, static_monitors_.size(),
+        GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    for (const auto& monitor : static_monitors_) {
+        CPPLOG_INFO("INPUT_MAPPING", "stage=native.snapshot.entry pid=%lu raw=%d primary=%d bounds=%ld,%ld,%ld,%ld",
+            GetCurrentProcessId(), monitor.screen_id, monitor.is_primary,
+            monitor.rect.left, monitor.rect.top, monitor.rect.right, monitor.rect.bottom);
+    }
+#endif
     // Check if display count changed and notify callbacks
     int current_display_count = static_cast<int>(static_monitors_.size());
     // We report even the count is not changed, because it maybe a screen switch
     //if (current_display_count != previous_display_count_) {
-    notifyDisplayCountChanged(current_display_count);
+    if (notify) notifyDisplayCountChanged(current_display_count);
     //}
 }
 
@@ -1267,7 +1344,20 @@ void async_send_input_retry(INPUT& i) {
 }
 
 void send_input(INPUT& i) {
-    if (DesktopServiceInputClient::Instance().SendInputMessage(i)) {
+    const bool queued = DesktopServiceInputClient::Instance().SendInputMessage(i);
+#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+    if (i.type == INPUT_MOUSE) {
+        static thread_local ULONGLONG next_log = 0;
+        const auto now = GetTickCount64();
+        if (now >= next_log) {
+            next_log = now + 1000;
+            CPPLOG_INFO("INPUT_MAPPING", "stage=native.route pid=%lu tid=%lu queued=%d flags=0x%lx absolute=%ld,%ld",
+                GetCurrentProcessId(), GetCurrentThreadId(), queued,
+                i.mi.dwFlags, i.mi.dx, i.mi.dy);
+        }
+    }
+#endif
+    if (queued) {
         return;
     }
 
@@ -1484,7 +1574,11 @@ void performMouseMoveAbsl(double x,double y,int screenId){
 
     mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
                  MOUSEEVENTF_VIRTUALDESK;
-    if (!adjust_to_virtual_desktop(screenId, x,y, newx, newy)) return;
+    const bool mapped = adjust_to_virtual_desktop(screenId, x,y, newx, newy);
+#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+    TraceMouseMapping(screenId, x, y, mapped, newx, newy);
+#endif
+    if (!mapped) return;
     mi.dx = newx;
     mi.dy = newy;
 
@@ -2069,6 +2163,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      result->Success(flutter::EncodableValue(status));
   } else if (method_call.method_name().compare("getAllDisplays") == 0) {
      int displayCount = VirtualDisplayControl::GetAllDisplays();
+     // Winlogon 的拓扑变化不保证通知 Default 窗口；显式枚举必须同步输入缓存。
+     // 此处不发回调，避免显示变化处理器再次刷新列表时递归通知。
+     UpdateStaticMonitors(false);
      result->Success(flutter::EncodableValue(displayCount));
   } else if (method_call.method_name().compare("getDisplayList") == 0) {
      flutter::EncodableList displayList;

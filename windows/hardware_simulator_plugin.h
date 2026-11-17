@@ -66,7 +66,7 @@ class HardwareSimulatorPlugin : public flutter::Plugin {
   bool IsCursorLocked() const { return cursor_locked_; }
   
   // Static monitor management
-  static void UpdateStaticMonitors();
+  static void UpdateStaticMonitors(bool notify = true);
   static const std::vector<MonitorInfo>& GetStaticMonitors();
   
   // Display count change callback management
