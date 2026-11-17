@@ -14,10 +14,11 @@ DWORD dispatch_thread = 0;
 }
 namespace desktop_svc {
 bool InputInjector::synchronize_desktop(bool& changed) { changed = false; return true; }
-void InputInjector::send_keyboard(const desktop_ipc::KeyboardInput& value) {
+bool InputInjector::send_keyboard(const desktop_ipc::KeyboardInput& value) {
   dispatch_thread = GetCurrentThreadId(); keys.push_back(value);
+  return true;
 }
-void InputInjector::send_mouse(const desktop_ipc::MouseInput& value) { mice.push_back(value); }
+bool InputInjector::send_mouse(const desktop_ipc::MouseInput& value) { mice.push_back(value); return true; }
 void InputInjector::send_touch(const desktop_ipc::TouchInput& value) { touches.push_back(value); }
 void InputInjector::send_pen(const desktop_ipc::PenInput& value) { pens.push_back(value); }
 void InputInjector::shutdown() {}
