@@ -19,6 +19,7 @@
 
 #include "hardware_simulator_plugin_private.h"
 #include "linux_edit_focus.h"
+#include "linux_gamepads.h"
 #include "linux_gamescope_pointer.h"
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
@@ -34,6 +35,7 @@
 struct _HardwareSimulatorPlugin {
   GObject parent_instance;
   LinuxEditFocus* edit_focus;
+  LinuxGamepads* gamepads;
   LinuxGamescopePointer* gamescope_pointer;
   LinuxPointerCapture* pointer_capture;
   LinuxImmersiveInput* immersive_input;
@@ -598,6 +600,30 @@ static void hardware_simulator_plugin_handle_method_call(
       });
       return;
     }
+  } else if (strcmp(method, "createGameController") == 0) {
+    response = success_int(self->gamepads->create());
+  } else if (strcmp(method, "removeGameController") == 0 ||
+             strcmp(method, "doControlAction") == 0) {
+    FlValue* args = fl_method_call_get_args(method_call);
+    FlValue* id_value = args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_MAP
+                            ? fl_value_lookup_string(args, "id")
+                            : nullptr;
+    const int64_t id = id_value != nullptr && fl_value_get_type(id_value) == FL_VALUE_TYPE_INT
+                           ? fl_value_get_int(id_value)
+                           : -1;
+    if (id < 1 || id > 4) {
+      response = bad_args("Invalid virtual gamepad id.");
+    } else if (strcmp(method, "removeGameController") == 0) {
+      response = success_int(self->gamepads->remove(id) ? 1 : 0);
+    } else {
+      FlValue* action = fl_value_lookup_string(args, "action");
+      if (action == nullptr || fl_value_get_type(action) != FL_VALUE_TYPE_STRING ||
+          !self->gamepads->apply(id, fl_value_get_string(action))) {
+        response = bad_args("Invalid virtual gamepad state or controller unavailable.");
+      } else {
+        response = success_null();
+      }
+    }
   } else if (strcmp(method, "KeyPress") == 0) {
     response = perform_key_event(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mouseMoveR") == 0) {
@@ -741,6 +767,8 @@ static void hardware_simulator_plugin_dispose(GObject* object) {
   self->pointer_capture = nullptr;
   delete self->edit_focus;
   self->edit_focus = nullptr;
+  delete self->gamepads;
+  self->gamepads = nullptr;
   delete self->gamescope_pointer;
   self->gamescope_pointer = nullptr;
   if (self->channel) g_object_remove_weak_pointer(G_OBJECT(self->channel),
@@ -755,6 +783,7 @@ static void hardware_simulator_plugin_class_init(HardwareSimulatorPluginClass* k
 
 static void hardware_simulator_plugin_init(HardwareSimulatorPlugin* self) {
   self->edit_focus = new LinuxEditFocus();
+  self->gamepads = new LinuxGamepads();
   if (LinuxGamescopePointer::in_session()) {
     self->gamescope_pointer = new LinuxGamescopePointer();
   }
