@@ -19,6 +19,7 @@
 
 #include "hardware_simulator_plugin_private.h"
 #include "linux_edit_focus.h"
+#include "linux_gamescope_pointer.h"
 #include "linux_keyboard.h"
 #include "linux_mouse.h"
 #include "linux_pointer_capture.h"
@@ -33,6 +34,7 @@
 struct _HardwareSimulatorPlugin {
   GObject parent_instance;
   LinuxEditFocus* edit_focus;
+  LinuxGamescopePointer* gamescope_pointer;
   LinuxPointerCapture* pointer_capture;
   LinuxImmersiveInput* immersive_input;
   uint64_t relative_sender;
@@ -320,13 +322,23 @@ FlMethodResponse* perform_mouse_move_relative(FlValue* args) {
   return success_null();
 }
 
-FlMethodResponse* perform_mouse_move_absolute(FlValue* args) {
+FlMethodResponse* perform_mouse_move_absolute(HardwareSimulatorPlugin* self,
+                                              FlValue* args) {
   bool ok = true;
   double x = get_double_arg(args, "x", &ok);
   double y = get_double_arg(args, "y", &ok);
   int screen_id = get_int_arg(args, "screenId", &ok);
-  if (!ok) {
+  if (!ok || !std::isfinite(x) || !std::isfinite(y)) {
     return bad_args("Missing or incorrect arguments for mouseMoveA");
+  }
+
+  if (self->gamescope_pointer != nullptr) {
+    // Gamescope 的合成画面是单一采集源。旧版 Gamescope 不转发虚拟鼠标绝对轴。
+    if (screen_id != 0) return bad_args("Invalid Gamescope screenId for mouseMoveA");
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    if (self->gamescope_pointer->move(x, y)) return success_null();
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "DISPLAY_UNAVAILABLE", "Gamescope mouse focus is unavailable.", nullptr));
   }
 
   auto* mouse = get_mouse();
@@ -591,7 +603,7 @@ static void hardware_simulator_plugin_handle_method_call(
   } else if (strcmp(method, "mouseMoveR") == 0) {
     response = perform_mouse_move_relative(fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mouseMoveA") == 0) {
-    response = perform_mouse_move_absolute(fl_method_call_get_args(method_call));
+    response = perform_mouse_move_absolute(self, fl_method_call_get_args(method_call));
   } else if (strcmp(method, "mousePress") == 0) {
     auto* args = fl_method_call_get_args(method_call);
     response = perform_mouse_button(args);
@@ -729,6 +741,8 @@ static void hardware_simulator_plugin_dispose(GObject* object) {
   self->pointer_capture = nullptr;
   delete self->edit_focus;
   self->edit_focus = nullptr;
+  delete self->gamescope_pointer;
+  self->gamescope_pointer = nullptr;
   if (self->channel) g_object_remove_weak_pointer(G_OBJECT(self->channel),
       reinterpret_cast<gpointer*>(&self->channel));
   self->channel = nullptr;
@@ -741,6 +755,9 @@ static void hardware_simulator_plugin_class_init(HardwareSimulatorPluginClass* k
 
 static void hardware_simulator_plugin_init(HardwareSimulatorPlugin* self) {
   self->edit_focus = new LinuxEditFocus();
+  if (LinuxGamescopePointer::in_session()) {
+    self->gamescope_pointer = new LinuxGamescopePointer();
+  }
 }
 
 static void method_call_cb(FlMethodChannel* channel, FlMethodCall* method_call,
