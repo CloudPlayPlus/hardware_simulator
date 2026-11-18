@@ -58,8 +58,12 @@ inline Scale window_scale(const ScaleConfig& config, Scaler scaler,
   return {scale, scale};
 }
 
-inline int map_axis(double position, int output, int window, double scale) {
-  const double inset = (output - window * scale) / 2;
+inline int map_axis(double position, int output, int window, double scale,
+                    double zoom = 1.0, int cursor = 0) {
+  scale *= zoom;
+  double inset = (output - window * scale) / 2;
+  // 放大镜以当前光标为锚点平移画面；与 Gamescope 使用相同的整数窗口中心。
+  if (zoom != 1.0) inset += (window / 2 - cursor) * scale;
   const double local = (std::clamp(position, 0.0, 1.0) * output - inset) / scale;
   return static_cast<int>(std::lround(std::clamp(local, 0.0, window - 1.0)));
 }

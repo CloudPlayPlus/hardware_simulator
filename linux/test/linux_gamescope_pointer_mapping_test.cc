@@ -30,4 +30,8 @@ int main() {
   assert(map_axis(0.75, 800, 720, undocked.y) == 540);
   assert(map_axis(0, 1280, 1080, undocked.x) == 0);
   assert(map_axis(1, 1280, 1080, undocked.x) == 1079);
+
+  assert(map_axis(0.50, 1280, 1280, 1.0, 2.0, 340) == 340);
+  assert(map_axis(0.75, 1280, 1280, 1.0, 2.0, 340) == 500);
+  assert(map_axis(0.50, 800, 800, 0.8, 3.0, 650) == 650);
 }

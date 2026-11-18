@@ -243,13 +243,29 @@ bool LinuxGamescopePointer::move(double x, double y) {
     window = *base_window;
   }
 
+  const double zoom = read_cardinal(control_x11, "STEAM_SCREEN_MAGNIFICATION")
+                          .value_or(0xffffUL) / 65535.0;
+  const double overscan = read_cardinal(control_x11, "STEAM_SCREEN_SCALE")
+                              .value_or(0xffffffffUL) / 4294967295.0;
+  if (zoom <= 0 || overscan <= 0) return false;
+
   XWindowAttributes bounds{};
+  int cursor_x = 0;
+  int cursor_y = 0;
+  bool have_cursor = true;
   // 切换游戏时，刚读到的窗口可能已被销毁。
   gdk_x11_display_error_trap_push(target);
   const bool have_bounds = XGetWindowAttributes(target_x11, window, &bounds);
+  if (have_bounds && zoom != 1.0) {
+    Window pointer_root, pointer_child;
+    int root_x, root_y;
+    unsigned int mask;
+    have_cursor = XQueryPointer(target_x11, window, &pointer_root, &pointer_child,
+                                &root_x, &root_y, &cursor_x, &cursor_y, &mask);
+  }
   const int geometry_error = gdk_x11_display_error_trap_pop(target);
-  if (geometry_error != 0 || !have_bounds || bounds.map_state != IsViewable ||
-      bounds.width <= 0 || bounds.height <= 0) {
+  if (geometry_error != 0 || !have_bounds || !have_cursor ||
+      bounds.map_state != IsViewable || bounds.width <= 0 || bounds.height <= 0) {
     return false;
   }
 
@@ -262,11 +278,10 @@ bool LinuxGamescopePointer::move(double x, double y) {
                                      : select_scaler(modern, legacy);
   const auto scale = window_scale(*scale_config_, scaler, output.width,
                                   output.height, bounds.width, bounds.height);
-  const double overscan = read_cardinal(control_x11, "STEAM_SCREEN_SCALE")
-                              .value_or(0xffffffffUL) / 4294967295.0;
-  if (overscan <= 0) return false;
-  const int target_x = bounds.x + map_axis(x, output.width, bounds.width, scale.x * overscan);
-  const int target_y = bounds.y + map_axis(y, output.height, bounds.height, scale.y * overscan);
+  const int target_x = bounds.x + map_axis(
+      x, output.width, bounds.width, scale.x * overscan, zoom, cursor_x);
+  const int target_y = bounds.y + map_axis(
+      y, output.height, bounds.height, scale.y * overscan, zoom, cursor_y);
   XWarpPointer(target_x11, None, root, 0, 0, 0, 0, target_x, target_y);
   // 按键走 uinput，先让 XWayland 处理定位，再处理后续鼠标按键。
   XSync(target_x11, False);
