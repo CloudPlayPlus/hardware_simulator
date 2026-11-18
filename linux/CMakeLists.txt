@@ -14,6 +14,7 @@ set(PLUGIN_NAME "hardware_simulator_plugin")
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
   "hardware_simulator_plugin.cc"
+  "linux_gamescope_pointer.cc"
   "linux_mouse.cc"
   "linux_pointer_capture.cc"
   "linux_immersive_input.cc"
