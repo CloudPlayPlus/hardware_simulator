@@ -2,6 +2,10 @@
 
 #include <gdk/gdk.h>
 
+#include <optional>
+
+#include "linux_gamescope_pointer_mapping.h"
+
 class LinuxGamescopePointer {
  public:
   LinuxGamescopePointer() = default;
@@ -15,4 +19,5 @@ class LinuxGamescopePointer {
  private:
   GdkDisplay* control_ = nullptr;
   GdkDisplay* target_ = nullptr;
+  std::optional<linux_gamescope_pointer::ScaleConfig> scale_config_;
 };

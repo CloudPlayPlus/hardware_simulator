@@ -180,6 +180,10 @@ endif()  # include_${PROJECT_NAME}_tests
 # 无桌面副作用的 uinput 边界回归测试。
 option(HARDWARE_SIMULATOR_INPUT_TESTS "Build Linux input regression checks" OFF)
 if(HARDWARE_SIMULATOR_INPUT_TESTS)
+  add_executable(linux_gamescope_pointer_mapping_test test/linux_gamescope_pointer_mapping_test.cc)
+  target_include_directories(linux_gamescope_pointer_mapping_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_features(linux_gamescope_pointer_mapping_test PRIVATE cxx_std_17)
+  target_compile_options(linux_gamescope_pointer_mapping_test PRIVATE -UNDEBUG)
   if(ATSPI_FOUND)
     add_executable(linux_edit_focus_test test/linux_edit_focus_test.cc linux_edit_focus.cc)
     target_include_directories(linux_edit_focus_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
