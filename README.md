@@ -63,6 +63,22 @@ cmake --build build/linux/x64/release --target linux_input_test
 重复按下、权限失败重试、释放失败重试，以及两轴滚轮余量与相对/绝对设备切换。
 原生 Wayland/X11 应用中的实际输入仍需远控实机验收。
 
+焦点观察通过独立的 AT-SPI D-Bus 连接注册。Linux 主机的总线不可用或掉线时，
+只停用远程文本框的自动键盘提示；远控输入和手动键盘仍可用。新远控会话可在总线
+恢复后重新注册焦点观察。
+
+在已安装 `libatspi2.0-dev` 的环境下运行焦点观察回归：
+
+```bash
+cmake --build build/linux/x64/release --target linux_edit_focus_test
+python3 plugins/hardware_simulator/linux/test/run_isolated_dbus_test.py -- \
+  build/linux/x64/release/plugins/hardware_simulator/linux_edit_focus_test
+```
+
+通过同一脚本启动其他无桌面 D-Bus 测试。脚本为每次运行分配临时
+`XDG_RUNTIME_DIR` 和独立会话总线，退出或超时时会清理测试进程组。
+IBus 回归脚本 `run_ibus_test.sh` 会自动使用该环境。
+
 ### Linux Viewer pointer capture
 
 Build dependencies: `libxi-dev`, `libwayland-dev`, `wayland-protocols` (and
