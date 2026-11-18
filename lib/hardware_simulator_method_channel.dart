@@ -45,6 +45,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Stream<GamepadRumbleEvent> get gamepadRumbleEvents => _rumbleEvents.stream;
   @override
   Future<void> subscribeGamepadRumble(int id, int token) async {
+    if (Platform.isLinux) return;
     if (!isinitialized) init();
     await methodChannel.invokeMethod<void>(
         'subscribeGamepadRumble', {'id': id, 'token': token});
@@ -888,7 +889,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   @override
   Future<int> createGameController() async {
-    if (!Platform.isWindows) return -1;
+    if (!Platform.isWindows && !Platform.isLinux) return -1;
     final gamepadId =
         await methodChannel.invokeMethod<int>('createGameController');
     return gamepadId!;
