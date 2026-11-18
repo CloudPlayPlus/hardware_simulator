@@ -61,7 +61,7 @@ struct Bus {
     loop = g_main_loop_new(context, false);
     std::promise<void> started;
     auto ready = started.get_future();
-    worker = std::thread([&] {
+    worker = std::thread([this, address, started = std::move(started)]() mutable {
       g_main_context_push_thread_default(context);
       connection = g_dbus_connection_new_for_address_sync(address.c_str(),
           static_cast<GDBusConnectionFlags>(G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT |
@@ -228,10 +228,14 @@ int main(int argc, char** argv) {
     check(monitor, true);
     assert(bus.tree_queries == 1);  // 连接前已有的焦点。
 
+    bus.emit_focus(false);
+    check(monitor, true);
+    assert(bus.tree_queries == 2);
+    bus.emit_focus(false);
     bus.emit_focus(true);
     bus.password = true;
     check(monitor, true, true);
-    assert(bus.tree_queries == 1);
+    assert(bus.tree_queries == 2);
     bus.editable = false; check(monitor, false); bus.editable = true;
     bus.focused = false; check(monitor, false); bus.focused = true;
     bus.inside = false; check(monitor, false); bus.inside = true;
