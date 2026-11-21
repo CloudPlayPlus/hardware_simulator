@@ -34,7 +34,6 @@ list(APPEND PLUGIN_SOURCES
   "notification_window.h"
   "pointer_coordinates.h"
   "service_command_result.h"
-  "service_install_directory.h"
   "trackpad_scroll_accumulator.h"
   "windows_editing_event_monitor.cc"
   "windows_editing_event_monitor.h"

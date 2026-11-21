@@ -17,7 +17,6 @@
 #include "unattended_runtime.h"
 #endif
 #include "service_command_result.h"
-#include "service_install_directory.h"
 
 // For getPlatformVersion; remove unless needed for your plugin implementation.
 #include <VersionHelpers.h>
@@ -1073,19 +1072,6 @@ bool RunExeAsAdmin(
         return false;
     }
 
-    if (_wcsicmp(lpArguments, L"--install") == 0) {
-        wchar_t registered[32768]{};
-        DWORD bytes = sizeof(registered);
-        const DWORD read = RegGetValueW(HKEY_LOCAL_MACHINE,
-            L"SOFTWARE\\CloudPlayPlus\\Release", L"InstallFolder",
-            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, registered, &bytes);
-        const DWORD error = ValidateServiceInstallDirectory(read, registered, exeDir);
-        if (error != ERROR_SUCCESS) {
-            if (pErrorCode) *pErrorCode = error;
-            return false;
-        }
-    }
-
     SHELLEXECUTEINFOW sei = { sizeof(sei) };
     sei.lpVerb = L"runas";
     sei.lpFile = targetPath;
@@ -1959,10 +1945,7 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         } else if (error == ERROR_CANCELLED) {
             result->Success(flutter::EncodableValue(false));
         } else {
-            result->Error("service_install_failed",
-                          error == ERROR_BAD_PATHNAME
-                              ? "当前程序与登记的安装目录不一致，请使用完整安装包修复并从安装目录启动应用。"
-                              : "安装系统服务失败",
+            result->Error("service_install_failed", "安装系统服务失败",
                           flutter::EncodableValue(static_cast<int64_t>(error)));
         }
   } else if (method_call.method_name().compare("unregisterService") == 0) {
