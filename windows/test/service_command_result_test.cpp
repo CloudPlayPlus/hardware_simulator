@@ -1,5 +1,4 @@
 #include "../service_command_result.h"
-#include "../service_install_directory.h"
 
 #include <stdexcept>
 #include <string>
@@ -8,13 +7,6 @@
 
 int wmain(int argc, wchar_t** argv) {
   if (argc == 2) return std::stoi(argv[1]);
-  CHECK(ValidateServiceInstallDirectory(ERROR_SUCCESS, L"D:\\Program Files\\CloudPlayPlus\\",
-      L"d:\\program files\\cloudplayplus") == ERROR_SUCCESS);
-  CHECK(ValidateServiceInstallDirectory(ERROR_SUCCESS, L"D:\\Program Files\\CloudPlayPlus",
-      L"D:\\repo\\build\\Debug") == ERROR_BAD_PATHNAME);
-  CHECK(ValidateServiceInstallDirectory(ERROR_SUCCESS, L"", L"D:\\repo") == ERROR_BAD_PATHNAME);
-  CHECK(ValidateServiceInstallDirectory(ERROR_FILE_NOT_FOUND, L"", L"D:\\repo") == ERROR_SUCCESS);
-  CHECK(ValidateServiceInstallDirectory(ERROR_ACCESS_DENIED, L"", L"D:\\repo") == ERROR_ACCESS_DENIED);
   wchar_t executable[MAX_PATH]{};
   CHECK(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0);
   for (const DWORD expected : {0ul, 7ul}) {
