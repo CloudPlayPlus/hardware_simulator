@@ -29,11 +29,19 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private var isAndroidTV = false
   private var flutterView: View? = null
   private var lockedKeyEventHandler: ((KeyEvent) -> Boolean)? = null
+  private val touchpad = CapturedTouchpad(
+    move = { dx, dy -> channel.invokeMethod("onCursorMoved", mapOf("dx" to dx, "dy" to dy)) },
+    tap = {
+      channel.invokeMethod("onCursorButton", mapOf("buttonId" to 1, "isDown" to true))
+      channel.invokeMethod("onCursorButton", mapOf("buttonId" to 1, "isDown" to false))
+    },
+    scroll = { dx, dy -> channel.invokeMethod("onCursorScroll", mapOf("dx" to dx, "dy" to dy)) }
+  )
   private val mouseDispatchAttachListener = object : View.OnAttachStateChangeListener {
     override fun onViewAttachedToWindow(view: View) {
       if (isCursorLocked && flutterView === view) setMouseUnbufferedDispatch(view, true)
     }
-    override fun onViewDetachedFromWindow(view: View) {}
+    override fun onViewDetachedFromWindow(view: View) { touchpad.reset() }
   }
 
   private fun setMouseUnbufferedDispatch(view: View, enabled: Boolean) {
@@ -45,6 +53,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   }
 
   private fun resetMouseDispatch() {
+    touchpad.reset()
     flutterView?.let { view ->
       view.removeOnAttachStateChangeListener(mouseDispatchAttachListener)
       setMouseUnbufferedDispatch(view, false)
@@ -103,6 +112,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       }
     }
     flutterView?.setOnCapturedPointerListener { _, event ->
+      if (touchpad.handle(event)) return@setOnCapturedPointerListener true
       when (event.actionMasked) {
         MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> {
           // 处理鼠标移动
