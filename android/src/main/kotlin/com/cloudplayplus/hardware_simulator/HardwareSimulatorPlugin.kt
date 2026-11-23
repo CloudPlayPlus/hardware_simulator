@@ -29,19 +29,22 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private var isAndroidTV = false
   private var flutterView: View? = null
   private var lockedKeyEventHandler: ((KeyEvent) -> Boolean)? = null
+  private val buttons = CapturedPointerButtons(
+    send = { id, down -> channel.invokeMethod("onCursorButton", mapOf("buttonId" to id, "isDown" to down)) },
+    delayTapRelease = { release ->
+      if (flutterView?.postDelayed(release, 40L) != true) release.run()
+    }
+  )
   private val touchpad = CapturedTouchpad(
     move = { dx, dy -> channel.invokeMethod("onCursorMoved", mapOf("dx" to dx, "dy" to dy)) },
-    tap = {
-      channel.invokeMethod("onCursorButton", mapOf("buttonId" to 1, "isDown" to true))
-      channel.invokeMethod("onCursorButton", mapOf("buttonId" to 1, "isDown" to false))
-    },
+    tap = buttons::tap,
     scroll = { dx, dy -> channel.invokeMethod("onCursorScroll", mapOf("dx" to dx, "dy" to dy)) }
   )
   private val mouseDispatchAttachListener = object : View.OnAttachStateChangeListener {
     override fun onViewAttachedToWindow(view: View) {
       if (isCursorLocked && flutterView === view) setMouseUnbufferedDispatch(view, true)
     }
-    override fun onViewDetachedFromWindow(view: View) { touchpad.reset() }
+    override fun onViewDetachedFromWindow(view: View) { resetCapturedInput() }
   }
 
   private fun setMouseUnbufferedDispatch(view: View, enabled: Boolean) {
@@ -52,8 +55,13 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     )
   }
 
-  private fun resetMouseDispatch() {
+  private fun resetCapturedInput() {
     touchpad.reset()
+    buttons.reset()
+  }
+
+  private fun resetMouseDispatch() {
+    resetCapturedInput()
     flutterView?.let { view ->
       view.removeOnAttachStateChangeListener(mouseDispatchAttachListener)
       setMouseUnbufferedDispatch(view, false)
@@ -112,6 +120,7 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       }
     }
     flutterView?.setOnCapturedPointerListener { _, event ->
+      buttons.observe(event)
       if (touchpad.handle(event)) return@setOnCapturedPointerListener true
       when (event.actionMasked) {
         MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> {
@@ -134,36 +143,15 @@ class HardwareSimulatorPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
           ))
           true
         }
-        MotionEvent.ACTION_BUTTON_PRESS -> {
-          // 处理鼠标按键按下
-          val buttonId = when (event.actionButton) {
-            MotionEvent.BUTTON_PRIMARY -> 1  // 左键
-            MotionEvent.BUTTON_SECONDARY -> 3  // 右键
-            MotionEvent.BUTTON_TERTIARY -> 2  // 中键
-            //Android TV 鼠标右键
-            MotionEvent.BUTTON_BACK -> 3
-            else -> event.actionButton
+        MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
+          // 主键、中键和右键已从状态差量发送；其余按键保留原生编号。
+          val bit = event.actionButton
+          if (bit != 0 && bit and (MotionEvent.BUTTON_PRIMARY or MotionEvent.BUTTON_SECONDARY or
+              MotionEvent.BUTTON_TERTIARY or MotionEvent.BUTTON_BACK) == 0) {
+            channel.invokeMethod("onCursorButton", mapOf(
+              "buttonId" to bit, "isDown" to (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS)
+            ))
           }
-          channel.invokeMethod("onCursorButton", mapOf(
-            "buttonId" to buttonId,
-            "isDown" to true
-          ))
-          true
-        }
-        MotionEvent.ACTION_BUTTON_RELEASE -> {
-          // 处理鼠标按键释放
-          val buttonId = when (event.actionButton) {
-            MotionEvent.BUTTON_PRIMARY -> 1  // 左键
-            MotionEvent.BUTTON_SECONDARY -> 3  // 右键
-            MotionEvent.BUTTON_TERTIARY -> 2  // 中键
-            //Android TV 鼠标右键
-            MotionEvent.BUTTON_BACK -> 3
-            else -> event.actionButton
-          }
-          channel.invokeMethod("onCursorButton", mapOf(
-            "buttonId" to buttonId,
-            "isDown" to false
-          ))
           true
         }
         else -> false

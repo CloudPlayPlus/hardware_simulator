@@ -8,14 +8,13 @@ import kotlin.math.abs
 /** Captured SOURCE_TOUCHPAD delivers finger contacts instead of Android's pointer gestures. */
 internal class CapturedTouchpad(
   private val move: (Float, Float) -> Unit,
-  private val tap: () -> Unit,
+  private val tap: (Int) -> Unit,
   private val scroll: (Float, Float) -> Unit
 ) {
   private var deviceId = -1
   private var fingerId = -1
   private var contactStartTime = 0L
-  private var startX = 0f
-  private var startY = 0f
+  private val tapOrigins = mutableMapOf<Int, Pair<Float, Float>>()
   private var lastX = 0f
   private var lastY = 0f
   private var unitsPerMmX = 1f
@@ -30,6 +29,7 @@ internal class CapturedTouchpad(
   fun reset() {
     fingerId = -1
     deviceId = -1
+    tapOrigins.clear()
     tapCandidate = false
     multipleFingers = false
     scrollRemainderX = 0f
@@ -39,16 +39,18 @@ internal class CapturedTouchpad(
   fun handle(event: MotionEvent): Boolean {
     if (!event.isFromSource(InputDevice.SOURCE_TOUCHPAD)) return false
     if (event.deviceId != deviceId) reset()
+    if (tapCandidate && event.actionMasked != MotionEvent.ACTION_DOWN) {
+      checkTap(event)
+    }
     when (event.actionMasked) {
       MotionEvent.ACTION_DOWN -> {
         reset()
         deviceId = event.deviceId
         fingerId = event.getPointerId(0)
         contactStartTime = event.eventTime
-        startX = event.x
-        startY = event.y
-        lastX = startX
-        lastY = startY
+        lastX = event.x
+        lastY = event.y
+        tapOrigins[fingerId] = lastX to lastY
         tapCandidate = event.buttonState == 0
         val device = event.device
         unitsPerMmX = unitsPerMm(device, MotionEvent.AXIS_X, 100f)
@@ -57,8 +59,12 @@ internal class CapturedTouchpad(
         relativeY = device?.getMotionRange(MotionEvent.AXIS_RELATIVE_Y, event.source) != null
       }
       MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+          if (multipleFingers || event.pointerCount != 2) tapCandidate = false
+          val i = event.actionIndex
+          tapOrigins[event.getPointerId(i)] = event.getX(i) to event.getY(i)
+        }
         multipleFingers = true
-        tapCandidate = false
         val lifted = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) event.actionIndex else -1
         val remaining = event.pointerCount - if (lifted < 0) 0 else 1
         if (remaining == 2) {
@@ -80,9 +86,6 @@ internal class CapturedTouchpad(
         if (event.pointerCount == 2 && multipleFingers) {
           scrollPair(event)
         } else if (!multipleFingers && event.pointerCount == 1 && event.getPointerId(0) == fingerId) {
-          for (i in 0 until event.historySize) checkTapSlop(event.getHistoricalX(i), event.getHistoricalY(i))
-          checkTapSlop(event.x, event.y)
-          if (event.buttonState != 0) tapCandidate = false
           // Android 15 can expose only absolute axes. A declared relative axis may validly be zero.
           val dx = if (relativeX) CapturedMouseMotion.deltaX(event) else event.x - lastX
           val dy = if (relativeY) CapturedMouseMotion.deltaY(event) else event.y - lastY
@@ -92,11 +95,10 @@ internal class CapturedTouchpad(
         }
       }
       MotionEvent.ACTION_UP -> {
-        checkTapSlop(event.x, event.y)
-        if (tapCandidate && event.getPointerId(0) == fingerId && event.buttonState == 0 &&
+        if (tapCandidate && tapOrigins.containsKey(event.getPointerId(0)) &&
           event.eventTime - contactStartTime <= ViewConfiguration.getDoubleTapTimeout() &&
           (event.flags and MotionEvent.FLAG_CANCELED) == 0) {
-          tap()
+          tap(if (multipleFingers) 3 else 1)
         }
         reset()
       }
@@ -115,8 +117,22 @@ internal class CapturedTouchpad(
     return if (range.resolution > 0f) range.resolution else (range.range / nominalSizeMm).coerceAtLeast(1f)
   }
 
-  private fun checkTapSlop(x: Float, y: Float) {
-    if (abs(x - startX) > 1.5f * unitsPerMmX || abs(y - startY) > 1.5f * unitsPerMmY) tapCandidate = false
+  private fun checkTap(event: MotionEvent) {
+    if (event.buttonState != 0 || (event.flags and MotionEvent.FLAG_CANCELED) != 0) {
+      tapCandidate = false
+      return
+    }
+    for (i in 0 until event.pointerCount) {
+      val start = tapOrigins[event.getPointerId(i)] ?: continue
+      fun moved(x: Float, y: Float) =
+        abs(x - start.first) > 1.5f * unitsPerMmX || abs(y - start.second) > 1.5f * unitsPerMmY
+      if (moved(event.getX(i), event.getY(i)) || (0 until event.historySize).any {
+          moved(event.getHistoricalX(i, it), event.getHistoricalY(i, it))
+        }) {
+        tapCandidate = false
+        return
+      }
+    }
   }
 
   private fun scrollPair(event: MotionEvent) {
@@ -131,6 +147,9 @@ internal class CapturedTouchpad(
     val ticksY = scrollRemainderY.toInt()
     scrollRemainderX -= ticksX
     scrollRemainderY -= ticksY
-    if (ticksX != 0 || ticksY != 0) scroll(20f * ticksX, 20f * ticksY)
+    if (ticksX != 0 || ticksY != 0) {
+      tapCandidate = false
+      scroll(20f * ticksX, 20f * ticksY)
+    }
   }
 }

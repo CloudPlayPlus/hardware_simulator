@@ -11,8 +11,9 @@ import org.mockito.Mockito
 internal class CapturedTouchpadTest {
   private val moves = mutableListOf<Pair<Float, Float>>()
   private val scrolls = mutableListOf<Pair<Float, Float>>()
-  private var clicks = 0
-  private val pad = CapturedTouchpad({ x, y -> moves.add(x to y) }, { clicks++ }, { x, y -> scrolls.add(x to y) })
+  private val clicked = mutableListOf<Int>()
+  private val clicks get() = clicked.size
+  private val pad = CapturedTouchpad({ x, y -> moves.add(x to y) }, { clicked.add(it) }, { x, y -> scrolls.add(x to y) })
   private val device = Mockito.mock(InputDevice::class.java)
 
   private fun contact(action: Int, x: Float, y: Float, time: Long = 1000L, fingers: Int = 1): MotionEvent {
@@ -26,6 +27,7 @@ internal class CapturedTouchpadTest {
     Mockito.`when`(e.y).thenReturn(y)
     Mockito.`when`(e.pointerCount).thenReturn(fingers)
     for (i in 0 until fingers) {
+      Mockito.`when`(e.getPointerId(i)).thenReturn(i)
       Mockito.`when`(e.getX(i)).thenReturn(x + i * 40)
       Mockito.`when`(e.getY(i)).thenReturn(y)
     }
@@ -72,6 +74,24 @@ internal class CapturedTouchpadTest {
     }
   }
 
+  @Test fun twoFingerTapClicksRightWithEitherLiftOrderAndNeverAfterScrolling() {
+    Mockito.mockStatic(ViewConfiguration::class.java).use { config ->
+      config.`when`<Int> { ViewConfiguration.getDoubleTapTimeout() }.thenReturn(300)
+      for (firstLift in 0..1) {
+        pad.handle(contact(MotionEvent.ACTION_DOWN, 10f, 10f))
+        val second = contact(MotionEvent.ACTION_POINTER_DOWN, 10f, 10f, 1010, 2)
+        Mockito.`when`(second.actionIndex).thenReturn(1)
+        pad.handle(second)
+        val lift = contact(MotionEvent.ACTION_POINTER_UP, 10f, 10f, 1040, 2)
+        Mockito.`when`(lift.actionIndex).thenReturn(firstLift)
+        pad.handle(lift)
+        val last = contact(MotionEvent.ACTION_UP, if (firstLift == 0) 50f else 10f, 10f, 1050)
+        Mockito.`when`(last.getPointerId(0)).thenReturn(1 - firstLift)
+        pad.handle(last)
+      }
+      assertEquals(listOf(3, 3), clicked)
+    }
+  }
   @Test fun twoFingersScrollWithoutMovingCursorOrClickingOnLift() {
     pad.handle(contact(MotionEvent.ACTION_DOWN, 100f, 100f))
     pad.handle(contact(MotionEvent.ACTION_POINTER_DOWN, 100f, 100f, fingers = 2))
