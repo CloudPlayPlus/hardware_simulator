@@ -640,7 +640,8 @@ void CursorChangedEventProc(HWINEVENTHOOK hook,
             const auto mousePos = GetMousePositionAndScreenId();
             if (!mousePos) break;
             hasLastCursorVisible = true;
-            lastCursorVisible = event == EVENT_OBJECT_SHOW;
+            lastCursorVisible =
+                CursorVisibleForViewer(event == EVENT_OBJECT_SHOW);
             const auto positionBytes = CursorPositionPayload(mousePos->xPercent, mousePos->yPercent);
             for (auto callback : callbacks) {
                 callback.second(lastCursorVisible ? CPP_CURSOR_VISIBLE : CPP_CURSOR_INVISIBLE,
