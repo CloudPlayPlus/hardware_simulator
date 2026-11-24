@@ -46,6 +46,27 @@ void main() {
   MethodChannelHardwareSimulator platform = MethodChannelHardwareSimulator();
   const MethodChannel channel = MethodChannel('hardware_simulator');
 
+  test('absolute moves include diagnostics only while opted in', () async {
+    final mouse = MethodChannelHardwareSimulator();
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    await mouse.performMouseMoveAbsl(0.25, 0.75, 2);
+    mouse.windowsMappingDiagnostics = true;
+    await mouse.performMouseMoveAbsl(0.25, 0.75, 2);
+    mouse.windowsMappingDiagnostics = false;
+    await mouse.performMouseMoveAbsl(0.25, 0.75, 2);
+    final point = {'x': 0.25, 'y': 0.75, 'screenId': 2};
+    expect(calls.map((call) => call.arguments), [
+      point,
+      {...point, 'traceMapping': true},
+      point,
+    ]);
+  });
+
   test('shortcut heartbeat acknowledges exact owner and challenge', () async {
     MethodCall? sent;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
