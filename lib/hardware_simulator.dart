@@ -86,6 +86,10 @@ class HWKeyboard {
 
 class HWMouse {
   HWMouse();
+  /// Opt in to sampled geometry logs on Windows for this app instance.
+  set windowsMappingDiagnostics(bool enabled) =>
+      HardwareSimulatorPlatform.instance.windowsMappingDiagnostics = enabled;
+
   void performMouseMoveRelative(double deltax, double deltay, int screenId) {
     HardwareSimulatorPlatform.instance
         .performMouseMoveRelative(deltax, deltay, screenId);

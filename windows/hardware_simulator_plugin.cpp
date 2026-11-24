@@ -53,7 +53,15 @@ typedef VOID(WINAPI* PFN_DestroySyntheticPointerDevice)(HSYNTHETICPOINTERDEVICE 
 
 namespace hardware_simulator {
 
-#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+struct MouseMappingGeometry {
+    std::optional<RECT> monitor;
+    POINT target{};
+    POINT origin{};
+    int width = 0;
+    int height = 0;
+};
+
+#if defined(CPP_LOG_AVAILABLE)
 void ReadMappingDesktopName(HDESK desktop, wchar_t (&name)[256]) {
     DWORD needed = 0;
     if (!desktop || !GetUserObjectInformationW(
@@ -62,8 +70,26 @@ void ReadMappingDesktopName(HDESK desktop, wchar_t (&name)[256]) {
     }
 }
 
+const char* MappingThreadDpiMode() {
+    const auto user32 = GetModuleHandleW(L"user32.dll");
+    using GetContext = DPI_AWARENESS_CONTEXT(WINAPI*)();
+    using Equal = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+    static const auto get_context = reinterpret_cast<GetContext>(
+        GetProcAddress(user32, "GetThreadDpiAwarenessContext"));
+    static const auto equal = reinterpret_cast<Equal>(
+        GetProcAddress(user32, "AreDpiAwarenessContextsEqual"));
+    if (!get_context || !equal) return "unknown";
+    const auto context = get_context();
+    if (equal(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return "per-monitor-v2";
+    if (equal(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)) return "per-monitor";
+    if (equal(context, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE)) return "system";
+    if (equal(context, DPI_AWARENESS_CONTEXT_UNAWARE)) return "unaware";
+    return "other";
+}
+
 void TraceMouseMapping(int screen_id, double x, double y,
-                       bool mapped, LONG absolute_x, LONG absolute_y) {
+                       bool mapped, LONG absolute_x, LONG absolute_y, const char* route,
+                       const MouseMappingGeometry& geometry) {
     static thread_local ULONGLONG next_log = 0;
     static thread_local unsigned long long samples = 0;
     ++samples;
@@ -71,17 +97,12 @@ void TraceMouseMapping(int screen_id, double x, double y,
     if (now < next_log) return;
     next_log = now + 1000;
     const auto monitors = HardwareSimulatorPlugin::GetStaticMonitors();
-    RECT cached{};
-    bool found = false;
+    const RECT cached = geometry.monitor.value_or(RECT{});
     std::ostringstream snapshot;
     for (const auto& monitor : monitors) {
         snapshot << monitor.screen_id << ':' << monitor.rect.left << ','
                  << monitor.rect.top << ',' << monitor.rect.right << ','
                  << monitor.rect.bottom << ';';
-        if (monitor.screen_id == screen_id) {
-            cached = monitor.rect;
-            found = true;
-        }
     }
     // 只在诊断采样时观测实时枚举；不替换输入使用的缓存或路由。
     DISPLAY_DEVICEW device{};
@@ -104,14 +125,14 @@ void TraceMouseMapping(int screen_id, double x, double y,
         "stage=native.map pid=%lu tid=%lu session=%lu raw=%d local=%.5f,%.5f "
         "mapped=%d absolute=%ld,%ld cachedFound=%d cached=%ld,%ld,%ld,%ld snapshot=%s "
         "liveDevice=%ls liveFlags=0x%lx liveMode=%d live=%ld,%ld,%lu,%lu "
-        "virtual=%d,%d,%d,%d threadDesktop=%ls inputDesktop=%ls desktopError=%lu samples=%llu",
+        "dpiMode=%s targetPx=%ld,%ld route=%s virtual=%d,%d,%d,%d threadDesktop=%ls inputDesktop=%ls desktopError=%lu samples=%llu",
         GetCurrentProcessId(), GetCurrentThreadId(), session, screen_id, x, y,
-        mapped, absolute_x, absolute_y, found, cached.left, cached.top,
+        mapped, absolute_x, absolute_y, geometry.monitor.has_value(), cached.left, cached.top,
         cached.right, cached.bottom, snapshot.str().c_str(), device.DeviceName, device.StateFlags,
         mode_ok, mode.dmPosition.x, mode.dmPosition.y, mode.dmPelsWidth,
-        mode.dmPelsHeight, GetSystemMetrics(SM_XVIRTUALSCREEN),
-        GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN),
-        GetSystemMetrics(SM_CYVIRTUALSCREEN), thread_name, input_name,
+        mode.dmPelsHeight, MappingThreadDpiMode(), geometry.target.x,
+        geometry.target.y, route, static_cast<int>(geometry.origin.x),
+        static_cast<int>(geometry.origin.y), geometry.width, geometry.height, thread_name, input_name,
         desktop_error, samples);
     samples = 0;
 }
@@ -165,7 +186,7 @@ bool adjust_to_screen(
     double x_percent,
     double y_percent,
     LONG& out_x,
-    LONG& out_y);
+    LONG& out_y, MouseMappingGeometry* geometry = nullptr);
 
 std::optional<RECT> MonitorRectForScreenId(
     const std::vector<MonitorInfo>& monitors,
@@ -472,28 +493,34 @@ std::vector<MonitorInfo> get_monitors() {
 }
 
 bool adjust_to_virtual_desktop_pixels(int screen_id, double x_percent, double y_percent,
-                                 LONG& out_x, LONG& out_y) {
-    if (!adjust_to_screen(screen_id, x_percent, y_percent, out_x, out_y)) {
+                                 LONG& out_x, LONG& out_y, MouseMappingGeometry* geometry = nullptr) {
+    if (!adjust_to_screen(screen_id, x_percent, y_percent, out_x, out_y, geometry)) {
         return false;
     }
-    const auto point = PointRelativeToVirtualDesktop(
-        POINT{out_x, out_y},
-        POINT{GetSystemMetrics(SM_XVIRTUALSCREEN),
-              GetSystemMetrics(SM_YVIRTUALSCREEN)});
+    const POINT origin{GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN)};
+    if (geometry) {
+        geometry->target = {out_x, out_y};
+        geometry->origin = origin;
+    }
+    const auto point = PointRelativeToVirtualDesktop(POINT{out_x, out_y}, origin);
     out_x = point.x;
     out_y = point.y;
     return true;
 }
 
-bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y, MouseMappingGeometry* geometry) {
     // 与触摸/笔共用屏幕映射和原点转换，鼠标仅额外转换到 0..65535。
-    if (!adjust_to_virtual_desktop_pixels(screen_id, x_percent, y_percent, out_x, out_y)) {
+    if (!adjust_to_virtual_desktop_pixels(screen_id, x_percent, y_percent, out_x, out_y, geometry)) {
         return false;
     }
     const int virtual_width =
         (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
     const int virtual_height =
         (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    if (geometry) {
+        geometry->width = virtual_width;
+        geometry->height = virtual_height;
+    }
     out_x = MulDiv(
         out_x, 65535, (std::max)(1, virtual_width - 1));
     out_y = MulDiv(
@@ -501,9 +528,10 @@ bool adjust_to_virtual_desktop(int screen_id, double x_percent, double y_percent
     return true;
 }
 
-bool adjust_to_screen(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y) {
+bool adjust_to_screen(int screen_id, double x_percent, double y_percent, LONG& out_x, LONG& out_y, MouseMappingGeometry* geometry) {
     auto monitors = get_monitors();
     const auto monitor_rect = MonitorRectForScreenId(monitors, screen_id);
+    if (geometry) geometry->monitor = monitor_rect;
     if (!monitor_rect.has_value()) {
         out_x = out_y = 0;
         return false;
@@ -1329,7 +1357,7 @@ void async_send_input_retry(INPUT& i) {
     }
 }
 
-void send_input(INPUT& i) {
+bool send_input(INPUT& i) {
     const bool queued = DesktopServiceInputClient::Instance().SendInputMessage(i);
 #if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
     if (i.type == INPUT_MOUSE) {
@@ -1344,7 +1372,7 @@ void send_input(INPUT& i) {
     }
 #endif
     if (queued) {
-        return;
+        return true;
     }
 
     auto send = SendInput(1, &i, sizeof(INPUT));
@@ -1353,6 +1381,7 @@ void send_input(INPUT& i) {
         std::future<void> retry_future = std::async(std::launch::async, async_send_input_retry, std::ref(i));
         retry_future.wait();
     }
+    return false;
 }
 
 void performMouseButton(int button, bool release) {
@@ -1549,7 +1578,7 @@ void performMouseMoveRelative(double x,double y){
     send_input(i);
 }
 
-void performMouseMoveAbsl(double x,double y,int screenId){
+void performMouseMoveAbsl(double x, double y, int screenId, bool trace_mapping) {
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -1560,15 +1589,24 @@ void performMouseMoveAbsl(double x,double y,int screenId){
 
     mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
                  MOUSEEVENTF_VIRTUALDESK;
-    const bool mapped = adjust_to_virtual_desktop(screenId, x,y, newx, newy);
-#if defined(CPP_LOG_AVAILABLE) && defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
-    TraceMouseMapping(screenId, x, y, mapped, newx, newy);
+#if defined(CPP_INPUT_MAPPING_DIAGNOSTICS)
+    trace_mapping = true;  // Preserve explicit developer diagnostic builds.
 #endif
-    if (!mapped) return;
-    mi.dx = newx;
-    mi.dy = newy;
-
-    send_input(i);
+    MouseMappingGeometry geometry;
+    const bool mapped = adjust_to_virtual_desktop(screenId, x, y, newx, newy,
+                                                  trace_mapping ? &geometry : nullptr);
+    const char* route = "unmapped";
+    if (mapped) {
+        mi.dx = newx;
+        mi.dy = newy;
+        route = send_input(i) ? "queued" : "local";
+    }
+#if defined(CPP_LOG_AVAILABLE)
+    if (trace_mapping) TraceMouseMapping(screenId, x, y, mapped, newx, newy, route, geometry);
+#else
+    (void)route;
+    (void)trace_mapping;
+#endif
 }
 
 void performMouseMoveToWindowPosition(
@@ -1783,7 +1821,10 @@ void HardwareSimulatorPlugin::HandleMethodCall(
         auto percentx = (args->find(flutter::EncodableValue("x")))->second;
         auto percenty = (args->find(flutter::EncodableValue("y")))->second;
         auto screenId = (args->find(flutter::EncodableValue("screenId")))->second;
-        performMouseMoveAbsl(static_cast<double>(std::get<double>((percentx))), static_cast<double>(std::get<double>((percenty))), static_cast<int>(std::get<int>((screenId))));
+        const auto trace = args->find(flutter::EncodableValue("traceMapping"));
+        const bool* opt_in = trace == args->end() ? nullptr : std::get_if<bool>(&trace->second);
+        performMouseMoveAbsl(std::get<double>(percentx), std::get<double>(percenty),
+                             std::get<int>(screenId), opt_in && *opt_in);
         result->Success(nullptr);
   } else if (method_call.method_name().compare("mouseMoveToWindowPosition") == 0) {
         auto percentx = (args->find(flutter::EncodableValue("x")))->second;

@@ -738,6 +738,7 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<void> performMouseMoveAbsl(
       double percentx, double percenty, int screenId) async {
     await methodChannel.invokeMethod('mouseMoveA', {
+      if (windowsMappingDiagnostics) 'traceMapping': true,
       'x': percentx,
       'y': percenty,
       'screenId': screenId,

@@ -401,6 +401,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
     throw UnimplementedError('performTextInput() has not been implemented.');
   }
 
+  bool windowsMappingDiagnostics = false;
+
   // Relative mouse movement.
   Future<void> performMouseMoveRelative(
       double deltax, double deltay, int screenId) async {
