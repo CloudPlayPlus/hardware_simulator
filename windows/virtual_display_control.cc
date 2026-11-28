@@ -75,8 +75,24 @@ void ReleaseHandedDisplay(int uid) {
 
 // 只在本进程创建/领取的独占 UID 上使用目标路径，管理页仍可操作普通显示器。
 int exclusive_created_uid = -1;
+VirtualDisplay::DisplayConfig exclusive_requested_mode;
+bool SetOwnedExclusiveMode(int uid, const VirtualDisplay::DisplayConfig& config);
 std::vector<DISPLAYCONFIG_PATH_INFO> pre_insert_paths;
 std::vector<DISPLAYCONFIG_MODE_INFO> pre_insert_modes;
+std::vector<std::wstring> pre_insert_names, active_backup_names, persistent_backup_names;
+
+std::wstring TargetInterface(const DISPLAYCONFIG_PATH_TARGET_INFO& target) {
+    DISPLAYCONFIG_TARGET_DEVICE_NAME name{};
+    name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(name), target.adapterId, target.id};
+    if (DisplayConfigGetDeviceInfo(&name.header) != ERROR_SUCCESS) return {};
+    return name.monitorDevicePath;
+}
+
+std::vector<std::wstring> TargetInterfaces(const std::vector<DISPLAYCONFIG_PATH_INFO>& paths) {
+    std::vector<std::wstring> names;
+    for (const auto& path : paths) names.push_back(TargetInterface(path.targetInfo));
+    return names;
+}
 
 bool QueryLayout(UINT32 flags, std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
                  std::vector<DISPLAYCONFIG_MODE_INFO>& modes, bool allow_empty = false) {
@@ -514,7 +530,7 @@ void VirtualDisplayControl::Shutdown() {
     displays_.clear();
 }
 
-int VirtualDisplayControl::AddDisplay(bool exclusive) {
+int VirtualDisplayControl::AddDisplay(bool exclusive, VirtualDisplay::DisplayConfig requested) {
     if (!initialized_ || vdd_handle_ == INVALID_HANDLE_VALUE) {
         std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
         return -1;
@@ -522,13 +538,16 @@ int VirtualDisplayControl::AddDisplay(bool exclusive) {
 
     if (exclusive && (has_backup_ || exclusive_created_uid >= 0 ||
         !RunDisplayOperationOnInputDesktop([] {
-            return QueryLayout(QDC_ONLY_ACTIVE_PATHS, pre_insert_paths, pre_insert_modes, true);
+            if (!QueryLayout(QDC_ONLY_ACTIVE_PATHS, pre_insert_paths, pre_insert_modes, true)) return false;
+            pre_insert_names = TargetInterfaces(pre_insert_paths);
+            return true;
         }))) return -1;
 
     int vdd_index = parsec_vdd::VddAddDisplay(vdd_handle_);
     if (vdd_index >= 0) {
         if (exclusive) {
             exclusive_created_uid = vdd_index;
+            exclusive_requested_mode = requested;
             return vdd_index;
         }
         std::cout << "Virtual display added: " << vdd_index << std::endl;
@@ -770,6 +789,9 @@ bool VirtualDisplayControl::CheckVddStatus() {
 }
 
 bool VirtualDisplayControl::ChangeDisplaySettings(int display_uid, const VirtualDisplay::DisplayConfig& config) {
+    if (display_uid >= 0 && display_uid == exclusive_created_uid) {
+        return RunDisplayOperationOnInputDesktop([&] { return SetOwnedExclusiveMode(display_uid, config); });
+    }
     auto it = std::find_if(displays_.begin(), displays_.end(),
         [display_uid](const std::unique_ptr<VirtualDisplay>& display) {
             return display && display->GetDisplayUid() == display_uid;
@@ -1146,10 +1168,7 @@ namespace {
 // 同一个 target 可以经由多个 source 到达。UID 是 Parsec 设备实例地址减去 256，
 // CCD targetId 本身是适配器内的编号，不可直接当作 Parsec UID。
 bool IsParsecTarget(const DISPLAYCONFIG_PATH_TARGET_INFO& target, int uid) {
-    DISPLAYCONFIG_TARGET_DEVICE_NAME name{};
-    name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(name), target.adapterId, target.id};
-    if (DisplayConfigGetDeviceInfo(&name.header) != ERROR_SUCCESS) return false;
-    const std::wstring path(name.monitorDevicePath);
+    const std::wstring path = TargetInterface(target);
     const std::wstring prefix = L"\\\\?\\DISPLAY#PSCCDD0#";
     if (_wcsnicmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) return false;
     const auto end = path.find(L'#', prefix.size());
@@ -1166,15 +1185,19 @@ bool SameTarget(const DISPLAYCONFIG_PATH_TARGET_INFO& a, const DISPLAYCONFIG_PAT
 
 // source 的编号在重配后可能改变，但每个活动目标的位置/尺寸和复制关系应恢复。
 bool RestoredActiveLayout(const std::vector<DISPLAYCONFIG_PATH_INFO>& expected,
-                          const std::vector<DISPLAYCONFIG_MODE_INFO>& expected_modes) {
+                          const std::vector<DISPLAYCONFIG_MODE_INFO>& expected_modes,
+                          const std::vector<std::wstring>& names) {
     std::vector<DISPLAYCONFIG_PATH_INFO> actual;
     std::vector<DISPLAYCONFIG_MODE_INFO> modes;
     if (!QueryLayout(QDC_ONLY_ACTIVE_PATHS, actual, modes) || expected.size() != actual.size()) return false;
-    for (const auto& path : expected) {
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const auto& path = expected[i];
         const auto match = std::find_if(actual.begin(), actual.end(), [&](const auto& p) {
             return SameTarget(p.targetInfo, path.targetInfo);
         });
         if (match == actual.end()) return false;
+        if (i < names.size() && !names[i].empty() &&
+            _wcsicmp(TargetInterface(match->targetInfo).c_str(), names[i].c_str()) != 0) return false;
         const auto index = path.sourceInfo.modeInfoIdx;
         if (index >= expected_modes.size()) continue;
         if (match->sourceInfo.modeInfoIdx >= modes.size()) return false;
@@ -1199,9 +1222,67 @@ bool IsOnlyTarget(int uid, const std::wstring& expected_source = {}) {
         _wcsicmp(source.viewGdiDeviceName, expected_source.c_str()) == 0;
 }
 
+// 已有会话服务接收传统 CCD 索引及显式源模式。由驱动选择目标时序。
+LONG ApplyExclusiveMode(DISPLAYCONFIG_PATH_INFO path,
+                        const VirtualDisplay::DisplayConfig& requested, bool use_service) {
+    if (requested.width <= 0 || requested.height <= 0 || requested.refresh_rate <= 0)
+        return ERROR_INVALID_PARAMETER;
+    path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+    path.sourceInfo.modeInfoIdx = 0;
+    path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.targetInfo.refreshRate = {static_cast<UINT32>(requested.refresh_rate), 1};
+    // Parsec 输出为逐行。指定刷新率时配未指定扫描顺序，CCD 会返回错误 87。
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    DISPLAYCONFIG_MODE_INFO mode{};
+    mode.infoType = static_cast<DISPLAYCONFIG_MODE_INFO_TYPE>(DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE);
+    mode.adapterId = path.sourceInfo.adapterId;
+    mode.id = path.sourceInfo.id;
+    mode.sourceMode.width = static_cast<UINT32>(requested.width);
+    mode.sourceMode.height = static_cast<UINT32>(requested.height);
+    mode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
+    if (!use_service) {
+        auto local_path = path;
+        auto local_mode = mode;
+        const LONG result = SetDisplayConfig(1, &local_path, 1, &local_mode, SDC_APPLY |
+            SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+        if (result != ERROR_ACCESS_DENIED) return result;
+    }
+    LONG status = ERROR_GEN_FAILURE;
+    if (!hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
+            {path}, {mode}, status, true)) return ERROR_SERVICE_NOT_ACTIVE;
+    return status;
+}
+
+bool SetOwnedExclusiveMode(int uid, const VirtualDisplay::DisplayConfig& config) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    const auto read_target = [&] {
+        return QueryLayout(QDC_ONLY_ACTIVE_PATHS, paths, modes) && paths.size() == 1 &&
+            IsParsecTarget(paths.front().targetInfo, uid);
+    };
+    const auto matches_mode = [&] {
+        const auto& path = paths.front();
+        const auto& rate = path.targetInfo.refreshRate;
+        if (path.sourceInfo.modeInfoIdx >= modes.size() || !rate.Denominator) return false;
+        const auto& mode = modes[path.sourceInfo.modeInfoIdx];
+        return mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+            mode.sourceMode.width == static_cast<UINT32>(config.width) &&
+            mode.sourceMode.height == static_cast<UINT32>(config.height) &&
+            rate.Numerator == static_cast<uint64_t>(config.refresh_rate) * rate.Denominator;
+    };
+    if (!read_target()) return false;
+    if (matches_mode()) return true;
+    const auto path = paths.front();
+    const LONG result = ApplyExclusiveMode(path, config, false);
+    CPPLOG_INFO("VDD_MODE", "exclusive mode uid=%d target=%u requested=%dx%d@%d status=%ld",
+        uid, path.targetInfo.id, config.width, config.height, config.refresh_rate, result);
+    return result == ERROR_SUCCESS && read_target() && matches_mode();
+}
+
 bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) {
     std::vector<DISPLAYCONFIG_PATH_INFO> paths;
     std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    bool retried_readback = false;
     for (int attempt = 0; attempt < 12; ++attempt) {
         if (attempt) Sleep(200);
         if (!QueryLayout(QDC_ALL_PATHS | QDC_VIRTUAL_MODE_AWARE, paths, modes)) continue;
@@ -1233,20 +1314,30 @@ bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) 
             LONG result = SetDisplayConfig(1, &path, 0, nullptr, SDC_VALIDATE | flags);
             if (result == ERROR_SUCCESS) {
                 if (!save_layout()) break; // 热插拔期间数据库可能尚未就绪。
+                if (!IsParsecTarget(path.targetInfo, uid)) break;
                 stage = "apply";
                 result = SetDisplayConfig(1, &path, 0, nullptr, SDC_APPLY | SDC_SAVE_TO_DATABASE | flags);
+            }
+            if (result == ERROR_ACCESS_DENIED) {
+                if (!save_layout()) break;
+                if (!IsParsecTarget(path.targetInfo, uid)) break;
+                stage = "service-apply";
+                result = ApplyExclusiveMode(path, exclusive_requested_mode, true);
             }
             CPPLOG_INFO("VDD_MODE", "exclusive target uid=%d adapter=%lx:%lx target=%u source=%u virtualMode=%d stage=%s status=%ld",
                 uid, path.targetInfo.adapterId.HighPart, path.targetInfo.adapterId.LowPart,
                 path.targetInfo.id, path.sourceInfo.id, virtual_mode, stage, result);
             (void)stage; // CPP_LOG_AVAILABLE 关闭时日志宏不读取参数。
+            if (result == ERROR_ACCESS_DENIED || result == ERROR_SERVICE_NOT_ACTIVE) return false;
             if (result != ERROR_SUCCESS) continue;
             for (int settle = 0; settle < 10; ++settle) {
                 if (IsOnlyTarget(uid)) return true;
                 Sleep(100);
             }
             CPPLOG_WARN("VDD_MODE", "exclusive target readback mismatch uid=%d", uid);
-            return false;
+            if (retried_readback) return false;
+            retried_readback = true;
+            break;  // 登录交接可能改变源和目标编号，重新枚举同一 UID。
         }
     }
     CPPLOG_WARN("VDD_MODE", "no usable exclusive path uid=%d", uid);
@@ -1287,6 +1378,7 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
             if (!pre_insert_paths.empty()) {
                 original_paths_ = std::move(pre_insert_paths);
                 original_modes_ = std::move(pre_insert_modes);
+                active_backup_names = std::move(pre_insert_names);
             }
             return true;
         });
@@ -1446,6 +1538,57 @@ bool VirtualDisplayControl::SetPrimaryDisplayOnly(int display_uid) {
     });
 }
 
+namespace {
+// 同一输出的 CCD 编号可在热插拔后改变。保持原源编号、位置及复制关系，
+// 只替换已按监视器接口确认的目标。无法还原原路由时保留备份。
+bool ResolveRestoreTargets(std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+                           std::vector<DISPLAYCONFIG_MODE_INFO>& modes,
+                           const std::vector<std::wstring>& names) {
+    if (names.empty()) return true;  // 旧版跨进程交接只携带 CCD 路径。
+    if (paths.size() != names.size()) return false;
+    std::vector<DISPLAYCONFIG_PATH_INFO> candidates;
+    std::vector<DISPLAYCONFIG_MODE_INFO> candidate_modes;
+    for (size_t i = 0; i < paths.size(); ++i) {
+        auto& path = paths[i];
+        const auto& name = names[i];
+        if (name.empty()) continue;
+        const auto current_name = TargetInterface(path.targetInfo);
+        if (candidates.empty() && !QueryLayout(QDC_ALL_PATHS, candidates, candidate_modes)) return false;
+        const bool same_interface = _wcsicmp(current_name.c_str(), name.c_str()) == 0;
+        if (same_interface && std::any_of(candidates.begin(), candidates.end(), [&](const auto& p) {
+            return p.targetInfo.targetAvailable && SameTarget(p.targetInfo, path.targetInfo);
+        })) continue;
+        const DISPLAYCONFIG_PATH_INFO* match = nullptr;
+        bool present = false;
+        bool slot_in_use = false;
+        for (const auto& p : candidates) {
+            if (!p.targetInfo.targetAvailable) continue;
+            slot_in_use |= SameTarget(p.targetInfo, path.targetInfo);
+            if (_wcsicmp(TargetInterface(p.targetInfo).c_str(), name.c_str()) != 0) continue;
+            present = true;
+            if (p.sourceInfo.id != path.sourceInfo.id ||
+                p.sourceInfo.adapterId.HighPart != path.sourceInfo.adapterId.HighPart ||
+                p.sourceInfo.adapterId.LowPart != path.sourceInfo.adapterId.LowPart) continue;
+            if (match && !SameTarget(match->targetInfo, p.targetInfo)) return false;
+            match = &p;
+        }
+        if (!match) {
+            if (present || slot_in_use || (!current_name.empty() && !same_interface)) return false;
+            continue;  // 已脱离，留给 CCD 及单屏断开恢复逻辑处理。
+        }
+        path.targetInfo.adapterId = match->targetInfo.adapterId;
+        path.targetInfo.id = match->targetInfo.id;
+        const auto index = path.targetInfo.modeInfoIdx;
+        if (index < modes.size()) {
+            if (modes[index].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_TARGET) return false;
+            modes[index].adapterId = path.targetInfo.adapterId;
+            modes[index].id = path.targetInfo.id;
+        }
+    }
+    return true;
+}
+}
+
 bool VirtualDisplayControl::RestoreDisplayConfiguration() {
     return RunDisplayOperationOnInputDesktop([&] {
     
@@ -1453,7 +1596,7 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
         return true;
     }
 
-    auto apply = [](const auto& paths, const auto& modes, bool persist) {
+    auto apply = [](const auto& paths, const auto& modes, bool persist) -> LONG {
         // SetDisplayConfig 可能调整传入数组；失败重试不能修改备份。
         auto apply_paths = paths;
         auto apply_modes = modes;
@@ -1466,15 +1609,70 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
             if (hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
                     paths, modes, service_result, persist)) result = service_result;
         }
-        if (result != ERROR_SUCCESS)
-            CPPLOG_WARN("DISPLAY_RESTORE", "restore failed status=%ld persist=%d; keeping backups", result, persist);
-        return result == ERROR_SUCCESS;
+        return result;
     };
     // 先还原用户的桌面默认值，再临时恢复游戏当时的活动模式。
-    if (!apply(persistent_paths_, persistent_modes_, true) ||
-        !apply(original_paths_, original_modes_, false)) return false;
+    auto database_paths = persistent_paths_;
+    auto database_modes = persistent_modes_;
+    auto session_paths = original_paths_;
+    auto session_modes = original_modes_;
+    if (!ResolveRestoreTargets(database_paths, database_modes, persistent_backup_names) ||
+        !ResolveRestoreTargets(session_paths, session_modes, active_backup_names)) {
+        CPPLOG_WARN("DISPLAY_RESTORE", "saved monitor identity or route changed; keeping backups");
+        return false;
+    }
+    const LONG persisted = apply(database_paths, database_modes, true);
+    if (persisted != ERROR_SUCCESS) {
+        CPPLOG_WARN("DISPLAY_RESTORE", "restore failed status=%ld persist=1; keeping backups", persisted);
+        return false;
+    }
+    if (!ResolveRestoreTargets(session_paths, session_modes, active_backup_names)) return false;
+    LONG result = apply(session_paths, session_modes, false);
+    bool disconnected = false;
+    if (result == ERROR_BAD_CONFIGURATION && exclusive_created_uid >= 0 && original_paths_.size() == 1) {
+        // DP 断电后目标可能消失，重新上电也可能使保存的目标时序失效。
+        // 从一次完整 CCD 查询判断，避免把权限/枚举失败误判成拔屏。
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+        if (QueryLayout(QDC_ALL_PATHS, paths, modes)) {
+            auto path = session_paths.front();
+            const auto available = std::find_if(paths.begin(), paths.end(), [&](const auto& p) {
+                return p.targetInfo.targetAvailable && SameTarget(p.targetInfo, path.targetInfo);
+            });
+            if (available == paths.end()) {
+                const auto active = std::find_if(paths.begin(), paths.end(), [](const auto& p) {
+                    return (p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0;
+                });
+                disconnected = active != paths.end() && IsParsecTarget(active->targetInfo, exclusive_created_uid) &&
+                    !SameTarget(active->targetInfo, path.targetInfo) &&
+                    std::none_of(paths.begin(), paths.end(), [&](const auto& p) {
+                        return (p.targetInfo.targetAvailable || (p.flags & DISPLAYCONFIG_PATH_ACTIVE)) &&
+                            !SameTarget(p.targetInfo, active->targetInfo);
+                    });
+                if (disconnected)
+                    CPPLOG_INFO("DISPLAY_RESTORE", "saved target %lx:%lx/%u disconnected; releasing exclusive uid=%d",
+                        static_cast<unsigned long>(path.targetInfo.adapterId.HighPart),
+                        path.targetInfo.adapterId.LowPart, path.targetInfo.id, exclusive_created_uid);
+            } else if (path.targetInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID &&
+                       path.sourceInfo.modeInfoIdx < original_modes_.size()) {
+                const auto source = original_modes_[path.sourceInfo.modeInfoIdx];
+                if (source.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+                    path.sourceInfo.modeInfoIdx = 0;
+                    path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                    result = apply(std::vector<DISPLAYCONFIG_PATH_INFO>{path},
+                                   std::vector<DISPLAYCONFIG_MODE_INFO>{source}, false);
+                    CPPLOG_INFO("DISPLAY_RESTORE", "restore renegotiated target=%u status=%ld", path.targetInfo.id, result);
+                }
+            }
+        }
+    }
+    if (result != ERROR_SUCCESS && !disconnected) {
+        CPPLOG_WARN("DISPLAY_RESTORE", "restore failed status=%ld persist=0; keeping backups", result);
+        return false;
+    }
 
-    if (exclusive_created_uid >= 0 && !RestoredActiveLayout(original_paths_, original_modes_)) {
+    if (!disconnected && exclusive_created_uid >= 0 &&
+        !RestoredActiveLayout(session_paths, session_modes, active_backup_names)) {
         CPPLOG_WARN("DISPLAY_RESTORE", "exclusive restore readback mismatch uid=%d", exclusive_created_uid);
         return false;
     }
@@ -1482,6 +1680,8 @@ bool VirtualDisplayControl::RestoreDisplayConfiguration() {
     
     // Clear the backup to prevent accidental double-restore
     has_backup_ = false;
+    active_backup_names.clear();
+    persistent_backup_names.clear();
     original_paths_.clear();
     original_modes_.clear();
     persistent_paths_.clear();
@@ -1553,6 +1753,8 @@ bool VirtualDisplayControl::RecoverDisplayHandoff(int& uid, std::string& viewer,
         has_backup_ = true;
         handed_display = data;
         exclusive_created_uid = static_cast<int>(data.uid);
+        exclusive_requested_mode = {static_cast<int>(data.width), static_cast<int>(data.height),
+                                    static_cast<int>(data.hz)};
     }
     const auto ready = PrepareRecoveredDisplay([] { return Initialize(); }, [] {
         GetAllDisplays();
@@ -1577,6 +1779,10 @@ bool VirtualDisplayControl::RecoverDisplayHandoff(int& uid, std::string& viewer,
 bool VirtualDisplayControl::SaveDisplayConfiguration() {
     if (!QueryLayout(QDC_DATABASE_CURRENT, persistent_paths_, persistent_modes_) ||
         !QueryLayout(QDC_ONLY_ACTIVE_PATHS, original_paths_, original_modes_)) return false;
+    if (exclusive_created_uid >= 0) {
+        persistent_backup_names = TargetInterfaces(persistent_paths_);
+        active_backup_names = TargetInterfaces(original_paths_);
+    }
     has_backup_ = true;
     return true;
 }

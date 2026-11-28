@@ -29,6 +29,7 @@
 #include <flutter/standard_method_codec.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <future>
 #include <memory>
@@ -2161,8 +2162,24 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      // is what keeps it race-free. Do NOT move to a worker thread.
      if (VirtualDisplayControl::IsInitialized()) {
          const auto exclusive = args->find(flutter::EncodableValue("exclusive"));
-         int displayId = VirtualDisplayControl::AddDisplay(exclusive != args->end() &&
-             std::get_if<bool>(&exclusive->second) && std::get<bool>(exclusive->second));
+         const bool is_exclusive = exclusive != args->end() &&
+             std::get_if<bool>(&exclusive->second) && std::get<bool>(exclusive->second);
+         VirtualDisplay::DisplayConfig requested;
+         const auto configs = args->find(flutter::EncodableValue("configs"));
+         if (is_exclusive && configs != args->end()) {
+             // createDisplay 的第一项是本次串流请求的模式，后续项为备用模式。
+             const auto* list = std::get_if<flutter::EncodableList>(&configs->second);
+             const auto* first = list && !list->empty()
+                 ? std::get_if<flutter::EncodableMap>(&list->front()) : nullptr;
+             const auto width = ReadOptionalInt64(first, "width").value_or(0);
+             const auto height = ReadOptionalInt64(first, "height").value_or(0);
+             const auto hz = ReadOptionalInt64(first, "refreshRate").value_or(0);
+             if (width > 0 && width <= INT_MAX && height > 0 && height <= INT_MAX &&
+                 hz > 0 && hz <= INT_MAX) {
+                 requested = {static_cast<int>(width), static_cast<int>(height), static_cast<int>(hz)};
+             }
+         }
+         int displayId = VirtualDisplayControl::AddDisplay(is_exclusive, requested);
          if (displayId >= 0) {
              result->Success(flutter::EncodableValue(displayId));
          } else {
