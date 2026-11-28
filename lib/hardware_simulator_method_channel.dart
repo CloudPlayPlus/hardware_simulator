@@ -934,9 +934,11 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
 
   @override
   Future<int> createDisplay({
+    bool exclusive = false,
     List<Map<String, dynamic>>? configs,
   }) async {
     return await methodChannel.invokeMethod('createDisplay', {
+      if (exclusive) 'exclusive': true,
       if (configs != null) 'configs': configs,
     });
   }
@@ -1037,6 +1039,12 @@ class MethodChannelHardwareSimulator extends HardwareSimulatorPlatform {
   Future<int> getCurrentMultiDisplayMode() async {
     return await methodChannel.invokeMethod('getCurrentMultiDisplayMode');
   }
+
+  @override
+  Future<bool> verifyExclusiveTarget(int uid) async =>
+      await methodChannel
+          .invokeMethod<bool>('verifyExclusiveTarget', {'displayUid': uid}) ??
+      false;
 
   @override
   Future<bool> setPrimaryDisplayOnly(int displayUid) async {

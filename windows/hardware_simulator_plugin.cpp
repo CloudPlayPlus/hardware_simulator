@@ -2160,7 +2160,9 @@ void HardwareSimulatorPlugin::HandleMethodCall(
      // shared displays_ vector (unlocked); serialization on the platform thread
      // is what keeps it race-free. Do NOT move to a worker thread.
      if (VirtualDisplayControl::IsInitialized()) {
-         int displayId = VirtualDisplayControl::AddDisplay();
+         const auto exclusive = args->find(flutter::EncodableValue("exclusive"));
+         int displayId = VirtualDisplayControl::AddDisplay(exclusive != args->end() &&
+             std::get_if<bool>(&exclusive->second) && std::get<bool>(exclusive->second));
          if (displayId >= 0) {
              result->Success(flutter::EncodableValue(displayId));
          } else {
@@ -2380,6 +2382,10 @@ void HardwareSimulatorPlugin::HandleMethodCall(
   } else if (method_call.method_name().compare("getCurrentMultiDisplayMode") == 0) {
      VirtualDisplayControl::MultiDisplayMode mode = VirtualDisplayControl::GetCurrentMultiDisplayMode();
      result->Success(flutter::EncodableValue(static_cast<int>(mode)));
+  } else if (method_call.method_name() == "verifyExclusiveTarget") {
+     const auto it = args->find(flutter::EncodableValue("displayUid"));
+     const auto uid = it == args->end() ? nullptr : std::get_if<int>(&it->second);
+     result->Success(flutter::EncodableValue(uid && VirtualDisplayControl::VerifyExclusiveTarget(*uid)));
   } else if (method_call.method_name().compare("setPrimaryDisplayOnly") == 0) {
      auto display_uid_it = args->find(flutter::EncodableValue("displayUid"));
      

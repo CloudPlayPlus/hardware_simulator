@@ -22,7 +22,8 @@ public:
     static bool Initialize();
     static bool EnsureConsoleForDisplay();
     static void Shutdown();
-    static int AddDisplay();
+    static int AddDisplay(bool exclusive = false);
+    static bool VerifyExclusiveTarget(int display_uid);
     static bool RemoveDisplay(int display_uid);
 
     static int GetDisplayCount();

@@ -86,6 +86,7 @@ class HWKeyboard {
 
 class HWMouse {
   HWMouse();
+
   /// Opt in to sampled geometry logs on Windows for this app instance.
   set windowsMappingDiagnostics(bool enabled) =>
       HardwareSimulatorPlatform.instance.windowsMappingDiagnostics = enabled;
@@ -565,9 +566,11 @@ class HardwareSimulator {
       HardwareSimulatorPlatform.instance.recoverFailedParsecVdd();
 
   static Future<int> createDisplay({
+    bool exclusive = false,
     List<Map<String, dynamic>>? configs,
   }) {
-    return HardwareSimulatorPlatform.instance.createDisplay(configs: configs);
+    return HardwareSimulatorPlatform.instance
+        .createDisplay(configs: configs, exclusive: exclusive);
   }
 
   static Future<bool> removeDisplay(int displayUid) {
@@ -634,6 +637,9 @@ class HardwareSimulator {
   }
 
   // Display control APIs for setting primary display and disabling others
+  static Future<bool> verifyExclusiveTarget(int uid) =>
+      HardwareSimulatorPlatform.instance.verifyExclusiveTarget(uid);
+
   static Future<bool> setPrimaryDisplayOnly(int displayUid) {
     return HardwareSimulatorPlatform.instance.setPrimaryDisplayOnly(displayUid);
   }
