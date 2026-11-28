@@ -75,6 +75,7 @@ void ReleaseHandedDisplay(int uid) {
 
 // 只在本进程创建/领取的独占 UID 上使用目标路径，管理页仍可操作普通显示器。
 int exclusive_created_uid = -1;
+VirtualDisplay::DisplayConfig exclusive_requested_mode;
 std::vector<DISPLAYCONFIG_PATH_INFO> pre_insert_paths;
 std::vector<DISPLAYCONFIG_MODE_INFO> pre_insert_modes;
 
@@ -514,7 +515,7 @@ void VirtualDisplayControl::Shutdown() {
     displays_.clear();
 }
 
-int VirtualDisplayControl::AddDisplay(bool exclusive) {
+int VirtualDisplayControl::AddDisplay(bool exclusive, VirtualDisplay::DisplayConfig requested) {
     if (!initialized_ || vdd_handle_ == INVALID_HANDLE_VALUE) {
         std::cout << "Error: VirtualDisplayControl not initialized" << std::endl;
         return -1;
@@ -529,6 +530,7 @@ int VirtualDisplayControl::AddDisplay(bool exclusive) {
     if (vdd_index >= 0) {
         if (exclusive) {
             exclusive_created_uid = vdd_index;
+            exclusive_requested_mode = requested;
             return vdd_index;
         }
         std::cout << "Virtual display added: " << vdd_index << std::endl;
@@ -1199,6 +1201,29 @@ bool IsOnlyTarget(int uid, const std::wstring& expected_source = {}) {
         _wcsicmp(source.viewGdiDeviceName, expected_source.c_str()) == 0;
 }
 
+// 已有会话服务接收传统 CCD 索引及显式源模式。由驱动选择目标时序。
+LONG ApplyExclusiveModeViaService(DISPLAYCONFIG_PATH_INFO path,
+                                  const VirtualDisplay::DisplayConfig& requested) {
+    if (requested.width <= 0 || requested.height <= 0 || requested.refresh_rate <= 0)
+        return ERROR_INVALID_PARAMETER;
+    path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+    path.sourceInfo.modeInfoIdx = 0;
+    path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.targetInfo.refreshRate = {static_cast<UINT32>(requested.refresh_rate), 1};
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+    DISPLAYCONFIG_MODE_INFO mode{};
+    mode.infoType = static_cast<DISPLAYCONFIG_MODE_INFO_TYPE>(DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE);
+    mode.adapterId = path.sourceInfo.adapterId;
+    mode.id = path.sourceInfo.id;
+    mode.sourceMode.width = static_cast<UINT32>(requested.width);
+    mode.sourceMode.height = static_cast<UINT32>(requested.height);
+    mode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
+    LONG status = ERROR_GEN_FAILURE;
+    if (!hardware_simulator::DesktopServiceInputClient::Instance().RestoreDisplayConfiguration(
+            {path}, {mode}, status, true)) return ERROR_SERVICE_NOT_ACTIVE;
+    return status;
+}
+
 bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) {
     std::vector<DISPLAYCONFIG_PATH_INFO> paths;
     std::vector<DISPLAYCONFIG_MODE_INFO> modes;
@@ -1236,10 +1261,16 @@ bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) 
                 stage = "apply";
                 result = SetDisplayConfig(1, &path, 0, nullptr, SDC_APPLY | SDC_SAVE_TO_DATABASE | flags);
             }
+            if (result == ERROR_ACCESS_DENIED) {
+                if (!save_layout()) break;
+                stage = "service-apply";
+                result = ApplyExclusiveModeViaService(path, exclusive_requested_mode);
+            }
             CPPLOG_INFO("VDD_MODE", "exclusive target uid=%d adapter=%lx:%lx target=%u source=%u virtualMode=%d stage=%s status=%ld",
                 uid, path.targetInfo.adapterId.HighPart, path.targetInfo.adapterId.LowPart,
                 path.targetInfo.id, path.sourceInfo.id, virtual_mode, stage, result);
             (void)stage; // CPP_LOG_AVAILABLE 关闭时日志宏不读取参数。
+            if (result == ERROR_ACCESS_DENIED || result == ERROR_SERVICE_NOT_ACTIVE) return false;
             if (result != ERROR_SUCCESS) continue;
             for (int settle = 0; settle < 10; ++settle) {
                 if (IsOnlyTarget(uid)) return true;
@@ -1553,6 +1584,8 @@ bool VirtualDisplayControl::RecoverDisplayHandoff(int& uid, std::string& viewer,
         has_backup_ = true;
         handed_display = data;
         exclusive_created_uid = static_cast<int>(data.uid);
+        exclusive_requested_mode = {static_cast<int>(data.width), static_cast<int>(data.height),
+                                    static_cast<int>(data.hz)};
     }
     const auto ready = PrepareRecoveredDisplay([] { return Initialize(); }, [] {
         GetAllDisplays();

@@ -1,5 +1,6 @@
 // 替换显示 API，执行真实独占/恢复逻辑，不改变测试机的显示配置。
 #include "../virtual_display_control.h"
+#include "../desktop_service_input_client.h"
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
@@ -16,6 +17,9 @@ std::vector<DISPLAYCONFIG_PATH_INFO> available_paths;
 bool ignore_apply = false;
 bool fail_temporary = false;
 bool reject_supplied_target = false;
+LONG validation_result = ERROR_SUCCESS;
+int service_calls = 0;
+LONG service_status = ERROR_SUCCESS;
 
 LONG WINAPI TestBufferSizes(UINT32 flags, UINT32* paths, UINT32* modes) {
     *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths :
@@ -55,6 +59,7 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
 LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     UINT32 mode_count, DISPLAYCONFIG_MODE_INFO* modes, UINT32 flags) {
     if (flags & SDC_VALIDATE) {
+        if (validation_result != ERROR_SUCCESS) return validation_result;
         CHECK(count == 1 && mode_count == 0);
         const auto& path = paths[0];
         if (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) {
@@ -98,6 +103,37 @@ bool IsActive(UINT32 source) {
 }
 }
 
+namespace hardware_simulator {
+struct TestDisplayService {
+    static TestDisplayService& Instance() {
+        static TestDisplayService service;
+        return service;
+    }
+    bool RestoreDisplayConfiguration(const std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+        const std::vector<DISPLAYCONFIG_MODE_INFO>& modes, LONG& status, bool persist) {
+        ++service_calls;
+        CHECK(persist && paths.size() == 1 && modes.size() == 1);
+        const auto& path = paths.front();
+        const auto& mode = modes.front();
+        CHECK(path.targetInfo.adapterId.LowPart == 23 && path.targetInfo.id == 14);
+        CHECK(path.flags == DISPLAYCONFIG_PATH_ACTIVE && path.sourceInfo.modeInfoIdx == 0);
+        CHECK(path.targetInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
+        CHECK(path.targetInfo.refreshRate.Numerator == 60 && path.targetInfo.refreshRate.Denominator == 1);
+        CHECK(mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE && mode.id == path.sourceInfo.id);
+        CHECK(mode.sourceMode.width == 2448 && mode.sourceMode.height == 1848);
+        CHECK(mode.sourceMode.position.x == 0 && mode.sourceMode.position.y == 0);
+        CHECK(mode.adapterId.LowPart == path.sourceInfo.adapterId.LowPart);
+        status = service_status;
+        if (status == ERROR_SUCCESS) {
+            saved_paths = current_paths = paths;
+            saved_modes = active_modes = modes;
+        }
+        return true;
+    }
+};
+}
+
+#define DesktopServiceInputClient TestDisplayService
 #define GetDisplayConfigBufferSizes TestBufferSizes
 #define QueryDisplayConfig TestQuery
 #define DisplayConfigGetDeviceInfo TestDeviceInfo
@@ -108,6 +144,7 @@ bool IsActive(UINT32 source) {
 #undef QueryDisplayConfig
 #undef DisplayConfigGetDeviceInfo
 #undef SetDisplayConfig
+#undef DesktopServiceInputClient
 
 class VirtualDisplayControlTestPeer {
 public:
@@ -211,6 +248,26 @@ public:
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
         CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));
         CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        // 锁屏可枚举目标，但 Default 桌面的 SDC_VALIDATE 或 SDC_APPLY 会被拒绝。
+        exclusive_requested_mode = {2448, 1848, 60};
+        available_paths[1].flags |= DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+        for (const bool deny_validation : {true, false}) {
+            validation_result = deny_validation ? ERROR_ACCESS_DENIED : ERROR_SUCCESS;
+            apply_result = deny_validation ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
+            const auto before = service_calls;
+            CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));
+            CHECK(service_calls == before + 1);
+            CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
+            validation_result = apply_result = ERROR_SUCCESS;
+            CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        }
+        validation_result = service_status = ERROR_ACCESS_DENIED;
+        const auto before_denial = service_calls;
+        CHECK(!VirtualDisplayControl::SetPrimaryDisplayOnly(0));
+        CHECK(service_calls == before_denial + 1);
+        CHECK(VirtualDisplayControl::HasPendingConfiguration());
+        validation_result = service_status = ERROR_SUCCESS;
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
         VirtualDisplayControl::displays_.clear();
     }
