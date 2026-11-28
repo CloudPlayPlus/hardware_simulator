@@ -249,6 +249,10 @@ public:
         CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
         CHECK(SetOwnedExclusiveMode(0, {1920, 1080, 60}));
         CHECK(active_modes.size() == 1 && active_modes.front().sourceMode.width == 1920);
+        ignore_apply = true;
+        CHECK(!SetOwnedExclusiveMode(0, {1920, 1080, 120}));
+        CHECK(!SetOwnedExclusiveMode(0, {2560, 1440, 60}));
+        ignore_apply = false;
         CHECK(!SetOwnedExclusiveMode(1, {2560, 1440, 60}));
         CHECK(active_modes.front().sourceMode.width == 1920);
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());

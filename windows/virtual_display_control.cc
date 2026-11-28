@@ -1256,21 +1256,27 @@ LONG ApplyExclusiveMode(DISPLAYCONFIG_PATH_INFO path,
 bool SetOwnedExclusiveMode(int uid, const VirtualDisplay::DisplayConfig& config) {
     std::vector<DISPLAYCONFIG_PATH_INFO> paths;
     std::vector<DISPLAYCONFIG_MODE_INFO> modes;
-    if (!QueryLayout(QDC_ONLY_ACTIVE_PATHS, paths, modes) || paths.size() != 1 ||
-        !IsParsecTarget(paths.front().targetInfo, uid)) return false;
-    const auto& path = paths.front();
-    const auto& rate = path.targetInfo.refreshRate;
-    if (path.sourceInfo.modeInfoIdx < modes.size() && rate.Denominator &&
-        rate.Numerator == static_cast<uint64_t>(config.refresh_rate) * rate.Denominator) {
+    const auto read_target = [&] {
+        return QueryLayout(QDC_ONLY_ACTIVE_PATHS, paths, modes) && paths.size() == 1 &&
+            IsParsecTarget(paths.front().targetInfo, uid);
+    };
+    const auto matches_mode = [&] {
+        const auto& path = paths.front();
+        const auto& rate = path.targetInfo.refreshRate;
+        if (path.sourceInfo.modeInfoIdx >= modes.size() || !rate.Denominator) return false;
         const auto& mode = modes[path.sourceInfo.modeInfoIdx];
-        if (mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+        return mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
             mode.sourceMode.width == static_cast<UINT32>(config.width) &&
-            mode.sourceMode.height == static_cast<UINT32>(config.height)) return true;
-    }
+            mode.sourceMode.height == static_cast<UINT32>(config.height) &&
+            rate.Numerator == static_cast<uint64_t>(config.refresh_rate) * rate.Denominator;
+    };
+    if (!read_target()) return false;
+    if (matches_mode()) return true;
+    const auto path = paths.front();
     const LONG result = ApplyExclusiveMode(path, config, false);
     CPPLOG_INFO("VDD_MODE", "exclusive mode uid=%d target=%u requested=%dx%d@%d status=%ld",
         uid, path.targetInfo.id, config.width, config.height, config.refresh_rate, result);
-    return result == ERROR_SUCCESS && IsOnlyTarget(uid);
+    return result == ERROR_SUCCESS && read_target() && matches_mode();
 }
 
 bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) {
