@@ -519,6 +519,7 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   Future<int> createDisplay({
+    bool exclusive = false,
     List<Map<String, dynamic>>? configs,
   }) {
     throw UnimplementedError('createDisplay() has not been implemented.');
@@ -578,6 +579,8 @@ abstract class HardwareSimulatorPlatform extends PlatformInterface {
   }
 
   // Display control APIs for setting primary display and disabling others
+  Future<bool> verifyExclusiveTarget(int uid) => throw UnimplementedError();
+
   Future<bool> setPrimaryDisplayOnly(int displayUid) {
     throw UnimplementedError(
         'setPrimaryDisplayOnly() has not been implemented.');

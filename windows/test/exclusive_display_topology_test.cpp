@@ -12,17 +12,21 @@ std::vector<DISPLAYCONFIG_PATH_INFO> saved_paths;
 std::vector<DISPLAYCONFIG_MODE_INFO> active_modes;
 std::vector<DISPLAYCONFIG_MODE_INFO> saved_modes;
 LONG apply_result = ERROR_SUCCESS;
+std::vector<DISPLAYCONFIG_PATH_INFO> available_paths;
+bool ignore_apply = false;
 bool fail_temporary = false;
 bool reject_supplied_target = false;
 
 LONG WINAPI TestBufferSizes(UINT32 flags, UINT32* paths, UINT32* modes) {
-    *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths : current_paths).size());
+    *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths :
+        (flags & QDC_ALL_PATHS) ? available_paths : current_paths).size());
     *modes = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_modes : active_modes).size());
     return ERROR_SUCCESS;
 }
 LONG WINAPI TestQuery(UINT32 flags, UINT32* paths, DISPLAYCONFIG_PATH_INFO* path_data,
     UINT32* modes, DISPLAYCONFIG_MODE_INFO* mode_data, DISPLAYCONFIG_TOPOLOGY_ID* topology) {
-    const auto& source_paths = flags == QDC_DATABASE_CURRENT ? saved_paths : current_paths;
+    const auto& source_paths = flags == QDC_DATABASE_CURRENT ? saved_paths :
+        (flags & QDC_ALL_PATHS) ? available_paths : current_paths;
     const auto& source_modes = flags == QDC_DATABASE_CURRENT ? saved_modes : active_modes;
     CHECK((flags == QDC_DATABASE_CURRENT) == (topology != nullptr));
     CHECK(*paths >= source_paths.size() && *modes >= source_modes.size());
@@ -39,10 +43,19 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
             ? L"\\\\.\\DISPLAY2" : L"\\\\.\\DISPLAY1");
         return ERROR_SUCCESS;
     }
+    if (header->type == DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME) {
+        auto* name = reinterpret_cast<DISPLAYCONFIG_TARGET_DEVICE_NAME*>(header);
+        wcscpy_s(name->monitorDevicePath, header->adapterId.LowPart == 23 && header->id == 14
+            ? L"\\\\?\\display#psccdd0#5&0&uId256#{abc}"
+            : L"\\\\?\\display#physical#5&0&UID256#{abc}");
+        return ERROR_SUCCESS;
+    }
     return ERROR_NOT_SUPPORTED;
 }
 LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     UINT32 mode_count, DISPLAYCONFIG_MODE_INFO* modes, UINT32 flags) {
+    if (flags & SDC_VALIDATE) return ERROR_SUCCESS;
+    if (ignore_apply) return ERROR_SUCCESS;
     if (apply_result != ERROR_SUCCESS) return apply_result;
     if (reject_supplied_target) {
         UINT32 active = 0; const DISPLAYCONFIG_PATH_INFO* target = nullptr;
@@ -53,7 +66,8 @@ LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     if (fail_temporary && !(flags & SDC_SAVE_TO_DATABASE)) return ERROR_GEN_FAILURE;
     CHECK(flags & SDC_APPLY);
     current_paths.assign(paths, paths + count);
-    active_modes.assign(modes, modes + mode_count);
+    active_modes.clear();
+    if (mode_count) active_modes.assign(modes, modes + mode_count);
     if (flags & SDC_SAVE_TO_DATABASE) {
         saved_paths = current_paths;
         saved_modes = active_modes;
@@ -153,6 +167,37 @@ public:
         CHECK(current_paths.size() == 2 && active_modes.size() == 3);
         CHECK(current_paths[1].targetInfo.modeInfoIdx == 2);
         reject_supplied_target = false;
+        // 同一个源、同号 target（不同适配器），即使实体屏排第一也只选本次 VDD。
+        exclusive_created_uid = 0;
+        VirtualDisplay::DisplayInfo inserted{};
+        inserted.is_virtual = true;
+        inserted.active = true;
+        inserted.raw_screen_id = 0;
+        inserted.device_name = R"(\\.\DISPLAY1)";
+        VirtualDisplayControl::displays_.push_back(std::make_unique<VirtualDisplay>(
+            VirtualDisplay::DisplayConfig(1920, 1080), inserted, 0));
+        current_paths[0].targetInfo.id = current_paths[1].targetInfo.id = 14;
+        current_paths[1].targetInfo.adapterId.LowPart = 23;
+        current_paths[0].sourceInfo.id = current_paths[1].sourceInfo.id = 0;
+        for (auto& p : current_paths) p.targetInfo.targetAvailable = TRUE;
+        saved_paths = available_paths = current_paths;
+        pre_insert_paths = {current_paths.front()};
+        pre_insert_modes = active_modes;
+        CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));
+        CHECK(current_paths.size() == 1 && current_paths[0].targetInfo.adapterId.LowPart == 23);
+        CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(current_paths.size() == 1 && current_paths[0].targetInfo.adapterId.LowPart == 0);
+        CHECK(saved_paths.size() == 2);
+        // 目标只存在于全部候选路径中。驱动返回成功但活动布局未改变时必须失败并可恢复。
+        available_paths[1].flags = 0;
+        ignore_apply = true;
+        CHECK(!VirtualDisplayControl::SetPrimaryDisplayOnly(0));
+        ignore_apply = false;
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));
+        CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
         VirtualDisplayControl::displays_.clear();
     }
 };
