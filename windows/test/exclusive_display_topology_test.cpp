@@ -16,10 +16,12 @@ LONG apply_result = ERROR_SUCCESS;
 std::vector<DISPLAYCONFIG_PATH_INFO> available_paths;
 bool ignore_apply = false;
 bool fail_temporary = false;
+bool invalid_temporary_timing = false;
 bool reject_supplied_target = false;
 LONG validation_result = ERROR_SUCCESS;
 int service_calls = 0;
 LONG service_status = ERROR_SUCCESS;
+bool reassigned_target = false;
 
 LONG WINAPI TestBufferSizes(UINT32 flags, UINT32* paths, UINT32* modes) {
     *paths = static_cast<UINT32>((flags == QDC_DATABASE_CURRENT ? saved_paths :
@@ -49,6 +51,10 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
     }
     if (header->type == DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME) {
         auto* name = reinterpret_cast<DISPLAYCONFIG_TARGET_DEVICE_NAME*>(header);
+        if (reassigned_target && header->adapterId.LowPart == 0 && header->id == 14) {
+            wcscpy_s(name->monitorDevicePath, L"unrelated-monitor");
+            return ERROR_SUCCESS;
+        }
         wcscpy_s(name->monitorDevicePath, header->adapterId.LowPart == 23 && header->id == 14
             ? L"\\\\?\\display#psccdd0#5&0&uId256#{abc}"
             : L"\\\\?\\display#physical#5&0&UID256#{abc}");
@@ -82,6 +88,9 @@ LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
             return ERROR_GEN_FAILURE;
     }
     if (fail_temporary && !(flags & SDC_SAVE_TO_DATABASE)) return ERROR_GEN_FAILURE;
+    if (invalid_temporary_timing && !(flags & SDC_SAVE_TO_DATABASE) && count == 1 &&
+        paths[0].targetInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID)
+        return ERROR_BAD_CONFIGURATION;
     CHECK(flags & SDC_APPLY);
     current_paths.assign(paths, paths + count);
     active_modes.clear();
@@ -238,6 +247,10 @@ public:
         CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));
         CHECK(current_paths.size() == 1 && current_paths[0].targetInfo.adapterId.LowPart == 23);
         CHECK(VirtualDisplayControl::VerifyExclusiveTarget(0));
+        CHECK(SetOwnedExclusiveMode(0, {1920, 1080, 60}));
+        CHECK(active_modes.size() == 1 && active_modes.front().sourceMode.width == 1920);
+        CHECK(!SetOwnedExclusiveMode(1, {2560, 1440, 60}));
+        CHECK(active_modes.front().sourceMode.width == 1920);
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
         CHECK(current_paths.size() == 1 && current_paths[0].targetInfo.adapterId.LowPart == 0);
         CHECK(saved_paths.size() == 2);
@@ -270,6 +283,58 @@ public:
         CHECK(VirtualDisplayControl::HasPendingConfiguration());
         validation_result = service_status = ERROR_SUCCESS;
         CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+
+        // 断开时只在原目标确已离线且唯一活动输出是本次 VDD 时允许移除。
+        auto owned = available_paths[1];
+        owned.flags = DISPLAYCONFIG_PATH_ACTIVE;
+        owned.sourceInfo.modeInfoIdx = 0;
+        owned.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        auto physical = available_paths[0];
+        physical.targetInfo.modeInfoIdx = 1;
+        DISPLAYCONFIG_MODE_INFO source{};
+        source.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+        source.sourceMode.width = 3840;
+        source.sourceMode.height = 2160;
+        physical.sourceInfo.modeInfoIdx = 0;
+        auto backup = [&] {
+            VirtualDisplayControl::original_paths_ = {physical};
+            VirtualDisplayControl::original_modes_ = {source, target_mode};
+            VirtualDisplayControl::persistent_paths_ = {owned};
+            VirtualDisplayControl::persistent_modes_ = {source};
+            VirtualDisplayControl::has_backup_ = true;
+        };
+        invalid_temporary_timing = true;
+        backup();
+        available_paths.clear();  // 无法取得完整拓扑。
+        CHECK(!VirtualDisplayControl::RestoreDisplayConfiguration());
+        available_paths = {owned, physical};  // 另外的活动目标，不能丢备份。
+        available_paths[1].targetInfo.id++;
+        CHECK(!VirtualDisplayControl::RestoreDisplayConfiguration());
+        available_paths = {owned};
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(!VirtualDisplayControl::HasPendingConfiguration());
+        CHECK(current_paths.size() == 1 && SameTarget(current_paths[0].targetInfo, owned.targetInfo));
+
+        // 原目标重新上线，允许驱动重选时序，仍然应用原来的源尺寸与目标。
+        backup();
+        available_paths = {owned, physical};
+        CHECK(VirtualDisplayControl::RestoreDisplayConfiguration());
+        CHECK(current_paths.size() == 1 && SameTarget(current_paths[0].targetInfo, physical.targetInfo));
+        CHECK(active_modes.size() == 1 && active_modes[0].sourceMode.width == 3840);
+        CHECK(saved_paths.size() == 1 && SameTarget(saved_paths[0].targetInfo, owned.targetInfo));
+        // 同一 adapter 的数字槽被另一屏复用，只能按原设备接口重绑。
+        auto active = std::vector<DISPLAYCONFIG_PATH_INFO>{physical};
+        auto timings = std::vector<DISPLAYCONFIG_MODE_INFO>{source, target_mode};
+        const auto names = TargetInterfaces(active);
+        reassigned_target = true;
+        available_paths = {physical};
+        CHECK(!ResolveRestoreTargets(active, timings, names));
+        auto reattached = physical;
+        ++reattached.targetInfo.id;
+        available_paths.push_back(reattached);
+        CHECK(ResolveRestoreTargets(active, timings, names));
+        CHECK(active[0].targetInfo.id == reattached.targetInfo.id && timings[1].id == reattached.targetInfo.id);
+        reassigned_target = false;
         VirtualDisplayControl::displays_.clear();
     }
 };
