@@ -1210,7 +1210,8 @@ LONG ApplyExclusiveModeViaService(DISPLAYCONFIG_PATH_INFO path,
     path.sourceInfo.modeInfoIdx = 0;
     path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
     path.targetInfo.refreshRate = {static_cast<UINT32>(requested.refresh_rate), 1};
-    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+    // Parsec 输出为逐行。指定刷新率时配未指定扫描顺序，CCD 会返回错误 87。
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
     DISPLAYCONFIG_MODE_INFO mode{};
     mode.infoType = static_cast<DISPLAYCONFIG_MODE_INFO_TYPE>(DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE);
     mode.adapterId = path.sourceInfo.adapterId;

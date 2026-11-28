@@ -119,6 +119,7 @@ struct TestDisplayService {
         CHECK(path.flags == DISPLAYCONFIG_PATH_ACTIVE && path.sourceInfo.modeInfoIdx == 0);
         CHECK(path.targetInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
         CHECK(path.targetInfo.refreshRate.Numerator == 60 && path.targetInfo.refreshRate.Denominator == 1);
+        CHECK(path.targetInfo.scanLineOrdering == DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE);
         CHECK(mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE && mode.id == path.sourceInfo.id);
         CHECK(mode.sourceMode.width == 2448 && mode.sourceMode.height == 1848);
         CHECK(mode.sourceMode.position.x == 0 && mode.sourceMode.position.y == 0);
