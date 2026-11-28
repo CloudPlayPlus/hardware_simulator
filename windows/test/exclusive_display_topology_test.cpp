@@ -54,7 +54,20 @@ LONG WINAPI TestDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* header) {
 }
 LONG WINAPI TestApply(UINT32 count, DISPLAYCONFIG_PATH_INFO* paths,
     UINT32 mode_count, DISPLAYCONFIG_MODE_INFO* modes, UINT32 flags) {
-    if (flags & SDC_VALIDATE) return ERROR_SUCCESS;
+    if (flags & SDC_VALIDATE) {
+        CHECK(count == 1 && mode_count == 0);
+        const auto& path = paths[0];
+        if (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) {
+            if (!(flags & SDC_VIRTUAL_MODE_AWARE) ||
+                path.sourceInfo.cloneGroupId == DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID ||
+                path.sourceInfo.sourceModeInfoIdx != DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID)
+                return ERROR_INVALID_PARAMETER;
+        } else if ((flags & SDC_VIRTUAL_MODE_AWARE) ||
+                   path.sourceInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+            return ERROR_INVALID_PARAMETER;
+        }
+        return ERROR_SUCCESS;
+    }
     if (ignore_apply) return ERROR_SUCCESS;
     if (apply_result != ERROR_SUCCESS) return apply_result;
     if (reject_supplied_target) {
@@ -181,6 +194,7 @@ public:
         current_paths[0].sourceInfo.id = current_paths[1].sourceInfo.id = 0;
         for (auto& p : current_paths) p.targetInfo.targetAvailable = TRUE;
         saved_paths = available_paths = current_paths;
+        available_paths[1].flags |= DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
         pre_insert_paths = {current_paths.front()};
         pre_insert_modes = active_modes;
         CHECK(VirtualDisplayControl::SetPrimaryDisplayOnly(0));

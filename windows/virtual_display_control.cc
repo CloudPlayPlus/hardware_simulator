@@ -1220,19 +1220,26 @@ bool ActivateExclusiveTarget(int uid, const std::function<bool()>& save_layout) 
         });
         for (auto path : candidates) {
             path.flags = DISPLAYCONFIG_PATH_ACTIVE | (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE);
+            const bool virtual_mode = (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) != 0;
             path.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            // 未提供源模式时，用独立组标识这个唯一的输出。两个索引都无效会触发错误 87。
+            if (virtual_mode) path.sourceInfo.cloneGroupId = 0;
             path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
             path.targetInfo.refreshRate = {};
             path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
-            const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_VIRTUAL_MODE_AWARE;
+            const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES |
+                (virtual_mode ? SDC_VIRTUAL_MODE_AWARE : 0);
+            const char* stage = "validate";
             LONG result = SetDisplayConfig(1, &path, 0, nullptr, SDC_VALIDATE | flags);
             if (result == ERROR_SUCCESS) {
                 if (!save_layout()) break; // 热插拔期间数据库可能尚未就绪。
+                stage = "apply";
                 result = SetDisplayConfig(1, &path, 0, nullptr, SDC_APPLY | SDC_SAVE_TO_DATABASE | flags);
             }
-            CPPLOG_INFO("VDD_MODE", "exclusive target uid=%d adapter=%lx:%lx target=%u source=%u status=%ld",
+            CPPLOG_INFO("VDD_MODE", "exclusive target uid=%d adapter=%lx:%lx target=%u source=%u virtualMode=%d stage=%s status=%ld",
                 uid, path.targetInfo.adapterId.HighPart, path.targetInfo.adapterId.LowPart,
-                path.targetInfo.id, path.sourceInfo.id, result);
+                path.targetInfo.id, path.sourceInfo.id, virtual_mode, stage, result);
+            (void)stage; // CPP_LOG_AVAILABLE 关闭时日志宏不读取参数。
             if (result != ERROR_SUCCESS) continue;
             for (int settle = 0; settle < 10; ++settle) {
                 if (IsOnlyTarget(uid)) return true;
